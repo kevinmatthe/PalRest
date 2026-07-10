@@ -281,6 +281,7 @@ func policyResponse(version int, policy config.Policy) map[string]any {
 	}
 	return map[string]any{
 		"version":   version,
+		"source":    "database",
 		"timezone":  policy.Timezone,
 		"default":   toRuleDTO(policy.Default),
 		"overrides": overrides,
@@ -402,7 +403,7 @@ func toRuleDTO(rule config.Rule) ruleDTO {
 	}
 	return ruleDTO{
 		Enabled: rule.Enabled, Strategy: strategy(rule.Strategy), Period: rule.Period, ResetAt: rule.ResetAt,
-		ResetWeekday: rule.ResetWeekday, LimitMS: ruleLimit(rule).Milliseconds(),
+		ResetWeekday: rule.ResetWeekday, LimitMS: rule.Limit.Duration.Milliseconds(),
 		CooldownEveryMS: rule.CooldownEvery.Duration.Milliseconds(), CooldownRestMS: rule.CooldownRest.Duration.Milliseconds(),
 		CreditRecoverEveryMS: rule.CreditRecoverEvery.Duration.Milliseconds(), CreditRecoverAmountMS: rule.CreditRecoverAmount.Duration.Milliseconds(),
 		CreditMaxMS: rule.CreditMax.Duration.Milliseconds(), WarningBeforeMS: warnings,

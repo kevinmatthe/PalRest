@@ -77,6 +77,57 @@ type Policy struct {
 	Overrides map[string]RuleOverride `yaml:"overrides" json:"overrides"`
 }
 
+// UnmarshalYAML treats the configuration-file policy as bootstrap defaults.
+// Stored policy documents bypass this method in ParsePolicy so they can retain
+// per-player overrides.
+func (p *Policy) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("policy must be a mapping")
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		name := node.Content[i].Value
+		if name != "timezone" && name != "default" {
+			return fmt.Errorf("field %s not found in type config policy defaults", name)
+		}
+		if name == "default" {
+			if err := validateBootstrapRuleFields(node.Content[i+1]); err != nil {
+				return err
+			}
+		}
+	}
+
+	value := DefaultPolicy()
+	type ruleYAML Rule
+	raw := struct {
+		Timezone string   `yaml:"timezone"`
+		Default  ruleYAML `yaml:"default"`
+	}{Timezone: value.Timezone, Default: ruleYAML(value.Default)}
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	value.Timezone = raw.Timezone
+	value.Default = Rule(raw.Default)
+	*p = value
+	return nil
+}
+
+func validateBootstrapRuleFields(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("policy.default must be a mapping")
+	}
+	allowed := map[string]bool{
+		"enabled": true, "strategy": true, "period": true, "reset_at": true, "reset_weekday": true,
+		"limit": true, "cooldown_every": true, "cooldown_rest": true, "credit_recover_every": true,
+		"credit_recover_amount": true, "credit_max": true, "warning_before": true,
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		if name := node.Content[i].Value; !allowed[name] {
+			return fmt.Errorf("field %s not found in type config policy default", name)
+		}
+	}
+	return nil
+}
+
 type Rule struct {
 	Enabled             bool       `yaml:"enabled" json:"enabled"`
 	Strategy            string     `yaml:"strategy,omitempty" json:"strategy,omitempty"`
@@ -152,7 +203,8 @@ func Parse(data []byte, lookup func(string) (string, bool)) (Config, error) {
 }
 
 func ParsePolicy(data []byte) (Policy, error) {
-	policy := Policy{Overrides: map[string]RuleOverride{}}
+	type storedPolicy Policy
+	policy := storedPolicy{Overrides: map[string]RuleOverride{}}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&policy); err != nil {
@@ -165,10 +217,11 @@ func ParsePolicy(data []byte) (Policy, error) {
 		}
 		return Policy{}, fmt.Errorf("decode policy: %w", err)
 	}
-	if err := ValidatePolicy(policy); err != nil {
+	result := Policy(policy)
+	if err := ValidatePolicy(result); err != nil {
 		return Policy{}, err
 	}
-	return policy, nil
+	return result, nil
 }
 
 func MarshalPolicy(policy Policy) ([]byte, error) {
@@ -183,13 +236,35 @@ func defaults() Config {
 			RequestTimeout:    Duration{5 * time.Second},
 			MaxObservationGap: Duration{75 * time.Second},
 		},
-		Policy: Policy{Overrides: map[string]RuleOverride{}},
+		Policy: DefaultPolicy(),
 		Enforcement: Enforcement{
 			KickRetryInitial: Duration{15 * time.Second},
 			KickRetryMax:     Duration{5 * time.Minute},
 		},
 		HTTP:    HTTP{Listen: "0.0.0.0:8080"},
 		Storage: Storage{Path: "/data/guard.db"},
+	}
+}
+
+func DefaultPolicy() Policy {
+	return Policy{
+		Timezone: "Asia/Shanghai",
+		Default: Rule{
+			Enabled:             false,
+			Strategy:            "fixed_window",
+			Period:              "daily",
+			ResetAt:             "04:00",
+			Limit:               Duration{2 * time.Hour},
+			CooldownEvery:       Duration{2 * time.Hour},
+			CooldownRest:        Duration{30 * time.Minute},
+			CreditRecoverEvery:  Duration{time.Hour},
+			CreditRecoverAmount: Duration{30 * time.Minute},
+			CreditMax:           Duration{3 * time.Hour},
+			WarningBefore: []Duration{
+				{30 * time.Minute}, {10 * time.Minute}, {5 * time.Minute}, {time.Minute},
+			},
+		},
+		Overrides: map[string]RuleOverride{},
 	}
 }
 

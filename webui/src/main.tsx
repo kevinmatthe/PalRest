@@ -6,7 +6,6 @@ import {
   CircleGauge,
   Clock3,
   Database,
-  LogIn,
   LogOut,
   RefreshCw,
   Search,
@@ -27,10 +26,13 @@ import {
   type AdminSession,
   type HealthStatus,
   type Player,
+  type PolicyDocument,
   type Policies,
   type PollStatus,
 } from './api';
 import { formatDateTime, formatDuration, formatExactDateTime, percent, titleCase } from './utils';
+import { AdminLoginModal } from './components/AdminLoginModal';
+import { PolicyManager } from './components/PolicyManager';
 import './styles.css';
 
 type DashboardData = {
@@ -54,6 +56,7 @@ function App() {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [manualRefreshKey, setManualRefreshKey] = useState(0);
   const [adminBusy, setAdminBusy] = useState(false);
+  const [view, setView] = useState<'dashboard' | 'policy'>('dashboard');
 
   useEffect(() => {
     let mounted = true;
@@ -127,6 +130,7 @@ function App() {
     setAdminBusy(true);
     try {
       await logoutAdmin();
+      setView('dashboard');
       refresh();
     } finally {
       setAdminBusy(false);
@@ -141,7 +145,7 @@ function App() {
       setAdminBusy(false);
     }
   };
-  const onSavePolicies = async (next: Omit<Policies, 'version'>) => {
+  const onSavePolicies = async (next: PolicyDocument) => {
     setAdminBusy(true);
     try {
       await savePolicies(next);
@@ -159,6 +163,7 @@ function App() {
           <h1>Palworld playtime control</h1>
         </div>
         <div className="topbar-actions">
+          {data?.admin.authenticated && view === 'dashboard' && <button className="text-button" type="button" onClick={() => setView('policy')}><Shield size={16} />Manage policy</button>}
           <AdminLogin session={data?.admin} busy={adminBusy} onLogin={onLogin} onLogout={onLogout} />
           <StatusPill state={serviceState} />
           <button className="icon-button" type="button" onClick={refresh} title="Refresh now">
@@ -174,6 +179,9 @@ function App() {
         </section>
       )}
 
+      {view === 'policy' && data?.admin.authenticated ? (
+        <PolicyManager policies={data.policies} players={data.players} busy={adminBusy} onSave={onSavePolicies} onBack={() => setView('dashboard')} />
+      ) : <>
       <section className="status-grid" aria-label="Service status">
         <MetricCard icon={<Users size={20} />} label="Online players" value={activePlayers.toString()} detail={`API reports ${data?.status.online_count ?? 0}`} />
         <MetricCard icon={<CircleGauge size={20} />} label="Near limit" value={atRiskPlayers.toString()} detail="10 minutes or less" tone={atRiskPlayers > 0 ? 'warn' : 'ok'} />
@@ -272,9 +280,7 @@ function App() {
                 <p className="empty-copy">No per-user overrides configured.</p>
               )}
             </div>
-            {data?.admin.authenticated && (
-              <PolicyEditor policies={data.policies} busy={adminBusy} onSave={onSavePolicies} />
-            )}
+            {data?.admin.authenticated && <button className="text-button manage-policy-button" type="button" onClick={() => setView('policy')}>Manage policies</button>}
           </section>
 
           <section className="panel">
@@ -311,6 +317,7 @@ function App() {
           </section>
         </aside>
       </section>
+      </>}
     </main>
   );
 }
@@ -372,9 +379,7 @@ function AdminLogin({
   onLogin: (username: string, password: string) => Promise<void>;
   onLogout: () => Promise<void>;
 }) {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [open, setOpen] = useState(false);
 
   if (!session?.enabled) {
     return <span className="status-pill">Read only</span>;
@@ -389,63 +394,10 @@ function AdminLogin({
     );
   }
 
-  return (
-    <form
-      className="login-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        setError('');
-        void onLogin(username, password).catch((err: unknown) => {
-          setError(err instanceof Error ? err.message : 'Login failed');
-        });
-      }}
-    >
-      <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Admin" />
-      <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password" type="password" />
-      <button className="icon-button" type="submit" disabled={busy} title={error || 'Log in'}>
-        <LogIn size={16} />
-      </button>
-    </form>
-  );
-}
-
-function PolicyEditor({
-  policies,
-  busy,
-  onSave,
-}: {
-  policies: Policies;
-  busy: boolean;
-  onSave: (next: Omit<Policies, 'version'>) => Promise<void>;
-}) {
-  const [text, setText] = useState(() => JSON.stringify({ timezone: policies.timezone, default: policies.default, overrides: policies.overrides }, null, 2));
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    setText(JSON.stringify({ timezone: policies.timezone, default: policies.default, overrides: policies.overrides }, null, 2));
-  }, [policies]);
-
-  return (
-    <form
-      className="policy-editor"
-      onSubmit={(event) => {
-        event.preventDefault();
-        setError('');
-        try {
-          const next = JSON.parse(text) as Omit<Policies, 'version'>;
-          void onSave(next).catch((err: unknown) => setError(err instanceof Error ? err.message : 'Save failed'));
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'Invalid JSON');
-        }
-      }}
-    >
-      <textarea value={text} onChange={(event) => setText(event.target.value)} spellCheck={false} />
-      <button className="text-button" type="submit" disabled={busy}>
-        Save policy
-      </button>
-      {error && <p className="form-error">{error}</p>}
-    </form>
-  );
+  return <>
+    <button className="text-button" type="button" disabled={busy} onClick={() => setOpen(true)}>Administrator login</button>
+    <AdminLoginModal open={open} busy={busy} onClose={() => setOpen(false)} onLogin={onLogin} />
+  </>;
 }
 
 function PlayerTable({
