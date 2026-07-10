@@ -1,0 +1,280 @@
+package guard
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/policy"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
+)
+
+type WarningDecision struct {
+	UserID     string
+	PlayerName string
+	Period     domain.Period
+	Threshold  time.Duration
+	Remaining  time.Duration
+}
+
+type KickDecision struct {
+	UserID     string
+	PlayerName string
+	Period     domain.Period
+	ResetAt    time.Time
+	Generation int64
+}
+
+type Decisions struct {
+	Warnings []WarningDecision
+	Kicks    []KickDecision
+}
+
+type observation struct {
+	at         time.Time
+	accounting bool
+	generation int64
+}
+
+type retryState struct {
+	attempts int
+	next     time.Time
+}
+
+type Service struct {
+	mu               sync.Mutex
+	repo             *store.Repository
+	policies         *policy.Service
+	maxGap           time.Duration
+	retryInitial     time.Duration
+	retryMax         time.Duration
+	observed         map[string]observation
+	generations      map[string]int64
+	kickedGeneration map[string]int64
+	kickRetries      map[string]retryState
+	snapshots        map[string]domain.PlayerSnapshot
+}
+
+func New(repo *store.Repository, policies *policy.Service, maxGap, retryInitial, retryMax time.Duration) *Service {
+	return &Service{
+		repo:             repo,
+		policies:         policies,
+		maxGap:           maxGap,
+		retryInitial:     retryInitial,
+		retryMax:         retryMax,
+		observed:         make(map[string]observation),
+		generations:      make(map[string]int64),
+		kickedGeneration: make(map[string]int64),
+		kickRetries:      make(map[string]retryState),
+		snapshots:        make(map[string]domain.PlayerSnapshot),
+	}
+}
+
+func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.Player) (Decisions, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now = now.UTC()
+	online := make(map[string]bool, len(players))
+	for _, player := range players {
+		online[player.UserID] = true
+	}
+	for userID := range s.observed {
+		if !online[userID] {
+			delete(s.observed, userID)
+			if snapshot, ok := s.snapshots[userID]; ok {
+				snapshot.Online = false
+				s.snapshots[userID] = snapshot
+			}
+		}
+	}
+
+	var decisions Decisions
+	err := s.repo.WithTx(ctx, func(tx *store.Tx) error {
+		for _, player := range players {
+			if player.UserID == "" {
+				return fmt.Errorf("online player has empty user ID")
+			}
+			player.LastOnline = now
+			if err := tx.UpsertPlayer(player, now); err != nil {
+				return err
+			}
+			rule := s.policies.Resolve(player.UserID)
+			period := s.policies.Period(rule, now)
+			previous, continuous := s.observed[player.UserID]
+			if !continuous {
+				s.generations[player.UserID]++
+			}
+			generation := s.generations[player.UserID]
+			if continuous && previous.accounting && rule.Enabled {
+				gap := now.Sub(previous.at)
+				if gap >= 0 && gap <= s.maxGap {
+					if err := s.addInterval(tx, player.UserID, rule, previous.at, now); err != nil {
+						return err
+					}
+				}
+			}
+			s.observed[player.UserID] = observation{at: now, accounting: rule.Enabled, generation: generation}
+			used, err := tx.Usage(player.UserID, period.Key)
+			if errors.Is(err, store.ErrNotFound) {
+				used = 0
+			} else if err != nil {
+				return err
+			}
+			remaining := rule.Limit - used
+			if remaining < 0 {
+				remaining = 0
+			}
+			if rule.Enabled && used >= rule.Limit {
+				key := retryKey(player.UserID, period.Key, generation)
+				retry := s.kickRetries[key]
+				if s.kickedGeneration[player.UserID] != generation && (retry.next.IsZero() || !now.Before(retry.next)) {
+					decisions.Kicks = append(decisions.Kicks, KickDecision{UserID: player.UserID, PlayerName: player.Name, Period: period, ResetAt: period.End, Generation: generation})
+				}
+			} else if rule.Enabled {
+				for i := len(rule.WarningBefore) - 1; i >= 0; i-- {
+					threshold := rule.WarningBefore[i]
+					if remaining <= threshold {
+						created, err := tx.EnsureWarning(player.UserID, period.Key, threshold, now)
+						if err != nil {
+							return err
+						}
+						shouldSend := created
+						if !created {
+							event, err := tx.Warning(player.UserID, period.Key, threshold)
+							if err != nil {
+								return err
+							}
+							shouldSend = event.Status == "failure" && !now.Before(event.NextAttempt)
+							if event.Status == "pending" {
+								shouldSend = !now.Before(event.UpdatedAt.Add(s.retryInitial))
+							}
+						}
+						if shouldSend {
+							decisions.Warnings = append(decisions.Warnings, WarningDecision{UserID: player.UserID, PlayerName: player.Name, Period: period, Threshold: threshold, Remaining: remaining})
+						}
+						break
+					}
+				}
+			}
+			s.snapshots[player.UserID] = domain.PlayerSnapshot{Player: player, Policy: rule, Period: period, Used: used, Remaining: remaining, Online: true}
+		}
+		return nil
+	})
+	if err != nil {
+		return Decisions{}, err
+	}
+	return decisions, nil
+}
+
+func (s *Service) RecordWarningResult(ctx context.Context, decision WarningDecision, resultErr error, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.repo.WithTx(ctx, func(tx *store.Tx) error {
+		event, err := tx.Warning(decision.UserID, decision.Period.Key, decision.Threshold)
+		if err != nil {
+			return err
+		}
+		status := "success"
+		errorSummary := ""
+		var next time.Time
+		if resultErr != nil {
+			status = "failure"
+			errorSummary = sanitizeError(resultErr)
+			delay := s.retryInitial
+			for i := 0; i < event.Attempts && delay < s.retryMax; i++ {
+				delay *= 2
+				if delay > s.retryMax {
+					delay = s.retryMax
+				}
+			}
+			next = now.Add(delay)
+		}
+		return tx.UpdateWarningResult(decision.UserID, decision.Period.Key, decision.Threshold, status, errorSummary, next, now)
+	})
+}
+
+func (s *Service) addInterval(tx *store.Tx, userID string, rule domain.ResolvedPolicy, start, end time.Time) error {
+	for cursor := start; cursor.Before(end); {
+		period := s.policies.Period(rule, cursor)
+		segmentEnd := end
+		if period.End.Before(segmentEnd) {
+			segmentEnd = period.End
+		}
+		if !segmentEnd.After(cursor) {
+			return fmt.Errorf("non-advancing period boundary at %s", cursor)
+		}
+		if _, err := tx.AddUsage(userID, period, segmentEnd.Sub(cursor), end); err != nil {
+			return err
+		}
+		cursor = segmentEnd
+	}
+	return nil
+}
+
+func (s *Service) PollFailed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observed = make(map[string]observation)
+	for userID, snapshot := range s.snapshots {
+		snapshot.Online = false
+		s.snapshots[userID] = snapshot
+	}
+}
+
+func (s *Service) RecordKickResult(ctx context.Context, decision KickDecision, resultErr error, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := "success"
+	errorSummary := ""
+	key := retryKey(decision.UserID, decision.Period.Key, decision.Generation)
+	if resultErr == nil {
+		s.kickedGeneration[decision.UserID] = decision.Generation
+		delete(s.kickRetries, key)
+	} else {
+		result = "failure"
+		errorSummary = sanitizeError(resultErr)
+		retry := s.kickRetries[key]
+		retry.attempts++
+		delay := s.retryInitial
+		for i := 1; i < retry.attempts && delay < s.retryMax; i++ {
+			delay *= 2
+			if delay > s.retryMax {
+				delay = s.retryMax
+			}
+		}
+		retry.next = now.Add(delay)
+		s.kickRetries[key] = retry
+	}
+	return s.repo.WithTx(ctx, func(tx *store.Tx) error {
+		return tx.AppendEnforcement(store.EnforcementEvent{
+			UserID: decision.UserID, PeriodKey: decision.Period.Key, Action: "kick", Result: result,
+			Generation: decision.Generation, ErrorSummary: errorSummary, CreatedAt: now,
+		})
+	})
+}
+
+func (s *Service) Snapshots() []domain.PlayerSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]domain.PlayerSnapshot, 0, len(s.snapshots))
+	for _, snapshot := range s.snapshots {
+		result = append(result, snapshot)
+	}
+	return result
+}
+
+func retryKey(userID, periodKey string, generation int64) string {
+	return fmt.Sprintf("%s|%s|%d", userID, periodKey, generation)
+}
+
+func sanitizeError(err error) string {
+	const max = 500
+	message := err.Error()
+	if len(message) > max {
+		message = message[:max]
+	}
+	return message
+}

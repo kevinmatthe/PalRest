@@ -33,6 +33,17 @@ type EnforcementEvent struct {
 	CreatedAt    time.Time
 }
 
+type WarningEvent struct {
+	UserID      string
+	PeriodKey   string
+	Threshold   time.Duration
+	Status      string
+	Attempts    int
+	NextAttempt time.Time
+	LastError   string
+	UpdatedAt   time.Time
+}
+
 func Open(ctx context.Context, path string) (*Repository, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
@@ -128,6 +139,18 @@ ON CONFLICT(user_id, period_key) DO UPDATE SET
 	return time.Duration(usedMS) * time.Millisecond, nil
 }
 
+func (tx *Tx) Usage(userID, periodKey string) (time.Duration, error) {
+	var usedMS int64
+	err := tx.tx.QueryRow(`SELECT used_ms FROM usage_periods WHERE user_id=? AND period_key=?`, userID, periodKey).Scan(&usedMS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read transaction usage: %w", err)
+	}
+	return time.Duration(usedMS) * time.Millisecond, nil
+}
+
 func (tx *Tx) EnsureWarning(userID, periodKey string, threshold time.Duration, now time.Time) (bool, error) {
 	result, err := tx.tx.Exec(`
 INSERT OR IGNORE INTO warning_events(user_id, period_key, threshold_ms, created_at, updated_at)
@@ -137,6 +160,53 @@ VALUES(?, ?, ?, ?, ?)`, userID, periodKey, threshold.Milliseconds(), formatTime(
 	}
 	rows, err := result.RowsAffected()
 	return rows == 1, err
+}
+
+func (tx *Tx) Warning(userID, periodKey string, threshold time.Duration) (WarningEvent, error) {
+	var event WarningEvent
+	var thresholdMS int64
+	var nextAttempt sql.NullString
+	var updated string
+	err := tx.tx.QueryRow(`
+SELECT user_id, period_key, threshold_ms, status, attempts, next_attempt, last_error, updated_at
+FROM warning_events WHERE user_id=? AND period_key=? AND threshold_ms=?`, userID, periodKey, threshold.Milliseconds()).
+		Scan(&event.UserID, &event.PeriodKey, &thresholdMS, &event.Status, &event.Attempts, &nextAttempt, &event.LastError, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WarningEvent{}, ErrNotFound
+	}
+	if err != nil {
+		return WarningEvent{}, fmt.Errorf("read warning: %w", err)
+	}
+	event.Threshold = time.Duration(thresholdMS) * time.Millisecond
+	event.UpdatedAt, err = parseTime(updated)
+	if err != nil {
+		return WarningEvent{}, err
+	}
+	if nextAttempt.Valid {
+		event.NextAttempt, err = parseTime(nextAttempt.String)
+	}
+	return event, err
+}
+
+func (tx *Tx) UpdateWarningResult(userID, periodKey string, threshold time.Duration, status, errorSummary string, nextAttempt, now time.Time) error {
+	var next any
+	if !nextAttempt.IsZero() {
+		next = formatTime(nextAttempt)
+	}
+	result, err := tx.tx.Exec(`
+UPDATE warning_events SET status=?, attempts=attempts+1, next_attempt=?, last_error=?, updated_at=?
+WHERE user_id=? AND period_key=? AND threshold_ms=?`, status, next, errorSummary, formatTime(now), userID, periodKey, threshold.Milliseconds())
+	if err != nil {
+		return fmt.Errorf("update warning result: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (tx *Tx) AppendEnforcement(event EnforcementEvent) error {
