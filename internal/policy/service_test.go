@@ -120,3 +120,17 @@ func TestPeriodKeyDoesNotChangeWhenOnlyLimitChanges(t *testing.T) {
 		t.Fatal("limit changes must preserve current usage period")
 	}
 }
+
+func TestPolicyRevisionChangesWhenLimitChanges(t *testing.T) {
+	svc, _ := New(basePolicy())
+	first := svc.Resolve("steam_1")
+	cfg := basePolicy()
+	cfg.Default.Limit = duration(3 * time.Hour)
+	if err := svc.Update(cfg); err != nil {
+		t.Fatal(err)
+	}
+	second := svc.Resolve("steam_1")
+	if first.Revision == second.Revision {
+		t.Fatal("limit change must produce a new enforcement policy revision")
+	}
+}

@@ -21,11 +21,12 @@ type WarningDecision struct {
 }
 
 type KickDecision struct {
-	UserID     string
-	PlayerName string
-	Period     domain.Period
-	ResetAt    time.Time
-	Generation int64
+	UserID         string
+	PlayerName     string
+	Period         domain.Period
+	ResetAt        time.Time
+	Generation     int64
+	PolicyRevision string
 }
 
 type Decisions struct {
@@ -44,7 +45,7 @@ type Repository interface {
 	Player(context.Context, string) (domain.Player, error)
 	Usage(context.Context, string, string) (domain.Usage, error)
 	WarningEvents(context.Context, string, string) ([]store.WarningEvent, error)
-	EnforcementEvents(context.Context, string, string) ([]store.EnforcementEvent, error)
+	EnforcementEventsForPolicy(context.Context, string, string, string) ([]store.EnforcementEvent, error)
 }
 
 type Service struct {
@@ -131,8 +132,8 @@ func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.P
 				remaining = 0
 			}
 			if rule.Enabled && used >= rule.Limit {
-				key := retryKey(player.UserID, period.Key, generation)
-				retry, err := tx.EnforcementRetry(player.UserID, period.Key)
+				key := retryKey(player.UserID, period.Key, rule.Revision, generation)
+				retry, err := tx.EnforcementRetry(player.UserID, period.Key, rule.Revision)
 				if err != nil {
 					return err
 				}
@@ -141,7 +142,7 @@ func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.P
 					retryReady = !now.Before(retry.LastAttempt.Add(s.retryDelay(retry.Attempts)))
 				}
 				if !s.kickedConnections[key] && retryReady {
-					decisions.Kicks = append(decisions.Kicks, KickDecision{UserID: player.UserID, PlayerName: player.Name, Period: period, ResetAt: period.End, Generation: generation})
+					decisions.Kicks = append(decisions.Kicks, KickDecision{UserID: player.UserID, PlayerName: player.Name, Period: period, ResetAt: period.End, Generation: generation, PolicyRevision: rule.Revision})
 				}
 			} else if rule.Enabled {
 				for i := len(rule.WarningBefore) - 1; i >= 0; i-- {
@@ -244,19 +245,24 @@ func (s *Service) RecordKickResult(ctx context.Context, decision KickDecision, r
 	defer s.mu.Unlock()
 	result := "success"
 	errorSummary := ""
-	key := retryKey(decision.UserID, decision.Period.Key, decision.Generation)
-	if resultErr == nil {
-		s.kickedConnections[key] = true
-	} else {
+	key := retryKey(decision.UserID, decision.Period.Key, decision.PolicyRevision, decision.Generation)
+	if resultErr != nil {
 		result = "failure"
 		errorSummary = sanitizeError(resultErr)
 	}
-	return s.repo.WithTx(ctx, func(tx *store.Tx) error {
+	err := s.repo.WithTx(ctx, func(tx *store.Tx) error {
 		return tx.AppendEnforcement(store.EnforcementEvent{
 			UserID: decision.UserID, PeriodKey: decision.Period.Key, Action: "kick", Result: result,
-			Generation: decision.Generation, ErrorSummary: errorSummary, CreatedAt: now,
+			PolicyRevision: decision.PolicyRevision, Generation: decision.Generation, ErrorSummary: errorSummary, CreatedAt: now,
 		})
 	})
+	if err != nil {
+		return err
+	}
+	if resultErr == nil {
+		s.kickedConnections[key] = true
+	}
+	return nil
 }
 
 func (s *Service) retryDelay(attempts int) time.Duration {
@@ -310,9 +316,11 @@ func (s *Service) Snapshot(ctx context.Context, userID string) (domain.PlayerSna
 		if err != nil {
 			return domain.PlayerSnapshot{}, err
 		}
-		rule := s.policies.Resolve(userID)
-		snapshot = domain.PlayerSnapshot{Player: player, Policy: rule, Period: s.policies.Period(rule, now), Online: false}
+		snapshot = domain.PlayerSnapshot{Player: player, Online: false}
 	}
+	rule := s.policies.Resolve(userID)
+	snapshot.Policy = rule
+	snapshot.Period = s.policies.Period(rule, now)
 	usage, err := s.repo.Usage(ctx, userID, snapshot.Period.Key)
 	if errors.Is(err, store.ErrNotFound) {
 		snapshot.Used = 0
@@ -335,7 +343,7 @@ func (s *Service) Snapshot(ctx context.Context, userID string) (domain.PlayerSna
 			Threshold: warning.Threshold, Status: warning.Status, Attempts: warning.Attempts, NextAttempt: warning.NextAttempt,
 		})
 	}
-	events, err := s.repo.EnforcementEvents(ctx, userID, snapshot.Period.Key)
+	events, err := s.repo.EnforcementEventsForPolicy(ctx, userID, snapshot.Period.Key, rule.Revision)
 	if err != nil {
 		return domain.PlayerSnapshot{}, err
 	}
@@ -350,8 +358,8 @@ func (s *Service) Snapshot(ctx context.Context, userID string) (domain.PlayerSna
 	return snapshot, nil
 }
 
-func retryKey(userID, periodKey string, generation int64) string {
-	return fmt.Sprintf("%s|%s|%d", userID, periodKey, generation)
+func retryKey(userID, periodKey, policyRevision string, generation int64) string {
+	return fmt.Sprintf("%s|%s|%s|%d", userID, periodKey, policyRevision, generation)
 }
 
 func sanitizeError(err error) string {

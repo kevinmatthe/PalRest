@@ -24,13 +24,14 @@ type Tx struct {
 }
 
 type EnforcementEvent struct {
-	UserID       string
-	PeriodKey    string
-	Action       string
-	Result       string
-	Generation   int64
-	ErrorSummary string
-	CreatedAt    time.Time
+	UserID         string
+	PeriodKey      string
+	Action         string
+	Result         string
+	PolicyRevision string
+	Generation     int64
+	ErrorSummary   string
+	CreatedAt      time.Time
 }
 
 type WarningEvent struct {
@@ -216,19 +217,19 @@ WHERE user_id=? AND period_key=? AND threshold_ms=?`, status, next, errorSummary
 
 func (tx *Tx) AppendEnforcement(event EnforcementEvent) error {
 	_, err := tx.tx.Exec(`
-INSERT INTO enforcement_events(user_id, period_key, action, result, generation, error_summary, created_at)
-VALUES(?, ?, ?, ?, ?, ?, ?)`, event.UserID, event.PeriodKey, event.Action, event.Result, event.Generation, event.ErrorSummary, formatTime(event.CreatedAt))
+INSERT INTO enforcement_events(user_id, period_key, action, result, policy_revision, generation, error_summary, created_at)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, event.UserID, event.PeriodKey, event.Action, event.Result, event.PolicyRevision, event.Generation, event.ErrorSummary, formatTime(event.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("append enforcement: %w", err)
 	}
 	return nil
 }
 
-func (tx *Tx) EnforcementRetry(userID, periodKey string) (EnforcementRetry, error) {
+func (tx *Tx) EnforcementRetry(userID, periodKey, policyRevision string) (EnforcementRetry, error) {
 	rows, err := tx.tx.Query(`
 SELECT result, created_at FROM enforcement_events
-WHERE user_id=? AND period_key=? AND action='kick'
-ORDER BY id DESC`, userID, periodKey)
+WHERE user_id=? AND period_key=? AND policy_revision=? AND action='kick'
+ORDER BY id DESC`, userID, periodKey, policyRevision)
 	if err != nil {
 		return EnforcementRetry{}, fmt.Errorf("query enforcement retry: %w", err)
 	}
@@ -300,7 +301,7 @@ func (r *Repository) Player(ctx context.Context, userID string) (domain.Player, 
 
 func (r *Repository) EnforcementEvents(ctx context.Context, userID, periodKey string) ([]EnforcementEvent, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT user_id, period_key, action, result, generation, error_summary, created_at
+SELECT user_id, period_key, action, result, policy_revision, generation, error_summary, created_at
 FROM enforcement_events WHERE user_id=? AND period_key=? ORDER BY id`, userID, periodKey)
 	if err != nil {
 		return nil, fmt.Errorf("query enforcement events: %w", err)
@@ -310,7 +311,31 @@ FROM enforcement_events WHERE user_id=? AND period_key=? ORDER BY id`, userID, p
 	for rows.Next() {
 		var event EnforcementEvent
 		var created string
-		if err := rows.Scan(&event.UserID, &event.PeriodKey, &event.Action, &event.Result, &event.Generation, &event.ErrorSummary, &created); err != nil {
+		if err := rows.Scan(&event.UserID, &event.PeriodKey, &event.Action, &event.Result, &event.PolicyRevision, &event.Generation, &event.ErrorSummary, &created); err != nil {
+			return nil, err
+		}
+		event.CreatedAt, err = parseTime(created)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (r *Repository) EnforcementEventsForPolicy(ctx context.Context, userID, periodKey, policyRevision string) ([]EnforcementEvent, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT user_id, period_key, action, result, policy_revision, generation, error_summary, created_at
+FROM enforcement_events WHERE user_id=? AND period_key=? AND policy_revision=? ORDER BY id`, userID, periodKey, policyRevision)
+	if err != nil {
+		return nil, fmt.Errorf("query policy enforcement events: %w", err)
+	}
+	defer rows.Close()
+	var events []EnforcementEvent
+	for rows.Next() {
+		var event EnforcementEvent
+		var created string
+		if err := rows.Scan(&event.UserID, &event.PeriodKey, &event.Action, &event.Result, &event.PolicyRevision, &event.Generation, &event.ErrorSummary, &created); err != nil {
 			return nil, err
 		}
 		event.CreatedAt, err = parseTime(created)

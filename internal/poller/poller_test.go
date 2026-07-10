@@ -122,6 +122,27 @@ func TestRunNeverOverlapsSlowCycles(t *testing.T) {
 	<-done
 }
 
+func TestRunAllowsActiveCycleToFinishAfterStop(t *testing.T) {
+	client := &blockingClient{entered: make(chan struct{}, 1), release: make(chan struct{}, 1)}
+	p, _ := New(client, &fakeGuard{}, time.Minute, "warning", "kick", time.Now)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); p.Run(ctx) }()
+	<-client.entered
+	cancel()
+	select {
+	case <-done:
+		t.Fatal("active cycle was canceled instead of finishing")
+	case <-time.After(20 * time.Millisecond):
+	}
+	client.release <- struct{}{}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("poller did not stop after active cycle finished")
+	}
+}
+
 func TestApplyConfigWaitsForActiveCycle(t *testing.T) {
 	client := &blockingClient{entered: make(chan struct{}, 1), release: make(chan struct{}, 1)}
 	p, _ := New(client, &fakeGuard{}, time.Minute, "warning", "kick", time.Now)

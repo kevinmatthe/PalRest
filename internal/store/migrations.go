@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS enforcement_events (
     period_key TEXT NOT NULL,
     action TEXT NOT NULL,
     result TEXT NOT NULL,
+    policy_revision TEXT NOT NULL DEFAULT '',
     generation INTEGER NOT NULL DEFAULT 0,
     error_summary TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL

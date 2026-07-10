@@ -69,7 +69,7 @@ func (s *Service) Resolve(userID string) domain.ResolvedPolicy {
 		warnings[i] = warning.Duration
 	}
 	exempt := ok && override.Exempt
-	return domain.ResolvedPolicy{
+	resolved := domain.ResolvedPolicy{
 		Enabled:       rule.Enabled && !exempt,
 		Exempt:        exempt,
 		PeriodType:    rule.Period,
@@ -79,6 +79,25 @@ func (s *Service) Resolve(userID string) domain.ResolvedPolicy {
 		Limit:         rule.Limit.Duration,
 		WarningBefore: warnings,
 	}
+	resolved.Revision = revision(resolved)
+	return resolved
+}
+
+func revision(rule domain.ResolvedPolicy) string {
+	parts := []string{
+		fmt.Sprintf("enabled=%t", rule.Enabled),
+		fmt.Sprintf("exempt=%t", rule.Exempt),
+		"period=" + rule.PeriodType,
+		"timezone=" + rule.Timezone,
+		"reset_at=" + rule.ResetAt,
+		"reset_weekday=" + strings.ToLower(rule.ResetWeekday),
+		fmt.Sprintf("limit=%d", rule.Limit.Nanoseconds()),
+	}
+	for _, warning := range rule.WarningBefore {
+		parts = append(parts, fmt.Sprintf("warning=%d", warning.Nanoseconds()))
+	}
+	hash := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return hex.EncodeToString(hash[:12])
 }
 
 func (s *Service) Period(rule domain.ResolvedPolicy, now time.Time) domain.Period {

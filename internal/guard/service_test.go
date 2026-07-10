@@ -36,8 +36,8 @@ func (r commitErrorRepository) WarningEvents(ctx context.Context, userID, period
 	return r.inner.WarningEvents(ctx, userID, periodKey)
 }
 
-func (r commitErrorRepository) EnforcementEvents(ctx context.Context, userID, periodKey string) ([]store.EnforcementEvent, error) {
-	return r.inner.EnforcementEvents(ctx, userID, periodKey)
+func (r commitErrorRepository) EnforcementEventsForPolicy(ctx context.Context, userID, periodKey, policyRevision string) ([]store.EnforcementEvent, error) {
+	return r.inner.EnforcementEventsForPolicy(ctx, userID, periodKey, policyRevision)
 }
 
 type harness struct {
@@ -236,6 +236,22 @@ func TestOverLimitKickAndReconnectKick(t *testing.T) {
 	}
 }
 
+func TestKickIsNotSuppressedWhenAuditCommitFails(t *testing.T) {
+	h := newHarness(t, time.Minute, 2*time.Minute)
+	h.observe(h.start, player())
+	kickAt := h.start.Add(time.Minute)
+	decision := h.observe(kickAt, player()).Kicks[0]
+	h.service.repo = commitErrorRepository{inner: h.repo}
+	if err := h.service.RecordKickResult(t.Context(), decision, nil, kickAt); err == nil {
+		t.Fatal("expected audit failure")
+	}
+	h.service.repo = h.repo
+	retry := h.observe(kickAt.Add(10*time.Second), player())
+	if len(retry.Kicks) != 1 {
+		t.Fatalf("unpersisted success suppressed retry: %+v", retry.Kicks)
+	}
+}
+
 func TestSuccessfulKickDoesNotSuppressNextPeriod(t *testing.T) {
 	h := newHarness(t, time.Minute, 2*time.Minute)
 	loc, _ := time.LoadLocation("Asia/Shanghai")
@@ -307,6 +323,23 @@ func TestSnapshotRestoresWarningAndEnforcementFromRepository(t *testing.T) {
 	}
 	if snapshot.Enforcement.Status != "success" {
 		t.Fatalf("enforcement=%+v", snapshot.Enforcement)
+	}
+}
+
+func TestSnapshotRecalculatesCurrentPeriodForKnownOfflinePlayer(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, time.Hour)
+	h.observe(h.start, player())
+	h.observe(h.start.Add(30*time.Minute), player())
+	h.observe(h.start.Add(31 * time.Minute))
+	nextDay := h.start.Add(24 * time.Hour)
+	h.service.now = func() time.Time { return nextDay }
+	snapshot, err := h.service.Snapshot(t.Context(), "steam_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPeriod := h.policy.Period(h.policy.Resolve("steam_1"), nextDay)
+	if snapshot.Period.Key != wantPeriod.Key || snapshot.Used != 0 || snapshot.Online {
+		t.Fatalf("snapshot=%+v want period=%+v", snapshot, wantPeriod)
 	}
 }
 

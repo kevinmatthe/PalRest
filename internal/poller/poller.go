@@ -55,7 +55,12 @@ func New(client Client, guardService Guard, interval time.Duration, announceText
 }
 
 func (p *Poller) Run(ctx context.Context) {
-	_ = p.RunOnce(ctx)
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+	p.runScheduledCycle()
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 	for {
@@ -63,9 +68,15 @@ func (p *Poller) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = p.RunOnce(ctx)
+			p.runScheduledCycle()
 		}
 	}
+}
+
+func (p *Poller) runScheduledCycle() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = p.RunOnce(ctx)
 }
 
 func (p *Poller) RunOnce(ctx context.Context) error {

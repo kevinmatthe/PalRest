@@ -11,6 +11,7 @@ type Player struct {
 }
 
 type ResolvedPolicy struct {
+	Revision      string
 	Enabled       bool
 	Exempt        bool
 	PeriodType    string
