@@ -1,0 +1,158 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"reflect"
+	"sync"
+	"time"
+
+	"github.com/kevinmatt/palworld-playtime-guard/internal/api"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/config"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/guard"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/palworld"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/policy"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/poller"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
+)
+
+type App struct {
+	configPath string
+	configMu   sync.RWMutex
+	config     config.Config
+	repo       *store.Repository
+	policies   *policy.Service
+	guard      *guard.Service
+	poller     *poller.Poller
+	httpServer *http.Server
+	closeOnce  sync.Once
+	closeErr   error
+}
+
+func New(configPath string) (*App, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	cfg, err := config.Parse(data, os.LookupEnv)
+	if err != nil {
+		return nil, err
+	}
+	repo, err := store.Open(context.Background(), cfg.Storage.Path)
+	if err != nil {
+		return nil, err
+	}
+	policies, err := policy.New(cfg.Policy)
+	if err != nil {
+		_ = repo.Close()
+		return nil, err
+	}
+	guardService := guard.New(repo, policies, cfg.Server.MaxObservationGap.Duration, cfg.Enforcement.KickRetryInitial.Duration, cfg.Enforcement.KickRetryMax.Duration)
+	client := palworld.New(cfg.Server.BaseURL, cfg.Password(), cfg.Server.RequestTimeout.Duration)
+	poll, err := poller.New(client, guardService, cfg.Server.PollInterval.Duration, cfg.Enforcement.AnnounceMessage, cfg.Enforcement.KickMessage, time.Now)
+	if err != nil {
+		_ = repo.Close()
+		return nil, err
+	}
+	app := &App{configPath: configPath, config: cfg, repo: repo, policies: policies, guard: guardService, poller: poll}
+	apiServer := api.New(repo, poll, guardService, app.CurrentConfig)
+	app.httpServer = apiServer.HTTPServer(cfg.HTTP.Listen)
+	return app, nil
+}
+
+func (a *App) CurrentConfig() config.Config {
+	a.configMu.RLock()
+	defer a.configMu.RUnlock()
+	return a.config
+}
+
+func (a *App) Run(ctx context.Context) error {
+	httpErrors := make(chan error, 1)
+	go func() {
+		err := a.httpServer.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			httpErrors <- fmt.Errorf("serve HTTP: %w", err)
+			return
+		}
+		httpErrors <- nil
+	}()
+	go a.poller.Run(ctx)
+	go a.watchConfig(ctx)
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		shutdownErr := a.httpServer.Shutdown(shutdownCtx)
+		serverErr := <-httpErrors
+		return errors.Join(shutdownErr, serverErr, a.Close())
+	case err := <-httpErrors:
+		return errors.Join(err, a.Close())
+	}
+}
+
+func (a *App) watchConfig(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	var lastMod time.Time
+	var lastSize int64 = -1
+	if info, err := os.Stat(a.configPath); err == nil {
+		lastMod, lastSize = info.ModTime(), info.Size()
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			info, err := os.Stat(a.configPath)
+			if err != nil {
+				a.poller.SetConfigReloadError(err.Error())
+				continue
+			}
+			if info.ModTime() != lastMod || info.Size() != lastSize {
+				lastMod, lastSize = info.ModTime(), info.Size()
+				_ = a.reload()
+			}
+		}
+	}
+}
+
+func (a *App) reload() error {
+	data, err := os.ReadFile(a.configPath)
+	if err != nil {
+		return a.reloadError(fmt.Errorf("read config: %w", err))
+	}
+	next, err := config.Parse(data, os.LookupEnv)
+	if err != nil {
+		return a.reloadError(err)
+	}
+	current := a.CurrentConfig()
+	if !reflect.DeepEqual(current.Server, next.Server) || !reflect.DeepEqual(current.HTTP, next.HTTP) || !reflect.DeepEqual(current.Storage, next.Storage) ||
+		current.Enforcement.KickRetryInitial != next.Enforcement.KickRetryInitial || current.Enforcement.KickRetryMax != next.Enforcement.KickRetryMax {
+		return a.reloadError(fmt.Errorf("server, HTTP, storage, and retry settings require a restart"))
+	}
+	if err := a.policies.Update(next.Policy); err != nil {
+		return a.reloadError(err)
+	}
+	if err := a.poller.UpdateTemplates(next.Enforcement.AnnounceMessage, next.Enforcement.KickMessage); err != nil {
+		return a.reloadError(err)
+	}
+	a.configMu.Lock()
+	a.config = next
+	a.configMu.Unlock()
+	a.poller.SetConfigReloadError("")
+	return nil
+}
+
+func (a *App) reloadError(err error) error {
+	a.poller.SetConfigReloadError(err.Error())
+	return err
+}
+
+func (a *App) Close() error {
+	a.closeOnce.Do(func() { a.closeErr = a.repo.Close() })
+	return a.closeErr
+}

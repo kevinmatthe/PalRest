@@ -69,6 +69,10 @@ func (p *Poller) Run(ctx context.Context) {
 
 func (p *Poller) RunOnce(ctx context.Context) error {
 	now := p.now().UTC()
+	p.mu.RLock()
+	announceTemplate := p.announceTemplate
+	kickTemplate := p.kickTemplate
+	p.mu.RUnlock()
 	p.updateStatus(func(status *domain.PollStatus) { status.LastAttempt = now })
 	players, err := p.client.ListPlayers(ctx)
 	if err != nil {
@@ -89,7 +93,7 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 
 	var effectErrors []error
 	for _, decision := range decisions.Warnings {
-		message, renderErr := render(p.announceTemplate, struct {
+		message, renderErr := render(announceTemplate, struct {
 			PlayerName string
 			Remaining  string
 			ResetAt    string
@@ -106,7 +110,7 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 		}
 	}
 	for _, decision := range decisions.Kicks {
-		message, renderErr := render(p.kickTemplate, struct {
+		message, renderErr := render(kickTemplate, struct {
 			PlayerName string
 			Remaining  string
 			ResetAt    string
@@ -126,6 +130,22 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 		p.setError(err)
 		return err
 	}
+	return nil
+}
+
+func (p *Poller) UpdateTemplates(announceText, kickText string) error {
+	announce, err := template.New("announce").Option("missingkey=error").Parse(announceText)
+	if err != nil {
+		return fmt.Errorf("parse announce template: %w", err)
+	}
+	kick, err := template.New("kick").Option("missingkey=error").Parse(kickText)
+	if err != nil {
+		return fmt.Errorf("parse kick template: %w", err)
+	}
+	p.mu.Lock()
+	p.announceTemplate = announce
+	p.kickTemplate = kick
+	p.mu.Unlock()
 	return nil
 }
 
