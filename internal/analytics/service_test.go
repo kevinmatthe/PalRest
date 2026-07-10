@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,6 +182,27 @@ func TestObserveRejectsNonIncreasingTimestamp(t *testing.T) {
 	}
 	if len(repo.observations) != 1 {
 		t.Fatalf("calls = %d", len(repo.observations))
+	}
+}
+
+func TestObserveRejectsSubMillisecondAdvanceBeforeRecorder(t *testing.T) {
+	repo := &fakeRecorder{}
+	service := New(repo, time.Minute, time.UTC)
+	start := mustTime(t, "2026-07-11T00:00:00Z")
+	if err := service.Observe(t.Context(), start, []domain.Player{{UserID: "u1"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := service.Observe(t.Context(), start.Add(500*time.Microsecond), []domain.Player{{UserID: "u2"}})
+	if err == nil || !strings.Contains(err.Error(), "observation must advance by at least 1ms") {
+		t.Fatalf("error = %v, want minimum advance error", err)
+	}
+	if len(repo.observations) != 1 {
+		t.Fatalf("recorder calls = %d, want 1", len(repo.observations))
+	}
+	ids, asOf := service.Current()
+	if !reflect.DeepEqual(ids, []string{"u1"}) || !asOf.Equal(start) {
+		t.Fatalf("Current = %v, %v; want [u1], %v", ids, asOf, start)
 	}
 }
 

@@ -59,6 +59,9 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 	if !s.lastAt.IsZero() && !at.After(s.lastAt) {
 		return fmt.Errorf("observe analytics: observation time %s must be after %s", at.Format(time.RFC3339Nano), s.lastAt.Format(time.RFC3339Nano))
 	}
+	if !s.lastAt.IsZero() && at.Sub(s.lastAt).Milliseconds() <= 0 {
+		return fmt.Errorf("observe analytics: observation must advance by at least 1ms")
+	}
 
 	joined := differenceIDs(current, s.online)
 	left := differenceIDs(s.online, current)
