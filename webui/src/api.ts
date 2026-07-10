@@ -28,6 +28,8 @@ export type Player = {
   period: string;
   used_ms: number;
   remaining_ms: number;
+  credit_available_ms?: number;
+  last_credit_recovered_ms?: number;
   limit_ms: number;
   period_start: string;
   next_reset: string;
