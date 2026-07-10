@@ -6,9 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	analyticssvc "github.com/kevinmatt/palworld-playtime-guard/internal/analytics"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/config"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
@@ -41,6 +43,38 @@ type fakeAnalyticsOnline struct {
 	at  time.Time
 }
 
+type dynamicAnalyticsOnline struct{ location *time.Location }
+
+func (f *dynamicAnalyticsOnline) Current() ([]string, time.Time) { return nil, time.Time{} }
+func (f *dynamicAnalyticsOnline) SetLocation(location *time.Location) error {
+	f.location = location
+	return nil
+}
+
+type observationRecorder struct{ observations []store.AnalyticsObservation }
+
+func (r *observationRecorder) RecordAnalyticsObservation(_ context.Context, observation store.AnalyticsObservation) error {
+	r.observations = append(r.observations, observation)
+	return nil
+}
+func (*observationRecorder) CleanupAnalytics(context.Context, time.Time, string, int) error {
+	return nil
+}
+
+type mutablePolicies struct {
+	value config.Policy
+	err   error
+}
+
+func (f *mutablePolicies) Policy() config.Policy { return f.value }
+func (f *mutablePolicies) SetPolicy(_ context.Context, value config.Policy) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.value = value
+	return nil
+}
+
 type captureAnalyticsQueries struct {
 	rankingCalls     [][2]string
 	concurrencyCalls [][2]time.Time
@@ -61,7 +95,8 @@ func (f *captureAnalyticsQueries) Player(context.Context, string) (domain.Player
 	return domain.Player{}, store.ErrNotFound
 }
 
-func (f fakeAnalyticsOnline) Current() ([]string, time.Time) { return f.ids, f.at }
+func (f fakeAnalyticsOnline) Current() ([]string, time.Time)   { return f.ids, f.at }
+func (f fakeAnalyticsOnline) SetLocation(*time.Location) error { return nil }
 
 func analyticsServer(q AnalyticsQueries, online AnalyticsOnline) *Server {
 	s := testServer()
@@ -101,6 +136,21 @@ func TestAnalyticsSummaryIncludesCurrentTodayAndPeak(t *testing.T) {
 	}
 	if got.OnlineCount != 1 || !got.AsOf.Equal(peakAt) || got.Today != int64((90*time.Minute)/time.Millisecond) || got.Peak != 3 || got.Active != 1 || len(got.Ranking) != 1 || !got.Ranking[0].Online {
 		t.Fatalf("response=%+v", got)
+	}
+}
+
+func TestAnalyticsSummaryUsesNullAsOfBeforeFirstObservation(t *testing.T) {
+	res := httptest.NewRecorder()
+	analyticsServer(fakeAnalyticsQueries{}, fakeAnalyticsOnline{}).Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/summary", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got["as_of"]) != "null" {
+		t.Fatalf("as_of=%s body=%s", got["as_of"], res.Body.String())
 	}
 }
 
@@ -240,4 +290,73 @@ func TestAnalyticsActivityFallBackDSTProducesOrderedNullGaps(t *testing.T) {
 			t.Fatalf("unordered points at %d", i)
 		}
 	}
+}
+
+func TestPolicyTimezoneChangeUpdatesAnalyticsAndSubsequentQueryBounds(t *testing.T) {
+	q := &captureAnalyticsQueries{}
+	recorder := &observationRecorder{}
+	analyticsService := analyticssvc.New(recorder, time.Hour, mustLocation(t, "Asia/Shanghai"))
+	policy := config.DefaultPolicy()
+	policies := &mutablePolicies{value: policy}
+	s := testServer()
+	s.analytics, s.analyticsOnline, s.policies = q, analyticsService, policies
+	s.now = func() time.Time { return time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC) }
+	s.auth = newAdminAuth("admin", "secret")
+	login := httptest.NewRecorder()
+	s.Handler().ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/api/v1/admin/login", strings.NewReader(`{"username":"admin","password":"secret"}`)))
+	payload := policyPayload{Timezone: "UTC", Default: toRuleDTO(policy.Default), Overrides: map[string]overrideDTO{}}
+	body, _ := json.Marshal(payload)
+	put := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/policies", strings.NewReader(string(body)))
+	req.AddCookie(login.Result().Cookies()[0])
+	s.Handler().ServeHTTP(put, req)
+	if put.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", put.Code, put.Body.String())
+	}
+	if err := analyticsService.Observe(t.Context(), time.Date(2026, 7, 8, 16, 30, 0, 0, time.UTC), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.observations) != 1 || recorder.observations[0].LocalDate != "2026-07-08" {
+		t.Fatalf("observations=%+v; timezone change must apply prospectively", recorder.observations)
+	}
+
+	for _, path := range []string{"/api/v1/analytics/summary", "/api/v1/analytics/activity"} {
+		res := httptest.NewRecorder()
+		s.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+		if res.Code != http.StatusOK {
+			t.Fatalf("%s code=%d body=%s", path, res.Code, res.Body.String())
+		}
+	}
+	if len(q.concurrencyCalls) != 2 || q.concurrencyCalls[0][0].Format(time.RFC3339) != "2026-07-08T00:00:00Z" || q.concurrencyCalls[1][0].Format(time.RFC3339) != "2026-07-02T00:00:00Z" {
+		t.Fatalf("concurrency calls=%v", q.concurrencyCalls)
+	}
+}
+
+func TestFailedPolicySaveDoesNotChangeAnalyticsLocation(t *testing.T) {
+	policy := config.DefaultPolicy()
+	recorder := &dynamicAnalyticsOnline{location: mustLocation(t, "Asia/Shanghai")}
+	s := testServer()
+	s.analyticsOnline = recorder
+	s.policies = &mutablePolicies{value: policy, err: errors.New("save failed")}
+	s.auth = newAdminAuth("admin", "secret")
+	login := httptest.NewRecorder()
+	s.Handler().ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/api/v1/admin/login", strings.NewReader(`{"username":"admin","password":"secret"}`)))
+	payload := policyPayload{Timezone: "UTC", Default: toRuleDTO(policy.Default), Overrides: map[string]overrideDTO{}}
+	body, _ := json.Marshal(payload)
+	put := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/policies", strings.NewReader(string(body)))
+	req.AddCookie(login.Result().Cookies()[0])
+	s.Handler().ServeHTTP(put, req)
+	if put.Code != http.StatusBadRequest || recorder.location.String() != "Asia/Shanghai" {
+		t.Fatalf("code=%d location=%v body=%s", put.Code, recorder.location, put.Body.String())
+	}
+}
+
+func mustLocation(t *testing.T, name string) *time.Location {
+	t.Helper()
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loc
 }

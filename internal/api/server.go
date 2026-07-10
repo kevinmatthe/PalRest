@@ -38,6 +38,7 @@ type AnalyticsQueries interface {
 
 type AnalyticsOnline interface {
 	Current() ([]string, time.Time)
+	SetLocation(*time.Location) error
 }
 
 type Policies interface {
@@ -271,8 +272,19 @@ func (s *Server) putPolicies(w http.ResponseWriter, r *http.Request) {
 	if policy.Overrides == nil {
 		policy.Overrides = map[string]config.RuleOverride{}
 	}
+	location, err := time.LoadLocation(policy.Timezone)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_policy", err.Error())
+		return
+	}
 	if err := s.policies.SetPolicy(r.Context(), policy); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_policy", err.Error())
+		return
+	}
+	// Analytics daily rows retain their original calendar dates. The new
+	// timezone applies prospectively to observations recorded after this save.
+	if err := s.analyticsOnline.SetLocation(location); err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "could not update analytics timezone")
 		return
 	}
 	writeJSON(w, http.StatusOK, policyResponse(s.config().Version, policy))

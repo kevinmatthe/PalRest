@@ -94,6 +94,28 @@ func TestNewRejectsInvalidInputs(t *testing.T) {
 	}
 }
 
+func TestSetLocationAppliesProspectivelyWithoutRebucketingHistory(t *testing.T) {
+	shanghai, _ := time.LoadLocation("Asia/Shanghai")
+	repo := &fakeRecorder{}
+	s := New(repo, time.Hour, shanghai)
+	first := mustTime(t, "2026-07-11T16:30:00Z")
+	if err := s.Observe(t.Context(), first, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLocation(nil); err == nil {
+		t.Fatal("SetLocation(nil) succeeded")
+	}
+	if err := s.SetLocation(time.UTC); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Observe(t.Context(), first.Add(30*time.Minute), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{repo.observations[0].LocalDate, repo.observations[1].LocalDate}; !reflect.DeepEqual(got, []string{"2026-07-12", "2026-07-11"}) {
+		t.Fatalf("local dates=%v; timezone changes must not rebucket historical rows", got)
+	}
+}
+
 func TestObserveFirstObservationJoinsEveryoneWithoutInterval(t *testing.T) {
 	repo := &fakeRecorder{}
 	location, err := time.LoadLocation("Asia/Shanghai")

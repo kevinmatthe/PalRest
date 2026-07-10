@@ -91,15 +91,29 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 	s.lastAt = at
 	s.online = current
 	doCleanup := s.lastCleanup.IsZero() || at.Sub(s.lastCleanup) >= 24*time.Hour
+	cleanupDate := ""
 	if doCleanup {
 		s.lastCleanup = at
+		cleanupDate = at.In(s.location).AddDate(0, 0, -90).Format(time.DateOnly)
 	}
 	s.mu.Unlock()
 	if doCleanup {
-		if err := s.repo.CleanupAnalytics(ctx, at.AddDate(0, 0, -90), at.In(s.location).AddDate(0, 0, -90).Format(time.DateOnly), 500); err != nil {
+		if err := s.repo.CleanupAnalytics(ctx, at.AddDate(0, 0, -90), cleanupDate, 500); err != nil {
 			slog.Warn("cleanup analytics failed", "error", err)
 		}
 	}
+	return nil
+}
+
+// SetLocation changes the calendar timezone used by future observations.
+// Existing daily rows retain the timezone in which they were recorded.
+func (s *Service) SetLocation(location *time.Location) error {
+	if location == nil {
+		return fmt.Errorf("set analytics location: location is nil")
+	}
+	s.mu.Lock()
+	s.location = location
+	s.mu.Unlock()
 	return nil
 }
 

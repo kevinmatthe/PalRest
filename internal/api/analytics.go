@@ -66,6 +66,11 @@ func (s *Server) getAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ids, asOf := s.analyticsOnline.Current()
+	var asOfJSON *time.Time
+	if !asOf.IsZero() {
+		value := asOf.UTC()
+		asOfJSON = &value
+	}
 	online := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		online[id] = true
@@ -90,7 +95,7 @@ func (s *Server) getAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
 			peakAt = &v
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"online_count": len(ids), "as_of": asOf, "today_observed_ms": observed, "peak_count": peak, "peak_at": peakAt, "active_players": len(todayRows), "ranking_period": period, "ranking": items})
+	writeJSON(w, http.StatusOK, map[string]any{"online_count": len(ids), "as_of": asOfJSON, "today_observed_ms": observed, "peak_count": peak, "peak_at": peakAt, "active_players": len(todayRows), "ranking_period": period, "ranking": items})
 }
 
 type activityPoint struct {
