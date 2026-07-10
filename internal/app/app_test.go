@@ -105,6 +105,38 @@ func TestReloadIgnoresYAMLPolicyAfterDatabaseInitialization(t *testing.T) {
 	}
 }
 
+func TestNewIgnoresInvalidYAMLPolicyWhenDatabaseHasPolicy(t *testing.T) {
+	application, path := newTestApp(t)
+	stored := application.policies.Policy()
+	stored.Default.Limit.Duration = 3 * time.Hour
+	if err := application.policies.SetPolicy(t.Context(), stored); err != nil {
+		t.Fatal(err)
+	}
+	before := application.policies.Resolve("player")
+	if err := application.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := strings.Replace(string(data), "timezone: Asia/Shanghai", "timezone: Invalid/Zone", 1)
+	if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := New(path)
+	if err != nil {
+		t.Fatalf("existing database policy should make YAML policy irrelevant: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	if after := restarted.policies.Resolve("player"); after.Revision != before.Revision {
+		t.Fatalf("restart replaced database policy: before=%+v after=%+v", before, after)
+	}
+	if got := restarted.CurrentConfig().Policy.Default.Limit.Duration; got != 3*time.Hour {
+		t.Fatalf("current config policy=%v, want stored 3h", got)
+	}
+}
+
 func TestNewIgnoresInvalidYAMLPolicyWhenDatabaseAlreadyHasPolicy(t *testing.T) {
 	application, path := newTestApp(t)
 	if err := application.Close(); err != nil {

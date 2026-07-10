@@ -69,6 +69,7 @@ func New(configPath string) (*App, error) {
 		_ = repo.Close()
 		return nil, err
 	}
+	cfg.Policy = policies.Policy()
 	guardService := guard.New(repo, policies, cfg.Server.MaxObservationGap.Duration, cfg.Enforcement.KickRetryInitial.Duration, cfg.Enforcement.KickRetryMax.Duration)
 	client := palworld.New(cfg.Server.BaseURL, cfg.Password(), cfg.Server.RequestTimeout.Duration)
 	poll, err := poller.New(client, guardService, cfg.Server.PollInterval.Duration, cfg.Enforcement.AnnounceMessage, cfg.Enforcement.KickMessage, time.Now)
