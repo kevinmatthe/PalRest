@@ -7,6 +7,8 @@ server:
   request_timeout: 5s
   max_observation_gap: 75s
 
+# Optional bootstrap defaults. They are used only when the database has no
+# policy document; later edits are made in WebUI and stored in SQLite.
 policy:
   timezone: Asia/Shanghai
   default:
@@ -16,9 +18,8 @@ policy:
     reset_at: "04:00"
     limit: 2h
     warning_before: [30m, 10m, 5m, 1m]
-  overrides: {}
 
-# Alternative policy.default examples:
+# Alternative bootstrap policy.default examples:
 #
 # Cooldown mode: after 2h online, the player must rest for 30m.
 # policy:
