@@ -76,6 +76,7 @@ export type OverrideRule = {
 
 export type Policies = {
   version: number;
+  source: 'database';
   timezone: string;
   default: Rule;
   overrides: Record<string, OverrideRule>;

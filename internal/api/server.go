@@ -281,6 +281,7 @@ func policyResponse(version int, policy config.Policy) map[string]any {
 	}
 	return map[string]any{
 		"version":   version,
+		"source":    "database",
 		"timezone":  policy.Timezone,
 		"default":   toRuleDTO(policy.Default),
 		"overrides": overrides,

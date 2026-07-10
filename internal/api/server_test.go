@@ -131,6 +131,15 @@ func TestReadOnlyRoutesAndUnknownPlayer(t *testing.T) {
 	}
 }
 
+func TestPoliciesReportDatabaseSource(t *testing.T) {
+	server := testServer()
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/policies", nil))
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"source":"database"`) {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
 func TestResponsesDoNotExposeSensitiveFields(t *testing.T) {
 	server := testServer()
 	for _, path := range []string{"/api/v1/status", "/api/v1/players", "/api/v1/policies"} {
