@@ -85,4 +85,15 @@ describe('App analytics navigation and refresh ownership', () => {
     fireEvent.click(screen.getByTitle('Refresh now'));
     expect(firstSignal?.aborted).toBe(true);
   });
+
+  it('advances the analytics cadence even when the common refresh fails', async () => {
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: 'Analytics' }));
+    vi.mocked(api.getHealth).mockRejectedValueOnce(new Error('common unavailable'));
+    await act(async () => { vi.advanceTimersByTime(10_000); await Promise.resolve(); });
+    expect(screen.getByText('Analytics dashboard token 1')).toBeInTheDocument();
+    expect(screen.getByText('common unavailable')).toBeInTheDocument();
+  });
 });

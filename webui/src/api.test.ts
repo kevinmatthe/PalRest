@@ -32,6 +32,12 @@ describe('analytics API', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/analytics/activity?range=30d&user_id=steam+id%26one');
   });
 
+  it('can omit concurrency for focused player activity requests', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(activityFixture)));
+    await getAnalyticsActivity('7d', 'u1', false);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/analytics/activity?range=7d&user_id=u1&include_concurrency=false');
+  });
+
   it('preserves existing API error behavior', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ error: { message: 'bad range' } }), { status: 400 }));
     await expect(getAnalyticsActivity('7d')).rejects.toMatchObject({ message: 'bad range', status: 400 });

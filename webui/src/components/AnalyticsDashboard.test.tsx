@@ -31,8 +31,8 @@ const players = [
 ] as never[];
 
 beforeEach(() => {
-  vi.mocked(getAnalyticsSummary).mockResolvedValue(summary);
-  vi.mocked(getAnalyticsActivity).mockResolvedValue(activity);
+  vi.mocked(getAnalyticsSummary).mockImplementation(async (period) => ({ ...summary, ranking_period: period }));
+  vi.mocked(getAnalyticsActivity).mockImplementation(async (requestedRange) => ({ ...activity, range: requestedRange }));
 });
 
 describe('AnalyticsDashboard', () => {
@@ -45,7 +45,7 @@ describe('AnalyticsDashboard', () => {
     expect(screen.getByRole('row', { name: /AnuOnline 1h 00m/ })).toBeInTheDocument();
     expect(screen.getAllByTestId('line-segment')).toHaveLength(1);
     expect(getAnalyticsSummary).toHaveBeenCalledWith('today', expect.any(AbortSignal));
-    expect(getAnalyticsActivity).toHaveBeenCalledWith('7d', undefined, expect.any(AbortSignal));
+    expect(getAnalyticsActivity).toHaveBeenCalledWith('7d', undefined, true, expect.any(AbortSignal));
   });
 
   it('refetches only the endpoint controlled by each filter and exposes pressed state', async () => {
@@ -58,7 +58,7 @@ describe('AnalyticsDashboard', () => {
     expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
     vi.clearAllMocks();
     fireEvent.click(screen.getByRole('button', { name: '30 days' }));
-    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenCalledWith('30d', undefined, expect.any(AbortSignal)));
+    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenCalledWith('30d', undefined, true, expect.any(AbortSignal)));
     expect(getAnalyticsSummary).not.toHaveBeenCalled();
   });
 
@@ -68,8 +68,10 @@ describe('AnalyticsDashboard', () => {
     });
     render(<AnalyticsDashboard players={players} refreshKey={0} />);
     await screen.findByText('1h 30m');
+    vi.clearAllMocks();
     fireEvent.change(screen.getByRole('combobox', { name: 'Player activity' }), { target: { value: 'u2' } });
-    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenLastCalledWith('7d', 'u2', expect.any(AbortSignal)));
+    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenLastCalledWith('7d', 'u2', false, expect.any(AbortSignal)));
+    expect(getAnalyticsActivity).toHaveBeenCalledTimes(1);
     expect(await screen.findByRole('img', { name: 'Bo daily activity' })).toBeInTheDocument();
   });
 
@@ -111,7 +113,7 @@ describe('AnalyticsDashboard', () => {
     vi.mocked(getAnalyticsActivity).mockImplementationOnce(() => new Promise((resolve) => { resolveOldActivity = resolve; }));
     render(<AnalyticsDashboard players={players} refreshKey={0} />);
     const oldSummarySignal = vi.mocked(getAnalyticsSummary).mock.calls[0][1]!;
-    const oldActivitySignal = vi.mocked(getAnalyticsActivity).mock.calls[0][2]!;
+    const oldActivitySignal = vi.mocked(getAnalyticsActivity).mock.calls[0][3]!;
 
     vi.mocked(getAnalyticsSummary).mockResolvedValueOnce({ ...summary, ranking_period: 'week', ranking: [{ user_id: 'u2', name: 'Latest Bo', observed_ms: 9_000_000, online: false }] });
     vi.mocked(getAnalyticsActivity)
@@ -123,14 +125,39 @@ describe('AnalyticsDashboard', () => {
     expect(oldActivitySignal.aborted).toBe(true);
     expect(await screen.findByText('Latest Bo')).toBeInTheDocument();
     fireEvent.change(screen.getByRole('combobox', { name: 'Player activity' }), { target: { value: 'u2' } });
-    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenLastCalledWith('30d', 'u2', expect.any(AbortSignal)));
+    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenLastCalledWith('30d', 'u2', false, expect.any(AbortSignal)));
 
     resolveOldSummary({ ...summary, ranking: [{ user_id: 'u1', name: 'Obsolete Anu', observed_ms: 1, online: false }] });
     resolveOldActivity({ ...activity, concurrency: [{ at: 'obsolete', average_count: 1, max_count: 1, coverage: 1 }] });
     await Promise.resolve();
     expect(screen.queryByText('Obsolete Anu')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Show data table' }));
-    expect(screen.getByRole('row', { name: 'selected 9' })).toBeInTheDocument();
+    expect(screen.getByRole('row', { name: 'latest 8' })).toBeInTheDocument();
     expect(screen.queryByRole('row', { name: 'obsolete 1' })).not.toBeInTheDocument();
+  });
+
+  it('does not present 7-day concurrency under a failed 30-day filter', async () => {
+    render(<AnalyticsDashboard players={players} refreshKey={0} />);
+    await screen.findByRole('img', { name: 'Server concurrency' });
+    vi.mocked(getAnalyticsActivity).mockRejectedValueOnce(new Error('30 day unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: '30 days' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('30 day unavailable');
+    expect(screen.queryByRole('img', { name: 'Server concurrency' })).not.toBeInTheDocument();
+  });
+
+  it('does not show player A history under player B and retains a selected option through search', async () => {
+    vi.mocked(getAnalyticsActivity)
+      .mockResolvedValueOnce(activity)
+      .mockResolvedValueOnce({ ...activity, concurrency: [], player: { user_id: 'u1', name: 'Anu', daily: [{ date: '2026-07-11', observed_ms: 60_000 }] } })
+      .mockRejectedValueOnce(new Error('Bo unavailable'));
+    render(<AnalyticsDashboard players={players} refreshKey={0} />);
+    await screen.findByText('1h 30m');
+    fireEvent.change(screen.getByRole('combobox', { name: 'Player activity' }), { target: { value: 'u1' } });
+    expect(await screen.findByRole('img', { name: 'Anu daily activity' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Find player' }), { target: { value: 'Bo' } });
+    expect(screen.getByRole('option', { name: 'Anu' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Player activity' }), { target: { value: 'u2' } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Bo unavailable');
+    expect(screen.queryByRole('img', { name: 'Anu daily activity' })).not.toBeInTheDocument();
   });
 });

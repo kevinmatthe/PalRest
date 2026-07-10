@@ -78,6 +78,7 @@ func (f *mutablePolicies) SetPolicy(_ context.Context, value config.Policy) erro
 type captureAnalyticsQueries struct {
 	rankingCalls     [][2]string
 	concurrencyCalls [][2]time.Time
+	player           domain.Player
 }
 
 func (f *captureAnalyticsQueries) Ranking(_ context.Context, start, end string) ([]store.RankingRow, error) {
@@ -92,7 +93,10 @@ func (f *captureAnalyticsQueries) PlayerDailyActivity(context.Context, string, s
 	return []store.DailyActivity{}, nil
 }
 func (f *captureAnalyticsQueries) Player(context.Context, string) (domain.Player, error) {
-	return domain.Player{}, store.ErrNotFound
+	if f.player.UserID == "" {
+		return domain.Player{}, store.ErrNotFound
+	}
+	return f.player, nil
 }
 
 func (f fakeAnalyticsOnline) Current() ([]string, time.Time)   { return f.ids, f.at }
@@ -182,8 +186,26 @@ func TestAnalyticsActivityFillsConcurrencyAndPartialDaily(t *testing.T) {
 	}
 }
 
+func TestAnalyticsActivityCanSkipConcurrencyQuery(t *testing.T) {
+	q := &captureAnalyticsQueries{player: domain.Player{UserID: "u1", Name: "One"}}
+	res := httptest.NewRecorder()
+	analyticsServer(q, fakeAnalyticsOnline{}).Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/activity?range=7d&user_id=u1&include_concurrency=false", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	var got struct {
+		Concurrency []json.RawMessage `json:"concurrency"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.concurrencyCalls) != 0 || got.Concurrency == nil || len(got.Concurrency) != 0 {
+		t.Fatalf("calls=%v concurrency=%v", q.concurrencyCalls, got.Concurrency)
+	}
+}
+
 func TestAnalyticsValidationAndErrors(t *testing.T) {
-	for _, path := range []string{"/api/v1/analytics/summary?ranking=year", "/api/v1/analytics/activity?range=8d"} {
+	for _, path := range []string{"/api/v1/analytics/summary?ranking=year", "/api/v1/analytics/activity?range=8d", "/api/v1/analytics/activity?include_concurrency=sometimes"} {
 		res := httptest.NewRecorder()
 		analyticsServer(fakeAnalyticsQueries{}, fakeAnalyticsOnline{}).Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
 		if res.Code != http.StatusBadRequest {

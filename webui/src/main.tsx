@@ -66,7 +66,7 @@ export function App() {
     let mounted = true;
     let controller: AbortController | undefined;
 
-    async function load(refreshAnalytics = false) {
+    async function load() {
       controller?.abort();
       controller = new AbortController();
       const requestController = controller;
@@ -84,7 +84,6 @@ export function App() {
         }
         setState({ kind: 'ready', data: { health, status, players: playersResponse.players, policies, admin } });
         setLastRefresh(new Date());
-        if (refreshAnalytics) setAnalyticsCadenceKey((value) => value + 1);
       } catch (error) {
         if (!mounted || requestController.signal.aborted) {
           return;
@@ -95,7 +94,10 @@ export function App() {
     }
 
     void load();
-    const timer = window.setInterval(() => void load(true), refreshIntervalMS);
+    const timer = window.setInterval(() => {
+      setAnalyticsCadenceKey((value) => value + 1);
+      void load();
+    }, refreshIntervalMS);
     return () => {
       mounted = false;
       controller?.abort();

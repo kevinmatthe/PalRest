@@ -51,8 +51,8 @@ function barGeometry(points: BarPoint[]): Geometry {
   };
 }
 
-function ChartLayer({ geometry, previous = false }: { geometry: Geometry; previous?: boolean }) {
-  return <g className={previous ? 'activity-chart__previous' : 'activity-chart__current'} aria-hidden="true">
+function ChartLayer({ geometry }: { geometry: Geometry }) {
+  return <g className="activity-chart__current" aria-hidden="true">
     {geometry.kind === 'line' ? <>
       {geometry.segments.map((path, index) => <path data-testid="line-segment" d={path} key={`${path}-${index}`} fill="none" vectorEffect="non-scaling-stroke" />)}
       {geometry.singletons.map((point, index) => <circle key={index} cx={point.x} cy={point.y} r="1.5" vectorEffect="non-scaling-stroke" />)}
@@ -63,9 +63,7 @@ function ChartLayer({ geometry, previous = false }: { geometry: Geometry; previo
 export function ActivityChart(props: ActivityChartProps) {
   const serialized = JSON.stringify(props.points);
   const geometry = useMemo(() => props.kind === 'line' ? lineGeometry(props.points) : barGeometry(props.points), [props.kind, serialized]);
-  const currentRef = useRef(geometry);
   const serializedRef = useRef(serialized);
-  const [previous, setPrevious] = useState<Geometry | null>(null);
   const [updating, setUpdating] = useState(false);
   const [showData, setShowData] = useState(false);
 
@@ -74,17 +72,12 @@ export function ActivityChart(props: ActivityChartProps) {
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     serializedRef.current = serialized;
     if (reducedMotion) {
-      currentRef.current = geometry;
-      setPrevious(null);
       setUpdating(false);
       return;
     }
-    setPrevious(currentRef.current);
-    currentRef.current = geometry;
     setUpdating(true);
     const timer = window.setTimeout(() => {
       setUpdating(false);
-      setPrevious(null);
     }, 550);
     return () => window.clearTimeout(timer);
   }, [geometry, serialized]);
@@ -120,7 +113,6 @@ export function ActivityChart(props: ActivityChartProps) {
     <div className="chart-plot"><svg role="img" aria-label={props.label} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} width="100%" preserveAspectRatio="none">
       <title>{props.label}</title>
       <desc>{description}</desc>
-      {previous ? <ChartLayer geometry={previous} previous /> : null}
       <ChartLayer geometry={geometry} />
     </svg></div>
     <button className="activity-chart__data-toggle" type="button" aria-expanded={showData} onClick={() => setShowData((visible) => !visible)}>

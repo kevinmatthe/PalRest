@@ -78,4 +78,14 @@ describe('ActivityChart', () => {
     expect(container.firstChild).not.toHaveClass('is-updating');
     vi.unstubAllGlobals();
   });
+
+  it('renders and updates a 30-day five-minute series without retaining a hidden geometry layer', () => {
+    const points = Array.from({ length: 8_640 }, (_, index) => ({ at: `p${index}`, value: index % 17 ? index % 8 : null }));
+    const { container, rerender } = render(<ActivityChart kind="line" label="Large concurrency" points={points} />);
+    expect(screen.getByRole('img', { name: 'Large concurrency' })).toBeInTheDocument();
+    expect(container.querySelector('.activity-chart__previous')).not.toBeInTheDocument();
+    rerender(<ActivityChart kind="line" label="Large concurrency" points={points.map((point, index) => ({ ...point, value: index % 19 ? point.value : null }))} />);
+    expect(container.innerHTML).not.toContain('NaN');
+    expect(container.querySelector('.activity-chart__previous')).not.toBeInTheDocument();
+  });
 });

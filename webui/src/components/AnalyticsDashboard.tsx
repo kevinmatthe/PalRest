@@ -19,18 +19,27 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
   const [selectedUserID, setSelectedUserID] = useState('');
   const [playerQuery, setPlayerQuery] = useState('');
   const [summary, setSummary] = useState<AnalyticsSummary>();
-  const [activity, setActivity] = useState<AnalyticsActivity>();
+  const [summaryKey, setSummaryKey] = useState<Period>();
+  const [serverActivity, setServerActivity] = useState<AnalyticsActivity>();
+  const [serverKey, setServerKey] = useState<Range>();
+  const [playerActivity, setPlayerActivity] = useState<AnalyticsActivity>();
+  const [playerKey, setPlayerKey] = useState('');
   const [summaryLoading, setSummaryLoading] = useState(true);
-  const [activityLoading, setActivityLoading] = useState(true);
+  const [serverLoading, setServerLoading] = useState(true);
+  const [playerLoading, setPlayerLoading] = useState(false);
   const [summaryError, setSummaryError] = useState('');
-  const [activityError, setActivityError] = useState('');
+  const [serverError, setServerError] = useState('');
+  const [playerError, setPlayerError] = useState('');
 
   useEffect(() => {
     const controller = new AbortController();
     setSummaryLoading(true);
     setSummaryError('');
     getAnalyticsSummary(rankingPeriod, controller.signal).then((next) => {
-      if (!controller.signal.aborted) setSummary(next);
+      if (!controller.signal.aborted && next.ranking_period === rankingPeriod) {
+        setSummary(next);
+        setSummaryKey(rankingPeriod);
+      }
     }).catch((error: unknown) => {
       if (!controller.signal.aborted) setSummaryError(error instanceof Error ? error.message : 'Could not load analytics summary');
     }).finally(() => {
@@ -41,14 +50,39 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
 
   useEffect(() => {
     const controller = new AbortController();
-    setActivityLoading(true);
-    setActivityError('');
-    getAnalyticsActivity(range, selectedUserID || undefined, controller.signal).then((next) => {
-      if (!controller.signal.aborted) setActivity(next);
+    setServerLoading(true);
+    setServerError('');
+    getAnalyticsActivity(range, undefined, true, controller.signal).then((next) => {
+      if (!controller.signal.aborted && next.range === range) {
+        setServerActivity(next);
+        setServerKey(range);
+      }
     }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setActivityError(error instanceof Error ? error.message : 'Could not load analytics activity');
+      if (!controller.signal.aborted) setServerError(error instanceof Error ? error.message : 'Could not load server activity');
     }).finally(() => {
-      if (!controller.signal.aborted) setActivityLoading(false);
+      if (!controller.signal.aborted) setServerLoading(false);
+    });
+    return () => controller.abort();
+  }, [range, refreshKey]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const requestKey = `${range}:${selectedUserID}`;
+    setPlayerError('');
+    if (!selectedUserID) {
+      setPlayerLoading(false);
+      return () => controller.abort();
+    }
+    setPlayerLoading(true);
+    getAnalyticsActivity(range, selectedUserID, false, controller.signal).then((next) => {
+      if (!controller.signal.aborted && next.range === range && next.player?.user_id === selectedUserID) {
+        setPlayerActivity(next);
+        setPlayerKey(requestKey);
+      }
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) setPlayerError(error instanceof Error ? error.message : 'Could not load player activity');
+    }).finally(() => {
+      if (!controller.signal.aborted) setPlayerLoading(false);
     });
     return () => controller.abort();
   }, [range, selectedUserID, refreshKey]);
@@ -56,35 +90,38 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
   const visiblePlayers = useMemo(() => {
     const query = playerQuery.trim().toLowerCase();
     if (!query) return players;
-    return players.filter((player) => [player.name, player.account_name, player.user_id].some((value) => value.toLowerCase().includes(query)));
-  }, [playerQuery, players]);
-  const errors = [summaryError, activityError].filter(Boolean).join(' · ');
-  const firstLoad = (summaryLoading && !summary) || (activityLoading && !activity);
-  const asOf = summary?.as_of ?? undefined;
+    return players.filter((player) => player.user_id === selectedUserID || [player.name, player.account_name, player.user_id].some((value) => value.toLowerCase().includes(query)));
+  }, [playerQuery, players, selectedUserID]);
+  const errors = [summaryError, serverError, playerError].filter(Boolean).join(' · ');
+  const matchingSummary = summaryKey === rankingPeriod ? summary : undefined;
+  const matchingServer = serverKey === range ? serverActivity : undefined;
+  const matchingPlayer = playerKey === `${range}:${selectedUserID}` ? playerActivity?.player : undefined;
+  const firstLoad = (summaryLoading && !matchingSummary) || (serverLoading && !matchingServer);
+  const asOf = matchingSummary?.as_of ?? undefined;
   const stale = asOf ? Date.now() - new Date(asOf).getTime() > 20_000 : false;
 
   return <section className="analytics-dashboard" aria-labelledby="analytics-heading" aria-busy={firstLoad}>
     <header className="analytics-heading">
       <div><p className="eyebrow">Player activity</p><h2 id="analytics-heading">Analytics</h2></div>
-      {(summaryLoading || activityLoading) && !firstLoad ? <span className="analytics-refreshing" role="status">Refreshing data…</span> : null}
+      {(summaryLoading || serverLoading || playerLoading) && !firstLoad ? <span className="analytics-refreshing" role="status">Refreshing data…</span> : null}
     </header>
     {firstLoad ? <div className="analytics-loading"><span className="skeleton-row" /><span>Loading analytics</span></div> : null}
     {errors ? <div className="notice analytics-notice" role="alert">{errors}</div> : null}
 
     <div className="analytics-metrics" aria-label="Activity summary">
-      <AnalyticsMetric icon={<Activity size={19} />} label="Online now" value={summary?.as_of ? String(summary.online_count) : '--'} detail={asOf ? `${stale ? 'Stale · ' : ''}As of ${formatDateTime(asOf)}` : 'No observation yet'} />
-      <AnalyticsMetric icon={<Clock3 size={19} />} label="Today total" value={summary?.as_of ? formatDuration(summary.today_observed_ms) : '--'} detail="Observed player time" />
-      <AnalyticsMetric icon={<TrendingUp size={19} />} label="Peak today" value={summary?.peak_at ? String(summary.peak_count) : '--'} detail={summary?.peak_at ? formatDateTime(summary.peak_at) : 'No peak observed'} />
-      <AnalyticsMetric icon={<Users size={19} />} label="Active today" value={summary?.as_of ? String(summary.active_players) : '--'} detail="Unique observed players" />
+      <AnalyticsMetric icon={<Activity size={19} />} label="Online now" value={matchingSummary?.as_of ? String(matchingSummary.online_count) : '--'} detail={asOf ? `${stale ? 'Stale · ' : ''}As of ${formatDateTime(asOf)}` : 'No observation yet'} />
+      <AnalyticsMetric icon={<Clock3 size={19} />} label="Today total" value={matchingSummary?.as_of ? formatDuration(matchingSummary.today_observed_ms) : '--'} detail="Observed player time" />
+      <AnalyticsMetric icon={<TrendingUp size={19} />} label="Peak today" value={matchingSummary?.peak_at ? String(matchingSummary.peak_count) : '--'} detail={matchingSummary?.peak_at ? formatDateTime(matchingSummary.peak_at) : 'No peak observed'} />
+      <AnalyticsMetric icon={<Users size={19} />} label="Active today" value={matchingSummary?.as_of ? String(matchingSummary.active_players) : '--'} detail="Unique observed players" />
     </div>
 
     <div className="analytics-main">
       <div className="analytics-charts">
         <section className="panel analytics-panel">
-          <PanelHeading title="Server concurrency" detail={activity ? `${activity.start} – ${activity.end} · ${activity.timezone}` : 'Average concurrent players'}>
+          <PanelHeading title="Server concurrency" detail={matchingServer ? `${matchingServer.start} – ${matchingServer.end} · ${matchingServer.timezone}` : 'Average concurrent players'}>
             <ToggleGroup label="Concurrency range" options={[['7d', '7 days'], ['30d', '30 days']]} value={range} onChange={(value) => setRange(value as Range)} />
           </PanelHeading>
-          {activity?.concurrency.length ? <ActivityChart kind="line" label="Server concurrency" points={activity.concurrency.map((point) => ({ at: point.at, value: point.average_count, max: point.max_count, coverage: point.coverage }))} /> : !activityLoading ? <div className="analytics-empty">No concurrency observations for this range.</div> : <SkeletonChart />}
+          {matchingServer?.concurrency.length ? <ActivityChart kind="line" label="Server concurrency" points={matchingServer.concurrency.map((point) => ({ at: point.at, value: point.average_count, max: point.max_count, coverage: point.coverage }))} /> : !serverLoading ? <div className="analytics-empty">No concurrency observations for this range.</div> : <SkeletonChart />}
         </section>
 
         <section className="panel analytics-panel">
@@ -94,8 +131,8 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
             <label>Player activity<select value={selectedUserID} onChange={(event) => setSelectedUserID(event.target.value)}><option value="">Select player</option>{visiblePlayers.map((player) => <option key={player.user_id} value={player.user_id}>{player.name || player.account_name || player.user_id}</option>)}</select></label>
           </div>
           {!selectedUserID ? <div className="analytics-empty">Select a known player to inspect daily activity.</div>
-            : activity?.player?.daily.length ? <ActivityChart kind="bar" label={`${activity.player.name || activity.player.user_id} daily activity`} points={activity.player.daily.map((point) => ({ date: point.date, value: point.observed_ms }))} />
-            : !activityLoading ? <div className="analytics-empty">No observed activity for this player and range.</div> : <SkeletonChart />}
+            : matchingPlayer?.daily.length ? <ActivityChart kind="bar" label={`${matchingPlayer.name || matchingPlayer.user_id} daily activity`} points={matchingPlayer.daily.map((point) => ({ date: point.date, value: point.observed_ms }))} />
+            : !playerLoading ? <div className="analytics-empty">No observed activity for this player and range.</div> : <SkeletonChart />}
         </section>
       </div>
 
@@ -103,7 +140,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
         <PanelHeading title="Player ranking" detail="Observed duration">
           <ToggleGroup label="Ranking period" options={[['today', 'Today'], ['week', 'Week']]} value={rankingPeriod} onChange={(value) => setRankingPeriod(value as Period)} />
         </PanelHeading>
-        {summary?.ranking.length ? <div className="ranking-wrap"><table className="ranking-table"><caption>Player activity ranking</caption><thead><tr><th scope="col">#</th><th scope="col">Player</th><th scope="col">Duration</th></tr></thead><tbody>{summary.ranking.map((entry, index) => <tr key={entry.user_id}><td>{index + 1}</td><th scope="row"><span>{entry.name || entry.user_id}</span><small className={entry.online ? 'online' : 'offline'}>{entry.online ? 'Online' : 'Offline'}</small></th><td>{formatDuration(entry.observed_ms)}</td></tr>)}</tbody></table></div>
+        {matchingSummary?.ranking.length ? <div className="ranking-wrap"><table className="ranking-table"><caption>Player activity ranking</caption><thead><tr><th scope="col">#</th><th scope="col">Player</th><th scope="col">Duration</th></tr></thead><tbody>{matchingSummary.ranking.map((entry, index) => <tr key={entry.user_id}><td>{index + 1}</td><th scope="row"><span>{entry.name || entry.user_id}</span><small className={entry.online ? 'online' : 'offline'}>{entry.online ? 'Online' : 'Offline'}</small></th><td>{formatDuration(entry.observed_ms)}</td></tr>)}</tbody></table></div>
           : !summaryLoading ? <div className="analytics-empty">No ranking activity for this period.</div> : <SkeletonChart />}
       </section>
     </div>

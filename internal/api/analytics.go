@@ -126,27 +126,39 @@ func (s *Server) getAnalyticsActivity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "range must be 7d or 30d")
 		return
 	}
+	includeConcurrency := true
+	switch value := r.URL.Query().Get("include_concurrency"); value {
+	case "", "true":
+	case "false":
+		includeConcurrency = false
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_request", "include_concurrency must be true or false")
+		return
+	}
 	loc, start, end, err := s.analyticsBounds(days)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query_failed", "analytics query failed")
 		return
 	}
-	buckets, err := s.analytics.Concurrency(r.Context(), start.UTC(), end.UTC())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query_failed", "analytics query failed")
-		return
-	}
-	byAt := make(map[int64]store.ConcurrencyBucket, len(buckets))
-	for _, b := range buckets {
-		byAt[b.Start.UTC().UnixNano()] = b
-	}
-	series := make([]activityPoint, 0, int(end.UTC().Sub(start.UTC())/(5*time.Minute)))
-	for at := start.UTC(); at.Before(end.UTC()); at = at.Add(5 * time.Minute) {
-		p := activityPoint{At: at}
-		if b, ok := byAt[at.UnixNano()]; ok {
-			p.Average, p.Max, p.Coverage = b.Average, b.Max, b.Coverage
+	series := make([]activityPoint, 0)
+	if includeConcurrency {
+		buckets, queryErr := s.analytics.Concurrency(r.Context(), start.UTC(), end.UTC())
+		if queryErr != nil {
+			writeError(w, http.StatusInternalServerError, "query_failed", "analytics query failed")
+			return
 		}
-		series = append(series, p)
+		byAt := make(map[int64]store.ConcurrencyBucket, len(buckets))
+		for _, b := range buckets {
+			byAt[b.Start.UTC().UnixNano()] = b
+		}
+		series = make([]activityPoint, 0, int(end.UTC().Sub(start.UTC())/(5*time.Minute)))
+		for at := start.UTC(); at.Before(end.UTC()); at = at.Add(5 * time.Minute) {
+			p := activityPoint{At: at}
+			if b, ok := byAt[at.UnixNano()]; ok {
+				p.Average, p.Max, p.Coverage = b.Average, b.Max, b.Coverage
+			}
+			series = append(series, p)
+		}
 	}
 	var player *activityPlayer
 	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))

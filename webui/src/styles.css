@@ -241,7 +241,6 @@ select:focus-visible {
 .chart-plot { min-width: 0; }
 .activity-chart svg { display: block; width: 100%; height: clamp(11rem, 30vw, 16rem); padding: 0.75rem; border: 1px solid #dfe7e3; border-radius: 0.5rem; background: linear-gradient(to bottom, #f7faf8, #fff); overflow: visible; }
 .activity-chart__current { color: #2f7567; stroke: currentColor; fill: #5e968a; stroke-width: 1.5; }
-.activity-chart__previous { opacity: 0; stroke: #8fb1a7; fill: #abc6be; stroke-width: 1.25; }
 .activity-chart__data-toggle { min-height: 2.75rem; margin-top: 0.5rem; padding: 0 0.8rem; border: 1px solid #c8d4ce; border-radius: 0.45rem; color: #315448; background: #fff; font-size: 0.75rem; font-weight: 800; cursor: pointer; }
 .activity-chart__data { margin-top: 0.5rem; }
 .activity-chart.is-updating .chart-plot { animation: analytics-chart-update 550ms cubic-bezier(0.22, 1, 0.36, 1); }
