@@ -96,6 +96,51 @@ export type AdminSession = {
   passkey: boolean;
 };
 
+export type RankingEntry = {
+  user_id: string;
+  name: string;
+  observed_ms: number;
+  online: boolean;
+};
+
+export type AnalyticsSummary = {
+  online_count: number;
+  as_of: string | null;
+  today_observed_ms: number;
+  peak_count: number;
+  peak_at: string | null;
+  active_players: number;
+  ranking_period: 'today' | 'week';
+  ranking: RankingEntry[];
+};
+
+export type ConcurrencyPoint = {
+  at: string;
+  average_count: number | null;
+  max_count: number | null;
+  coverage: number;
+};
+
+export type PlayerActivityDaily = {
+  date: string;
+  observed_ms: number;
+};
+
+export type PlayerActivity = {
+  user_id: string;
+  name: string;
+  daily: PlayerActivityDaily[];
+};
+
+export type AnalyticsActivity = {
+  range: '7d' | '30d';
+  timezone: string;
+  start: string;
+  end: string;
+  concurrency: ConcurrencyPoint[];
+  player: PlayerActivity | null;
+};
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -146,6 +191,17 @@ export function getStatus(signal?: AbortSignal) {
 
 export function getPlayers(signal?: AbortSignal) {
   return getJSON<PlayersResponse>('/api/v1/players', signal);
+}
+
+export function getAnalyticsSummary(ranking: 'today' | 'week', signal?: AbortSignal) {
+  const query = new URLSearchParams({ ranking });
+  return getJSON<AnalyticsSummary>(`/api/v1/analytics/summary?${query}`, signal);
+}
+
+export function getAnalyticsActivity(range: '7d' | '30d', userID?: string, signal?: AbortSignal) {
+  const query = new URLSearchParams({ range });
+  if (userID !== undefined) query.set('user_id', userID);
+  return getJSON<AnalyticsActivity>(`/api/v1/analytics/activity?${query}`, signal);
 }
 
 export function getPolicies(signal?: AbortSignal) {
