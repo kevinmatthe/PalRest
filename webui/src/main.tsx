@@ -34,6 +34,7 @@ import { formatDateTime, formatDuration, formatExactDateTime, titleCase } from '
 import { AdminLoginModal } from './components/AdminLoginModal';
 import { PlayerUsage } from './components/PlayerUsage';
 import { PolicyManager } from './components/PolicyManager';
+import { policyCondition } from './policyCondition';
 import './styles.css';
 
 type DashboardData = {
@@ -115,6 +116,7 @@ function App() {
     data?.players.filter((player) => player.enabled && !player.exempt && player.remaining_ms <= 10 * 60 * 1000).length ?? 0;
   const enforcedPlayers = data?.players.filter((player) => player.enforcement_state).length ?? 0;
   const defaultRule = data?.policies.default;
+  const defaultCondition = defaultRule ? policyCondition(defaultRule) : undefined;
   const overrides = Object.entries(data?.policies.overrides ?? {});
   const serviceState = data ? resolveServiceState(data.health, data.status) : 'loading';
   const refresh = () => setManualRefreshKey((value) => value + 1);
@@ -227,8 +229,8 @@ function App() {
                 </div>
                 <dl>
                   <div>
-                    <dt>Limit</dt>
-                    <dd>{formatDuration(defaultRule.limit_ms)}</dd>
+                    <dt>{defaultCondition?.label}</dt>
+                    <dd>{formatDuration(defaultCondition?.valueMs)}</dd>
                   </div>
                   <div>
                     <dt>Strategy</dt>
