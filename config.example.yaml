@@ -1,0 +1,30 @@
+version: 1
+
+server:
+  base_url: http://palworld-server:8212/v1/api
+  password_env: ADMIN_PASSWORD
+  poll_interval: 30s
+  request_timeout: 5s
+  max_observation_gap: 75s
+
+policy:
+  timezone: Asia/Shanghai
+  default:
+    enabled: false
+    period: daily
+    reset_at: "04:00"
+    limit: 2h
+    warning_before: [30m, 10m, 5m, 1m]
+  overrides: {}
+
+enforcement:
+  kick_message: "Playtime limit reached. You can play again after {{ .ResetAt }}."
+  announce_message: "{{ .PlayerName }} has {{ .Remaining }} of playtime remaining."
+  kick_retry_initial: 15s
+  kick_retry_max: 5m
+
+http:
+  listen: 0.0.0.0:8080
+
+storage:
+  path: /data/guard.db
