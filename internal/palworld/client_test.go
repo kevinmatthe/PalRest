@@ -66,7 +66,7 @@ func TestAnnounceAndKickRequestBodies(t *testing.T) {
 func TestClientErrorsAreBoundedAndDoNotLeakPassword(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(strings.Repeat("x", 10000)))
+		_, _ = w.Write([]byte("authorization failed for very-secret-password: " + strings.Repeat("x", 10000)))
 	}))
 	defer server.Close()
 	client := New(server.URL, "very-secret-password", time.Second)

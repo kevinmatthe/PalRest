@@ -33,6 +33,7 @@ type Poller struct {
 	announceTemplate *template.Template
 	kickTemplate     *template.Template
 	now              func() time.Time
+	cycleMu          sync.RWMutex
 	mu               sync.RWMutex
 	status           domain.PollStatus
 }
@@ -68,6 +69,8 @@ func (p *Poller) Run(ctx context.Context) {
 }
 
 func (p *Poller) RunOnce(ctx context.Context) error {
+	p.cycleMu.RLock()
+	defer p.cycleMu.RUnlock()
 	now := p.now().UTC()
 	p.mu.RLock()
 	announceTemplate := p.announceTemplate
@@ -134,6 +137,10 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 }
 
 func (p *Poller) UpdateTemplates(announceText, kickText string) error {
+	return p.ApplyConfig(func() error { return nil }, announceText, kickText)
+}
+
+func (p *Poller) ApplyConfig(update func() error, announceText, kickText string) error {
 	announce, err := template.New("announce").Option("missingkey=error").Parse(announceText)
 	if err != nil {
 		return fmt.Errorf("parse announce template: %w", err)
@@ -141,6 +148,11 @@ func (p *Poller) UpdateTemplates(announceText, kickText string) error {
 	kick, err := template.New("kick").Option("missingkey=error").Parse(kickText)
 	if err != nil {
 		return fmt.Errorf("parse kick template: %w", err)
+	}
+	p.cycleMu.Lock()
+	defer p.cycleMu.Unlock()
+	if err := update(); err != nil {
+		return err
 	}
 	p.mu.Lock()
 	p.announceTemplate = announce

@@ -44,6 +44,11 @@ type WarningEvent struct {
 	UpdatedAt   time.Time
 }
 
+type EnforcementRetry struct {
+	Attempts    int
+	LastAttempt time.Time
+}
+
 func Open(ctx context.Context, path string) (*Repository, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
@@ -219,6 +224,38 @@ VALUES(?, ?, ?, ?, ?, ?, ?)`, event.UserID, event.PeriodKey, event.Action, event
 	return nil
 }
 
+func (tx *Tx) EnforcementRetry(userID, periodKey string) (EnforcementRetry, error) {
+	rows, err := tx.tx.Query(`
+SELECT result, created_at FROM enforcement_events
+WHERE user_id=? AND period_key=? AND action='kick'
+ORDER BY id DESC`, userID, periodKey)
+	if err != nil {
+		return EnforcementRetry{}, fmt.Errorf("query enforcement retry: %w", err)
+	}
+	defer rows.Close()
+	var state EnforcementRetry
+	for rows.Next() {
+		var result, created string
+		if err := rows.Scan(&result, &created); err != nil {
+			return EnforcementRetry{}, err
+		}
+		if state.Attempts == 0 {
+			if result != "failure" {
+				return EnforcementRetry{}, nil
+			}
+			state.LastAttempt, err = parseTime(created)
+			if err != nil {
+				return EnforcementRetry{}, err
+			}
+		}
+		if result != "failure" {
+			break
+		}
+		state.Attempts++
+	}
+	return state, rows.Err()
+}
+
 func (r *Repository) Usage(ctx context.Context, userID, periodKey string) (domain.Usage, error) {
 	var usage domain.Usage
 	var start, end, updated string
@@ -279,6 +316,39 @@ FROM enforcement_events WHERE user_id=? AND period_key=? ORDER BY id`, userID, p
 		event.CreatedAt, err = parseTime(created)
 		if err != nil {
 			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (r *Repository) WarningEvents(ctx context.Context, userID, periodKey string) ([]WarningEvent, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT user_id, period_key, threshold_ms, status, attempts, next_attempt, last_error, updated_at
+FROM warning_events WHERE user_id=? AND period_key=? ORDER BY threshold_ms DESC`, userID, periodKey)
+	if err != nil {
+		return nil, fmt.Errorf("query warning events: %w", err)
+	}
+	defer rows.Close()
+	var events []WarningEvent
+	for rows.Next() {
+		var event WarningEvent
+		var thresholdMS int64
+		var nextAttempt sql.NullString
+		var updated string
+		if err := rows.Scan(&event.UserID, &event.PeriodKey, &thresholdMS, &event.Status, &event.Attempts, &nextAttempt, &event.LastError, &updated); err != nil {
+			return nil, err
+		}
+		event.Threshold = time.Duration(thresholdMS) * time.Millisecond
+		event.UpdatedAt, err = parseTime(updated)
+		if err != nil {
+			return nil, err
+		}
+		if nextAttempt.Valid {
+			event.NextAttempt, err = parseTime(nextAttempt.String)
+			if err != nil {
+				return nil, err
+			}
 		}
 		events = append(events, event)
 	}

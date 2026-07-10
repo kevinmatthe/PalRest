@@ -104,10 +104,5 @@ func checkStatus(resp *http.Response) error {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	detail := strings.TrimSpace(string(body))
-	if detail == "" {
-		detail = http.StatusText(resp.StatusCode)
-	}
-	return fmt.Errorf("Palworld API returned %d: %s", resp.StatusCode, detail)
+	return fmt.Errorf("Palworld API returned %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 }

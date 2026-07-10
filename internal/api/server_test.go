@@ -12,6 +12,7 @@ import (
 
 	"github.com/kevinmatt/palworld-playtime-guard/internal/config"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
 )
 
 type fakeHealth struct{ err error }
@@ -24,7 +25,24 @@ func (f fakeStatus) Status() domain.PollStatus { return f.value }
 
 type fakeSnapshots struct{ values []domain.PlayerSnapshot }
 
-func (f fakeSnapshots) Snapshots() []domain.PlayerSnapshot { return f.values }
+func (f fakeSnapshots) OnlineSnapshots(context.Context) ([]domain.PlayerSnapshot, error) {
+	var result []domain.PlayerSnapshot
+	for _, snapshot := range f.values {
+		if snapshot.Online {
+			result = append(result, snapshot)
+		}
+	}
+	return result, nil
+}
+
+func (f fakeSnapshots) Snapshot(_ context.Context, userID string) (domain.PlayerSnapshot, error) {
+	for _, snapshot := range f.values {
+		if snapshot.Player.UserID == userID {
+			return snapshot, nil
+		}
+	}
+	return domain.PlayerSnapshot{}, store.ErrNotFound
+}
 
 func testServer() *Server {
 	now := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
@@ -61,6 +79,15 @@ func TestHealthFailsWhenSQLiteIsUnavailable(t *testing.T) {
 	res := httptest.NewRecorder()
 	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestHealthIsDegradedAfterInvalidConfigReload(t *testing.T) {
+	server := New(fakeHealth{}, fakeStatus{domain.PollStatus{ConfigReloadErr: "invalid timezone"}}, fakeSnapshots{}, func() config.Config { return config.Config{} })
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"status":"degraded"`) {
 		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
 	}
 }
@@ -107,10 +134,27 @@ func TestResponsesDoNotExposeSensitiveFields(t *testing.T) {
 
 func TestPlayersOnlyListsOnlineSnapshots(t *testing.T) {
 	server := testServer()
-	server.snapshots = fakeSnapshots{append(server.snapshots.Snapshots(), domain.PlayerSnapshot{Player: domain.Player{UserID: "offline"}, Online: false})}
+	online, _ := server.snapshots.OnlineSnapshots(t.Context())
+	server.snapshots = fakeSnapshots{append(online, domain.PlayerSnapshot{Player: domain.Player{UserID: "offline"}, Online: false})}
 	res := httptest.NewRecorder()
 	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/players", nil))
 	if strings.Contains(res.Body.String(), "offline") {
 		t.Fatalf("offline player included: %s", res.Body.String())
+	}
+}
+
+func TestPlayerIncludesPersistedWarningState(t *testing.T) {
+	server := testServer()
+	snapshot, err := server.snapshots.Snapshot(t.Context(), "steam_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Warnings = []domain.WarningState{{Threshold: 5 * time.Minute, Status: "success", Attempts: 1}}
+	server.snapshots = fakeSnapshots{[]domain.PlayerSnapshot{snapshot}}
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/players/steam_1", nil))
+	body := res.Body.String()
+	if !strings.Contains(body, `"threshold_ms":300000`) || !strings.Contains(body, `"status":"success"`) {
+		t.Fatalf("body=%s", body)
 	}
 }

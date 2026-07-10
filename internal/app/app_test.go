@@ -129,6 +129,16 @@ func TestRunStopsOnCancellation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		select {
+		case <-application.pollerDone:
+		default:
+			t.Fatal("Run returned before poller stopped")
+		}
+		select {
+		case <-application.watcherDone:
+		default:
+			t.Fatal("Run returned before config watcher stopped")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("application did not stop")
 	}

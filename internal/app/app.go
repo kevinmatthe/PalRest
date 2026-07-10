@@ -20,16 +20,18 @@ import (
 )
 
 type App struct {
-	configPath string
-	configMu   sync.RWMutex
-	config     config.Config
-	repo       *store.Repository
-	policies   *policy.Service
-	guard      *guard.Service
-	poller     *poller.Poller
-	httpServer *http.Server
-	closeOnce  sync.Once
-	closeErr   error
+	configPath  string
+	configMu    sync.RWMutex
+	config      config.Config
+	repo        *store.Repository
+	policies    *policy.Service
+	guard       *guard.Service
+	poller      *poller.Poller
+	httpServer  *http.Server
+	pollerDone  chan struct{}
+	watcherDone chan struct{}
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 func New(configPath string) (*App, error) {
@@ -57,7 +59,10 @@ func New(configPath string) (*App, error) {
 		_ = repo.Close()
 		return nil, err
 	}
-	app := &App{configPath: configPath, config: cfg, repo: repo, policies: policies, guard: guardService, poller: poll}
+	app := &App{
+		configPath: configPath, config: cfg, repo: repo, policies: policies, guard: guardService, poller: poll,
+		pollerDone: make(chan struct{}), watcherDone: make(chan struct{}),
+	}
 	apiServer := api.New(repo, poll, guardService, app.CurrentConfig)
 	app.httpServer = apiServer.HTTPServer(cfg.HTTP.Listen)
 	return app, nil
@@ -70,6 +75,8 @@ func (a *App) CurrentConfig() config.Config {
 }
 
 func (a *App) Run(ctx context.Context) error {
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	httpErrors := make(chan error, 1)
 	go func() {
 		err := a.httpServer.ListenAndServe()
@@ -79,19 +86,33 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		httpErrors <- nil
 	}()
-	go a.poller.Run(ctx)
-	go a.watchConfig(ctx)
+	go func() {
+		defer close(a.pollerDone)
+		a.poller.Run(runCtx)
+	}()
+	go func() {
+		defer close(a.watcherDone)
+		a.watchConfig(runCtx)
+	}()
 
+	var runErr error
+	serverResultPending := true
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		shutdownErr := a.httpServer.Shutdown(shutdownCtx)
-		serverErr := <-httpErrors
-		return errors.Join(shutdownErr, serverErr, a.Close())
 	case err := <-httpErrors:
-		return errors.Join(err, a.Close())
+		runErr = err
+		serverResultPending = false
 	}
+	cancelRun()
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownErr := a.httpServer.Shutdown(shutdownCtx)
+	cancelShutdown()
+	if serverResultPending {
+		runErr = errors.Join(runErr, <-httpErrors)
+	}
+	<-a.pollerDone
+	<-a.watcherDone
+	return errors.Join(runErr, shutdownErr, a.Close())
 }
 
 func (a *App) watchConfig(ctx context.Context) {
@@ -134,10 +155,7 @@ func (a *App) reload() error {
 		current.Enforcement.KickRetryInitial != next.Enforcement.KickRetryInitial || current.Enforcement.KickRetryMax != next.Enforcement.KickRetryMax {
 		return a.reloadError(fmt.Errorf("server, HTTP, storage, and retry settings require a restart"))
 	}
-	if err := a.policies.Update(next.Policy); err != nil {
-		return a.reloadError(err)
-	}
-	if err := a.poller.UpdateTemplates(next.Enforcement.AnnounceMessage, next.Enforcement.KickMessage); err != nil {
+	if err := a.poller.ApplyConfig(func() error { return a.policies.Update(next.Policy) }, next.Enforcement.AnnounceMessage, next.Enforcement.KickMessage); err != nil {
 		return a.reloadError(err)
 	}
 	a.configMu.Lock()

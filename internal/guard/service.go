@@ -39,41 +39,40 @@ type observation struct {
 	generation int64
 }
 
-type retryState struct {
-	attempts int
-	next     time.Time
-}
-
 type Repository interface {
 	WithTx(context.Context, func(*store.Tx) error) error
+	Player(context.Context, string) (domain.Player, error)
+	Usage(context.Context, string, string) (domain.Usage, error)
+	WarningEvents(context.Context, string, string) ([]store.WarningEvent, error)
+	EnforcementEvents(context.Context, string, string) ([]store.EnforcementEvent, error)
 }
 
 type Service struct {
-	mu               sync.Mutex
-	repo             Repository
-	policies         *policy.Service
-	maxGap           time.Duration
-	retryInitial     time.Duration
-	retryMax         time.Duration
-	observed         map[string]observation
-	generations      map[string]int64
-	kickedGeneration map[string]int64
-	kickRetries      map[string]retryState
-	snapshots        map[string]domain.PlayerSnapshot
+	mu                sync.Mutex
+	repo              Repository
+	policies          *policy.Service
+	maxGap            time.Duration
+	retryInitial      time.Duration
+	retryMax          time.Duration
+	observed          map[string]observation
+	generations       map[string]int64
+	kickedConnections map[string]bool
+	snapshots         map[string]domain.PlayerSnapshot
+	now               func() time.Time
 }
 
 func New(repo Repository, policies *policy.Service, maxGap, retryInitial, retryMax time.Duration) *Service {
 	return &Service{
-		repo:             repo,
-		policies:         policies,
-		maxGap:           maxGap,
-		retryInitial:     retryInitial,
-		retryMax:         retryMax,
-		observed:         make(map[string]observation),
-		generations:      make(map[string]int64),
-		kickedGeneration: make(map[string]int64),
-		kickRetries:      make(map[string]retryState),
-		snapshots:        make(map[string]domain.PlayerSnapshot),
+		repo:              repo,
+		policies:          policies,
+		maxGap:            maxGap,
+		retryInitial:      retryInitial,
+		retryMax:          retryMax,
+		observed:          make(map[string]observation),
+		generations:       make(map[string]int64),
+		kickedConnections: make(map[string]bool),
+		snapshots:         make(map[string]domain.PlayerSnapshot),
+		now:               time.Now,
 	}
 }
 
@@ -133,8 +132,15 @@ func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.P
 			}
 			if rule.Enabled && used >= rule.Limit {
 				key := retryKey(player.UserID, period.Key, generation)
-				retry := s.kickRetries[key]
-				if s.kickedGeneration[player.UserID] != generation && (retry.next.IsZero() || !now.Before(retry.next)) {
+				retry, err := tx.EnforcementRetry(player.UserID, period.Key)
+				if err != nil {
+					return err
+				}
+				retryReady := true
+				if retry.Attempts > 0 {
+					retryReady = !now.Before(retry.LastAttempt.Add(s.retryDelay(retry.Attempts)))
+				}
+				if !s.kickedConnections[key] && retryReady {
 					decisions.Kicks = append(decisions.Kicks, KickDecision{UserID: player.UserID, PlayerName: player.Name, Period: period, ResetAt: period.End, Generation: generation})
 				}
 			} else if rule.Enabled {
@@ -240,22 +246,10 @@ func (s *Service) RecordKickResult(ctx context.Context, decision KickDecision, r
 	errorSummary := ""
 	key := retryKey(decision.UserID, decision.Period.Key, decision.Generation)
 	if resultErr == nil {
-		s.kickedGeneration[decision.UserID] = decision.Generation
-		delete(s.kickRetries, key)
+		s.kickedConnections[key] = true
 	} else {
 		result = "failure"
 		errorSummary = sanitizeError(resultErr)
-		retry := s.kickRetries[key]
-		retry.attempts++
-		delay := s.retryInitial
-		for i := 1; i < retry.attempts && delay < s.retryMax; i++ {
-			delay *= 2
-			if delay > s.retryMax {
-				delay = s.retryMax
-			}
-		}
-		retry.next = now.Add(delay)
-		s.kickRetries[key] = retry
 	}
 	return s.repo.WithTx(ctx, func(tx *store.Tx) error {
 		return tx.AppendEnforcement(store.EnforcementEvent{
@@ -263,6 +257,17 @@ func (s *Service) RecordKickResult(ctx context.Context, decision KickDecision, r
 			Generation: decision.Generation, ErrorSummary: errorSummary, CreatedAt: now,
 		})
 	})
+}
+
+func (s *Service) retryDelay(attempts int) time.Duration {
+	delay := s.retryInitial
+	for i := 1; i < attempts && delay < s.retryMax; i++ {
+		delay *= 2
+		if delay > s.retryMax {
+			delay = s.retryMax
+		}
+	}
+	return delay
 }
 
 func (s *Service) Snapshots() []domain.PlayerSnapshot {
@@ -273,6 +278,76 @@ func (s *Service) Snapshots() []domain.PlayerSnapshot {
 		result = append(result, snapshot)
 	}
 	return result
+}
+
+func (s *Service) OnlineSnapshots(ctx context.Context) ([]domain.PlayerSnapshot, error) {
+	s.mu.Lock()
+	userIDs := make([]string, 0, len(s.snapshots))
+	for userID, snapshot := range s.snapshots {
+		if snapshot.Online {
+			userIDs = append(userIDs, userID)
+		}
+	}
+	s.mu.Unlock()
+	result := make([]domain.PlayerSnapshot, 0, len(userIDs))
+	for _, userID := range userIDs {
+		snapshot, err := s.Snapshot(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, snapshot)
+	}
+	return result, nil
+}
+
+func (s *Service) Snapshot(ctx context.Context, userID string) (domain.PlayerSnapshot, error) {
+	s.mu.Lock()
+	snapshot, present := s.snapshots[userID]
+	now := s.now().UTC()
+	s.mu.Unlock()
+	if !present {
+		player, err := s.repo.Player(ctx, userID)
+		if err != nil {
+			return domain.PlayerSnapshot{}, err
+		}
+		rule := s.policies.Resolve(userID)
+		snapshot = domain.PlayerSnapshot{Player: player, Policy: rule, Period: s.policies.Period(rule, now), Online: false}
+	}
+	usage, err := s.repo.Usage(ctx, userID, snapshot.Period.Key)
+	if errors.Is(err, store.ErrNotFound) {
+		snapshot.Used = 0
+	} else if err != nil {
+		return domain.PlayerSnapshot{}, err
+	} else {
+		snapshot.Used = usage.Used
+	}
+	snapshot.Remaining = snapshot.Policy.Limit - snapshot.Used
+	if snapshot.Remaining < 0 {
+		snapshot.Remaining = 0
+	}
+	warnings, err := s.repo.WarningEvents(ctx, userID, snapshot.Period.Key)
+	if err != nil {
+		return domain.PlayerSnapshot{}, err
+	}
+	snapshot.Warnings = make([]domain.WarningState, 0, len(warnings))
+	for _, warning := range warnings {
+		snapshot.Warnings = append(snapshot.Warnings, domain.WarningState{
+			Threshold: warning.Threshold, Status: warning.Status, Attempts: warning.Attempts, NextAttempt: warning.NextAttempt,
+		})
+	}
+	events, err := s.repo.EnforcementEvents(ctx, userID, snapshot.Period.Key)
+	if err != nil {
+		return domain.PlayerSnapshot{}, err
+	}
+	if len(events) > 0 {
+		latest := events[len(events)-1]
+		attempts := 0
+		for i := len(events) - 1; i >= 0 && events[i].Result == "failure"; i-- {
+			attempts++
+		}
+		snapshot.Enforcement = domain.EnforcementState{Status: latest.Result, Attempts: attempts, Generation: latest.Generation}
+	}
+	return snapshot, nil
 }
 
 func retryKey(userID, periodKey string, generation int64) string {

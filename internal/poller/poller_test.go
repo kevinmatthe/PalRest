@@ -122,6 +122,30 @@ func TestRunNeverOverlapsSlowCycles(t *testing.T) {
 	<-done
 }
 
+func TestApplyConfigWaitsForActiveCycle(t *testing.T) {
+	client := &blockingClient{entered: make(chan struct{}, 1), release: make(chan struct{}, 1)}
+	p, _ := New(client, &fakeGuard{}, time.Minute, "warning", "kick", time.Now)
+	cycleDone := make(chan error, 1)
+	go func() { cycleDone <- p.RunOnce(context.Background()) }()
+	<-client.entered
+	applied := make(chan error, 1)
+	go func() {
+		applied <- p.ApplyConfig(func() error { return nil }, "new warning", "new kick")
+	}()
+	select {
+	case <-applied:
+		t.Fatal("configuration changed during active cycle")
+	case <-time.After(20 * time.Millisecond):
+	}
+	client.release <- struct{}{}
+	if err := <-cycleDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-applied; err != nil {
+		t.Fatal(err)
+	}
+}
+
 type blockingClient struct {
 	mu            sync.Mutex
 	concurrent    int

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kevinmatt/palworld-playtime-guard/internal/config"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
 )
 
 type Health interface {
@@ -23,7 +24,8 @@ type Status interface {
 }
 
 type Snapshots interface {
-	Snapshots() []domain.PlayerSnapshot
+	OnlineSnapshots(context.Context) ([]domain.PlayerSnapshot, error)
+	Snapshot(context.Context, string) (domain.PlayerSnapshot, error)
 }
 
 type Server struct {
@@ -70,7 +72,7 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := "healthy"
-	if status.LastError != "" {
+	if status.LastError != "" || status.ConfigReloadErr != "" {
 		state = "degraded"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": state, "sqlite": "available", "last_success": status.LastSuccess})
@@ -94,29 +96,40 @@ func (s *Server) getStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 type playerDTO struct {
-	UserID           string    `json:"user_id"`
-	PlayerID         string    `json:"player_id"`
-	Name             string    `json:"name"`
-	AccountName      string    `json:"account_name"`
-	Online           bool      `json:"online"`
-	Enabled          bool      `json:"enabled"`
-	Exempt           bool      `json:"exempt"`
-	Period           string    `json:"period"`
-	UsedMS           int64     `json:"used_ms"`
-	RemainingMS      int64     `json:"remaining_ms"`
-	LimitMS          int64     `json:"limit_ms"`
-	PeriodStart      time.Time `json:"period_start"`
-	NextReset        time.Time `json:"next_reset"`
-	WarningBeforeMS  []int64   `json:"warning_before_ms"`
-	EnforcementState string    `json:"enforcement_state,omitempty"`
+	UserID           string       `json:"user_id"`
+	PlayerID         string       `json:"player_id"`
+	Name             string       `json:"name"`
+	AccountName      string       `json:"account_name"`
+	Online           bool         `json:"online"`
+	Enabled          bool         `json:"enabled"`
+	Exempt           bool         `json:"exempt"`
+	Period           string       `json:"period"`
+	UsedMS           int64        `json:"used_ms"`
+	RemainingMS      int64        `json:"remaining_ms"`
+	LimitMS          int64        `json:"limit_ms"`
+	PeriodStart      time.Time    `json:"period_start"`
+	NextReset        time.Time    `json:"next_reset"`
+	WarningBeforeMS  []int64      `json:"warning_before_ms"`
+	EnforcementState string       `json:"enforcement_state,omitempty"`
+	Warnings         []warningDTO `json:"warnings"`
 }
 
-func (s *Server) getPlayers(w http.ResponseWriter, _ *http.Request) {
-	players := make([]playerDTO, 0)
-	for _, snapshot := range s.snapshots.Snapshots() {
-		if snapshot.Online {
-			players = append(players, toPlayerDTO(snapshot))
-		}
+type warningDTO struct {
+	ThresholdMS int64     `json:"threshold_ms"`
+	Status      string    `json:"status"`
+	Attempts    int       `json:"attempts"`
+	NextAttempt time.Time `json:"next_attempt,omitempty"`
+}
+
+func (s *Server) getPlayers(w http.ResponseWriter, r *http.Request) {
+	snapshots, err := s.snapshots.OnlineSnapshots(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "could not query player state")
+		return
+	}
+	players := make([]playerDTO, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		players = append(players, toPlayerDTO(snapshot))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"players": players})
 }
@@ -127,13 +140,16 @@ func (s *Server) getPlayer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_user_id", "user ID is required")
 		return
 	}
-	for _, snapshot := range s.snapshots.Snapshots() {
-		if snapshot.Player.UserID == userID {
-			writeJSON(w, http.StatusOK, toPlayerDTO(snapshot))
-			return
-		}
+	snapshot, err := s.snapshots.Snapshot(r.Context(), userID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "player_not_found", "player not found")
+		return
 	}
-	writeError(w, http.StatusNotFound, "player_not_found", "player not found")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "could not query player state")
+		return
+	}
+	writeJSON(w, http.StatusOK, toPlayerDTO(snapshot))
 }
 
 func (s *Server) getPolicies(w http.ResponseWriter, _ *http.Request) {
@@ -174,13 +190,17 @@ func toPlayerDTO(snapshot domain.PlayerSnapshot) playerDTO {
 	for i, warning := range snapshot.Policy.WarningBefore {
 		warnings[i] = warning.Milliseconds()
 	}
+	states := make([]warningDTO, len(snapshot.Warnings))
+	for i, warning := range snapshot.Warnings {
+		states[i] = warningDTO{ThresholdMS: warning.Threshold.Milliseconds(), Status: warning.Status, Attempts: warning.Attempts, NextAttempt: warning.NextAttempt}
+	}
 	return playerDTO{
 		UserID: snapshot.Player.UserID, PlayerID: snapshot.Player.PlayerID, Name: snapshot.Player.Name,
 		AccountName: snapshot.Player.AccountName, Online: snapshot.Online, Enabled: snapshot.Policy.Enabled,
 		Exempt: snapshot.Policy.Exempt, Period: snapshot.Policy.PeriodType, UsedMS: snapshot.Used.Milliseconds(),
 		RemainingMS: snapshot.Remaining.Milliseconds(), LimitMS: snapshot.Policy.Limit.Milliseconds(),
 		PeriodStart: snapshot.Period.Start, NextReset: snapshot.Period.End, WarningBeforeMS: warnings,
-		EnforcementState: snapshot.Enforcement.Status,
+		EnforcementState: snapshot.Enforcement.Status, Warnings: states,
 	}
 }
 
