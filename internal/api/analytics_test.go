@@ -1,0 +1,206 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/kevinmatt/palworld-playtime-guard/internal/config"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
+)
+
+type fakeAnalyticsQueries struct {
+	ranking  []store.RankingRow
+	buckets  []store.ConcurrencyBucket
+	daily    []store.DailyActivity
+	player   domain.Player
+	err      error
+	dailyErr error
+}
+
+func (f fakeAnalyticsQueries) Ranking(context.Context, string, string) ([]store.RankingRow, error) {
+	return f.ranking, f.err
+}
+func (f fakeAnalyticsQueries) Concurrency(context.Context, time.Time, time.Time) ([]store.ConcurrencyBucket, error) {
+	return f.buckets, f.err
+}
+func (f fakeAnalyticsQueries) PlayerDailyActivity(context.Context, string, string, string) ([]store.DailyActivity, error) {
+	return f.daily, f.dailyErr
+}
+func (f fakeAnalyticsQueries) Player(context.Context, string) (domain.Player, error) {
+	return f.player, f.dailyErr
+}
+
+type fakeAnalyticsOnline struct {
+	ids []string
+	at  time.Time
+}
+
+type captureAnalyticsQueries struct {
+	rankingCalls     [][2]string
+	concurrencyCalls [][2]time.Time
+}
+
+func (f *captureAnalyticsQueries) Ranking(_ context.Context, start, end string) ([]store.RankingRow, error) {
+	f.rankingCalls = append(f.rankingCalls, [2]string{start, end})
+	return []store.RankingRow{}, nil
+}
+func (f *captureAnalyticsQueries) Concurrency(_ context.Context, start, end time.Time) ([]store.ConcurrencyBucket, error) {
+	f.concurrencyCalls = append(f.concurrencyCalls, [2]time.Time{start, end})
+	return []store.ConcurrencyBucket{}, nil
+}
+func (f *captureAnalyticsQueries) PlayerDailyActivity(context.Context, string, string, string) ([]store.DailyActivity, error) {
+	return []store.DailyActivity{}, nil
+}
+func (f *captureAnalyticsQueries) Player(context.Context, string) (domain.Player, error) {
+	return domain.Player{}, store.ErrNotFound
+}
+
+func (f fakeAnalyticsOnline) Current() ([]string, time.Time) { return f.ids, f.at }
+
+func analyticsServer(q AnalyticsQueries, online AnalyticsOnline) *Server {
+	s := testServer()
+	s.analytics = q
+	s.analyticsOnline = online
+	s.now = func() time.Time { return time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC) }
+	return s
+}
+
+func TestAnalyticsSummaryIncludesCurrentTodayAndPeak(t *testing.T) {
+	peakAt := time.Date(2026, 7, 8, 2, 5, 0, 0, time.UTC)
+	maximum := 3
+	avg := 2.0
+	q := fakeAnalyticsQueries{
+		ranking: []store.RankingRow{{UserID: "u1", Name: "One", Observed: 90 * time.Minute}},
+		buckets: []store.ConcurrencyBucket{{Start: peakAt, Average: &avg, Max: &maximum, MaxObservedAt: &peakAt, Coverage: 1}},
+	}
+	s := analyticsServer(q, fakeAnalyticsOnline{[]string{"u1"}, peakAt})
+	res := httptest.NewRecorder()
+	s.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/summary", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	var got struct {
+		OnlineCount int       `json:"online_count"`
+		AsOf        time.Time `json:"as_of"`
+		Today       int64     `json:"today_observed_ms"`
+		Peak        int       `json:"peak_count"`
+		Active      int       `json:"active_players"`
+		Ranking     []struct {
+			UserID string `json:"user_id"`
+			Online bool   `json:"online"`
+		} `json:"ranking"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.OnlineCount != 1 || !got.AsOf.Equal(peakAt) || got.Today != int64((90*time.Minute)/time.Millisecond) || got.Peak != 3 || got.Active != 1 || len(got.Ranking) != 1 || !got.Ranking[0].Online {
+		t.Fatalf("response=%+v", got)
+	}
+}
+
+func TestAnalyticsActivityFillsConcurrencyAndPartialDaily(t *testing.T) {
+	at := time.Date(2026, 7, 2, 16, 5, 0, 0, time.UTC)
+	avg, maximum := 1.5, 2
+	q := fakeAnalyticsQueries{buckets: []store.ConcurrencyBucket{{Start: at, Average: &avg, Max: &maximum, Coverage: .5}}, daily: []store.DailyActivity{{Date: "2026-07-06", Observed: time.Hour}}, player: domain.Player{UserID: "u1", Name: "One"}}
+	s := analyticsServer(q, fakeAnalyticsOnline{})
+	res := httptest.NewRecorder()
+	s.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/activity?range=7d&user_id=%20u1%20", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	var got struct {
+		Concurrency []json.RawMessage `json:"concurrency"`
+		Player      *struct {
+			Name  string `json:"name"`
+			Daily []struct {
+				Date     string `json:"date"`
+				Observed int64  `json:"observed_ms"`
+			} `json:"daily"`
+		} `json:"player"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Concurrency) != 7*24*12 || got.Player == nil || got.Player.Name != "One" || len(got.Player.Daily) != 7 || got.Player.Daily[4].Observed != int64(time.Hour/time.Millisecond) {
+		t.Fatalf("concurrency=%d player=%+v", len(got.Concurrency), got.Player)
+	}
+}
+
+func TestAnalyticsValidationAndErrors(t *testing.T) {
+	for _, path := range []string{"/api/v1/analytics/summary?period=month", "/api/v1/analytics/activity?range=8d"} {
+		res := httptest.NewRecorder()
+		analyticsServer(fakeAnalyticsQueries{}, fakeAnalyticsOnline{}).Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("%s code=%d", path, res.Code)
+		}
+	}
+	res := httptest.NewRecorder()
+	analyticsServer(fakeAnalyticsQueries{dailyErr: store.ErrNotFound}, fakeAnalyticsOnline{}).Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/activity?user_id=missing", nil))
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("not found code=%d", res.Code)
+	}
+	res = httptest.NewRecorder()
+	analyticsServer(fakeAnalyticsQueries{dailyErr: errors.New("db")}, fakeAnalyticsOnline{}).Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/activity?user_id=u1", nil))
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("db code=%d", res.Code)
+	}
+}
+
+func TestAnalyticsActivityEmptyKnownPlayerHasEmptyDaily(t *testing.T) {
+	q := fakeAnalyticsQueries{player: domain.Player{UserID: "u1", Name: "One"}}
+	res := httptest.NewRecorder()
+	analyticsServer(q, fakeAnalyticsOnline{}).Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/activity?user_id=u1", nil))
+	var got struct {
+		Player struct {
+			Daily []any `json:"daily"`
+		} `json:"player"`
+	}
+	_ = json.Unmarshal(res.Body.Bytes(), &got)
+	if res.Code != http.StatusOK || got.Player.Daily == nil || len(got.Player.Daily) != 0 {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestAnalyticsSummaryUsesShanghaiMondayAndTodayBoundaries(t *testing.T) {
+	q := &captureAnalyticsQueries{}
+	s := analyticsServer(q, fakeAnalyticsOnline{})
+	res := httptest.NewRecorder()
+	s.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/summary?period=week", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	wantRanking := [][2]string{{"2026-07-06", "2026-07-13"}, {"2026-07-08", "2026-07-09"}}
+	if len(q.rankingCalls) != 2 || q.rankingCalls[0] != wantRanking[0] || q.rankingCalls[1] != wantRanking[1] {
+		t.Fatalf("ranking calls=%v", q.rankingCalls)
+	}
+	if len(q.concurrencyCalls) != 1 || q.concurrencyCalls[0][0].Format(time.RFC3339) != "2026-07-07T16:00:00Z" || q.concurrencyCalls[0][1].Format(time.RFC3339) != "2026-07-08T16:00:00Z" {
+		t.Fatalf("concurrency calls=%v", q.concurrencyCalls)
+	}
+}
+
+func TestAnalyticsActivityDSTIteratesUTCInsteadOfAssumingPointCount(t *testing.T) {
+	q := &captureAnalyticsQueries{}
+	s := analyticsServer(q, fakeAnalyticsOnline{})
+	s.policies = fakePolicies{value: config.Policy{Timezone: "America/New_York"}}
+	s.now = func() time.Time { return time.Date(2026, 3, 8, 16, 0, 0, 0, time.UTC) }
+	res := httptest.NewRecorder()
+	s.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/activity?range=7d", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	var got struct {
+		Concurrency []json.RawMessage `json:"concurrency"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Concurrency) != 167*12 {
+		t.Fatalf("points=%d want=%d", len(got.Concurrency), 167*12)
+	}
+}
