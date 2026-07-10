@@ -106,13 +106,21 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 }
 
 // SetLocation changes the calendar timezone used by future observations.
-// Existing daily rows retain the timezone in which they were recorded.
+// Existing daily rows retain the timezone in which they were recorded. A
+// changed zone deliberately clears the observation baseline while retaining
+// online players: the single interval crossing the transition is omitted
+// rather than retroactively assigning it to either calendar timezone.
 func (s *Service) SetLocation(location *time.Location) error {
 	if location == nil {
 		return fmt.Errorf("set analytics location: location is nil")
 	}
 	s.mu.Lock()
+	if s.location.String() == location.String() {
+		s.mu.Unlock()
+		return nil
+	}
 	s.location = location
+	s.lastAt = time.Time{}
 	s.mu.Unlock()
 	return nil
 }
@@ -143,8 +151,8 @@ func (s *Service) Restore(at time.Time, players []domain.Player) error {
 func (s *Service) Current() ([]string, time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lastAt.IsZero() {
-		return nil, time.Time{}
+	if len(s.online) == 0 {
+		return nil, s.lastAt
 	}
 	return sortedPlayerIDs(s.online), s.lastAt
 }

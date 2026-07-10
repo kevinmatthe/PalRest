@@ -116,6 +116,66 @@ func TestSetLocationAppliesProspectivelyWithoutRebucketingHistory(t *testing.T) 
 	}
 }
 
+func TestSetLocationDropsCrossTimezoneIntervalButRetainsOnlineState(t *testing.T) {
+	shanghai, _ := time.LoadLocation("Asia/Shanghai")
+	repo := &fakeRecorder{}
+	s := New(repo, time.Hour, shanghai)
+	u1 := domain.Player{UserID: "u1", Name: "One"}
+	first := mustTime(t, "2026-07-11T16:30:00Z")
+	if err := s.Observe(t.Context(), first, []domain.Player{u1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLocation(time.UTC); err != nil {
+		t.Fatal(err)
+	}
+	ids, asOf := s.Current()
+	if !reflect.DeepEqual(ids, []string{"u1"}) || !asOf.IsZero() {
+		t.Fatalf("current ids=%v as_of=%s", ids, asOf)
+	}
+
+	if err := s.Observe(t.Context(), first.Add(30*time.Minute), []domain.Player{u1}); err != nil {
+		t.Fatal(err)
+	}
+	transition := repo.observations[1]
+	if len(transition.Intervals) != 0 || len(transition.JoinedUserIDs) != 0 || len(transition.LeftUserIDs) != 0 || len(transition.Players) != 1 || transition.LocalDate != "2026-07-11" {
+		t.Fatalf("transition observation=%+v", transition)
+	}
+	if err := s.Observe(t.Context(), first.Add(time.Hour), []domain.Player{u1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := repo.observations[2].Intervals; len(got) == 0 || got[0].LocalDate != "2026-07-11" {
+		t.Fatalf("new-zone intervals=%+v", got)
+	}
+	if err := s.Observe(t.Context(), first.Add(90*time.Minute), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := repo.observations[3].LeftUserIDs; !reflect.DeepEqual(got, []string{"u1"}) {
+		t.Fatalf("left=%v", got)
+	}
+}
+
+func TestSetLocationSameZoneRetainsContinuity(t *testing.T) {
+	repo := &fakeRecorder{}
+	s := New(repo, time.Hour, time.UTC)
+	first := mustTime(t, "2026-07-11T16:30:00Z")
+	if err := s.Observe(t.Context(), first, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLocation(time.UTC); err != nil {
+		t.Fatal(err)
+	}
+	_, asOf := s.Current()
+	if !asOf.Equal(first) {
+		t.Fatalf("same-zone change cleared as_of=%s", asOf)
+	}
+	if err := s.Observe(t.Context(), first.Add(30*time.Minute), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.observations[1].Intervals) == 0 {
+		t.Fatal("same-zone change broke interval continuity")
+	}
+}
+
 func TestObserveFirstObservationJoinsEveryoneWithoutInterval(t *testing.T) {
 	repo := &fakeRecorder{}
 	location, err := time.LoadLocation("Asia/Shanghai")
