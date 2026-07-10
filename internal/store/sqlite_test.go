@@ -47,6 +47,50 @@ func TestOpenEnablesSQLiteSafetyPragmas(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesAnalyticsSchema(t *testing.T) {
+	repo, _ := openTemp(t)
+
+	var version int
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 6 {
+		t.Fatalf("migration version=%d", version)
+	}
+
+	for _, table := range []string{"player_sessions", "concurrency_buckets", "player_daily_stats"} {
+		var count int
+		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("table %s count=%d", table, count)
+		}
+	}
+
+	now := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
+	if _, err := repo.db.ExecContext(t.Context(), `
+INSERT INTO players(user_id, name, first_seen, last_online) VALUES(?, ?, ?, ?)`,
+		"steam_1", "Kevin", formatTime(now), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(t.Context(), `
+INSERT INTO player_sessions(user_id, started_at, last_observed_at) VALUES(?, ?, ?)`,
+		"steam_1", formatTime(now), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(t.Context(), `
+INSERT INTO player_sessions(user_id, started_at, last_observed_at) VALUES(?, ?, ?)`,
+		"steam_1", formatTime(now.Add(time.Minute)), formatTime(now.Add(time.Minute))); err == nil {
+		t.Fatal("expected duplicate open session to fail")
+	}
+	if _, err := repo.db.ExecContext(t.Context(), `
+INSERT INTO player_sessions(user_id, started_at, ended_at, last_observed_at, close_reason) VALUES(?, ?, ?, ?, ?)`,
+		"steam_1", formatTime(now.Add(time.Minute)), formatTime(now.Add(2*time.Minute)), formatTime(now.Add(2*time.Minute)), "offline"); err != nil {
+		t.Fatalf("insert closed session: %v", err)
+	}
+}
+
 func TestUsagePersistsAcrossReopen(t *testing.T) {
 	repo, path := openTemp(t)
 	now := time.Date(2026, 7, 10, 0, 0, 30, 0, time.UTC)

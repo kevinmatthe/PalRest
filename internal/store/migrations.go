@@ -89,3 +89,35 @@ const schemaV5 = `
 ALTER TABLE policy_states
 ADD COLUMN last_credit_recovered_ms INTEGER NOT NULL DEFAULT 0 CHECK (last_credit_recovered_ms >= 0);
 `
+
+const schemaV6 = `
+CREATE TABLE player_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL REFERENCES players(user_id) ON DELETE CASCADE,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    last_observed_at TEXT NOT NULL,
+    close_reason TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX player_sessions_one_open ON player_sessions(user_id) WHERE ended_at IS NULL;
+CREATE INDEX player_sessions_range ON player_sessions(started_at, ended_at);
+
+CREATE TABLE concurrency_buckets (
+    bucket_start TEXT PRIMARY KEY,
+    weighted_count_ms INTEGER NOT NULL DEFAULT 0 CHECK(weighted_count_ms >= 0),
+    observed_ms INTEGER NOT NULL DEFAULT 0 CHECK(observed_ms >= 0),
+    max_count INTEGER NOT NULL DEFAULT 0 CHECK(max_count >= 0),
+    max_observed_at TEXT
+);
+
+CREATE TABLE player_daily_stats (
+    user_id TEXT NOT NULL REFERENCES players(user_id) ON DELETE CASCADE,
+    local_date TEXT NOT NULL,
+    observed_ms INTEGER NOT NULL DEFAULT 0 CHECK(observed_ms >= 0),
+    first_observed_at TEXT NOT NULL,
+    last_observed_at TEXT NOT NULL,
+    session_count INTEGER NOT NULL DEFAULT 0 CHECK(session_count >= 0),
+    PRIMARY KEY(user_id, local_date)
+);
+CREATE INDEX player_daily_stats_range ON player_daily_stats(local_date, observed_ms DESC, user_id);
+`
