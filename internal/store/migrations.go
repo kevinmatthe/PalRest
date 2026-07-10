@@ -101,6 +101,7 @@ CREATE TABLE player_sessions (
 );
 CREATE UNIQUE INDEX player_sessions_one_open ON player_sessions(user_id) WHERE ended_at IS NULL;
 CREATE INDEX player_sessions_range ON player_sessions(started_at, ended_at);
+CREATE INDEX player_sessions_ended_at ON player_sessions(ended_at) WHERE ended_at IS NOT NULL;
 
 CREATE TABLE concurrency_buckets (
     bucket_start TEXT PRIMARY KEY,

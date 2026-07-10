@@ -67,6 +67,13 @@ func TestOpenMigratesAnalyticsSchema(t *testing.T) {
 			t.Fatalf("table %s count=%d", table, count)
 		}
 	}
+	var cleanupIndex int
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='player_sessions_ended_at'`).Scan(&cleanupIndex); err != nil {
+		t.Fatal(err)
+	}
+	if cleanupIndex != 1 {
+		t.Fatalf("player_sessions_ended_at count=%d", cleanupIndex)
+	}
 
 	now := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
 	if _, err := repo.db.ExecContext(t.Context(), `

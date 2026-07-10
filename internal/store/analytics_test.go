@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
@@ -94,21 +95,29 @@ func TestCleanupAnalyticsBatchesAndPreservesOpenSessions(t *testing.T) {
 	repo, _ := openTemp(t)
 	ctx := t.Context()
 	at := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	mustExec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := repo.db.ExecContext(ctx, query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, p := range []domain.Player{{UserID: "u1"}, {UserID: "u2"}, {UserID: "u3"}, {UserID: "open"}} {
-		_ = repo.WithTx(ctx, func(tx *Tx) error { return tx.UpsertPlayer(p, at) })
+		if err := repo.WithTx(ctx, func(tx *Tx) error { return tx.UpsertPlayer(p, at) }); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cutoff := at.Add(10 * time.Minute)
 	for _, id := range []string{"u1", "u2", "u3"} {
-		_, _ = repo.db.ExecContext(ctx, `INSERT INTO player_sessions(user_id,started_at,last_observed_at,ended_at) VALUES(?,?,?,?)`, id, formatTime(at.Add(-time.Hour)), formatTime(at), formatTime(at))
+		mustExec(`INSERT INTO player_sessions(user_id,started_at,last_observed_at,ended_at) VALUES(?,?,?,?)`, id, formatTime(at.Add(-time.Hour)), formatTime(at), formatTime(at))
 	}
-	_, _ = repo.db.ExecContext(ctx, `INSERT INTO player_sessions(user_id,started_at,last_observed_at,ended_at) VALUES(?,?,?,?)`, "open", formatTime(at), formatTime(at), nil)
-	_, _ = repo.db.ExecContext(ctx, `INSERT INTO player_sessions(user_id,started_at,last_observed_at,ended_at) VALUES(?,?,?,?)`, "open", formatTime(at.Add(-time.Hour)), formatTime(at), formatTime(cutoff))
+	mustExec(`INSERT INTO player_sessions(user_id,started_at,last_observed_at,ended_at) VALUES(?,?,?,?)`, "open", formatTime(at), formatTime(at), nil)
+	mustExec(`INSERT INTO player_sessions(user_id,started_at,last_observed_at,ended_at) VALUES(?,?,?,?)`, "open", formatTime(at.Add(-time.Hour)), formatTime(at), formatTime(cutoff))
 	for i := 0; i < 3; i++ {
-		_, _ = repo.db.ExecContext(ctx, `INSERT INTO concurrency_buckets VALUES(?,?,?,?,?)`, formatTime(at.Add(time.Duration(i)*time.Minute)), 1, 1, 1, formatTime(at))
-		_, _ = repo.db.ExecContext(ctx, `INSERT INTO player_daily_stats VALUES(?,?,?,?,?,?)`, []string{"u1", "u2", "u3"}[i], "2026-07-0"+string(rune('6'+i)), 1, formatTime(at), formatTime(at), 1)
+		mustExec(`INSERT INTO concurrency_buckets VALUES(?,?,?,?,?)`, formatTime(at.Add(time.Duration(i)*time.Minute)), 1, 1, 1, formatTime(at))
+		mustExec(`INSERT INTO player_daily_stats VALUES(?,?,?,?,?,?)`, []string{"u1", "u2", "u3"}[i], "2026-07-0"+string(rune('6'+i)), 1, formatTime(at), formatTime(at), 1)
 	}
-	_, _ = repo.db.ExecContext(ctx, `INSERT INTO concurrency_buckets VALUES(?,?,?,?,?)`, formatTime(cutoff), 1, 1, 1, formatTime(at))
-	_, _ = repo.db.ExecContext(ctx, `INSERT INTO player_daily_stats VALUES(?,?,?,?,?,?)`, "open", "2026-07-10", 1, formatTime(at), formatTime(at), 1)
+	mustExec(`INSERT INTO concurrency_buckets VALUES(?,?,?,?,?)`, formatTime(cutoff), 1, 1, 1, formatTime(at))
+	mustExec(`INSERT INTO player_daily_stats VALUES(?,?,?,?,?,?)`, "open", "2026-07-10", 1, formatTime(at), formatTime(at), 1)
 	if err := repo.CleanupAnalytics(ctx, cutoff, "2026-07-10", 1); err != nil {
 		t.Fatal(err)
 	}
@@ -138,6 +147,30 @@ func TestCleanupAnalyticsBatchesAndPreservesOpenSessions(t *testing.T) {
 		if n != w {
 			t.Fatalf("%s=%d", q, n)
 		}
+	}
+}
+
+func TestPlayerDailyActivityPreservesCanceledContext(t *testing.T) {
+	repo, _ := openTemp(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := repo.PlayerDailyActivity(ctx, "u1", "2026-01-01", "2026-01-02")
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrNotFound) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestConcurrencyAcceptsSemanticUTCAndRejectsNonzeroOffset(t *testing.T) {
+	repo, _ := openTemp(t)
+	zero := time.FixedZone("UTC", 0)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, zero)
+	if _, err := repo.Concurrency(t.Context(), start, start.Add(time.Minute)); err != nil {
+		t.Fatalf("zero offset: %v", err)
+	}
+	plusOne := time.FixedZone("plus-one", 3600)
+	start = time.Date(2026, 1, 1, 0, 0, 0, 0, plusOne)
+	if _, err := repo.Concurrency(t.Context(), start, start.Add(time.Minute)); err == nil {
+		t.Fatal("accepted nonzero offset")
 	}
 }
 

@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -79,9 +81,12 @@ func (r *Repository) Ranking(ctx context.Context, startDate, endDate string) ([]
 }
 
 func (r *Repository) Concurrency(ctx context.Context, start, end time.Time) ([]ConcurrencyBucket, error) {
-	if start.IsZero() || end.IsZero() || !start.Before(end) || start.Location() != time.UTC || end.Location() != time.UTC {
+	_, startOffset := start.Zone()
+	_, endOffset := end.Zone()
+	if start.IsZero() || end.IsZero() || !start.Before(end) || startOffset != 0 || endOffset != 0 {
 		return nil, fmt.Errorf("concurrency: UTC start must be before UTC end")
 	}
+	start, end = start.UTC(), end.UTC()
 	rows, err := r.db.QueryContext(ctx, `SELECT bucket_start,weighted_count_ms,observed_ms,max_count,max_observed_at FROM concurrency_buckets WHERE bucket_start>=? AND bucket_start<? ORDER BY bucket_start`, formatTime(start), formatTime(end))
 	if err != nil {
 		return nil, fmt.Errorf("query concurrency: %w", err)
@@ -132,7 +137,10 @@ func (r *Repository) PlayerDailyActivity(ctx context.Context, userID, startDate,
 	}
 	var exists int
 	if err := r.db.QueryRowContext(ctx, `SELECT 1 FROM players WHERE user_id=?`, userID).Scan(&exists); err != nil {
-		return nil, ErrNotFound
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("check player daily activity player: %w", err)
 	}
 	rows, err := r.db.QueryContext(ctx, `SELECT local_date,observed_ms FROM player_daily_stats WHERE user_id=? AND local_date>=? AND local_date<? ORDER BY local_date`, userID, startDate, endDate)
 	if err != nil {
