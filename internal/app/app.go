@@ -1,9 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"reflect"
@@ -17,6 +19,7 @@ import (
 	"github.com/kevinmatt/palworld-playtime-guard/internal/policy"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/poller"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
+	"go.yaml.in/yaml/v3"
 )
 
 type App struct {
@@ -147,11 +150,16 @@ func (a *App) reload() error {
 	if err != nil {
 		return a.reloadError(fmt.Errorf("read config: %w", err))
 	}
+	current := a.CurrentConfig()
+	data, err = withoutPolicySection(data)
+	if err != nil {
+		return a.reloadError(err)
+	}
 	next, err := config.Parse(data, os.LookupEnv)
 	if err != nil {
 		return a.reloadError(err)
 	}
-	current := a.CurrentConfig()
+	next.Policy = current.Policy
 	if !reflect.DeepEqual(current.Server, next.Server) || !reflect.DeepEqual(current.HTTP, next.HTTP) || !reflect.DeepEqual(current.Storage, next.Storage) ||
 		current.Enforcement.KickRetryInitial != next.Enforcement.KickRetryInitial || current.Enforcement.KickRetryMax != next.Enforcement.KickRetryMax {
 		return a.reloadError(fmt.Errorf("server, HTTP, storage, and retry settings require a restart"))
@@ -164,6 +172,36 @@ func (a *App) reload() error {
 	a.configMu.Unlock()
 	a.poller.SetConfigReloadError("")
 	return nil
+}
+
+func withoutPolicySection(data []byte) ([]byte, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	var document yaml.Node
+	if err := dec.Decode(&document); err != nil {
+		return nil, fmt.Errorf("decode config for reload: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("decode config for reload: multiple YAML documents are not allowed")
+		}
+		return nil, fmt.Errorf("decode config for reload: %w", err)
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("decode config for reload: root must be a mapping")
+	}
+	root := document.Content[0]
+	for i := 0; i < len(root.Content); i += 2 {
+		if root.Content[i].Value == "policy" {
+			root.Content = append(root.Content[:i], root.Content[i+2:]...)
+			break
+		}
+	}
+	result, err := yaml.Marshal(&document)
+	if err != nil {
+		return nil, fmt.Errorf("encode config for reload: %w", err)
+	}
+	return result, nil
 }
 
 func (a *App) reloadError(err error) error {

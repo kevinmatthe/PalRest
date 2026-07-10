@@ -82,6 +82,8 @@ export type Policies = {
   overrides: Record<string, OverrideRule>;
 };
 
+export type PolicyDocument = Omit<Policies, 'version' | 'source'>;
+
 export type PlayersResponse = {
   players: Player[];
 };
@@ -169,7 +171,7 @@ export function resetPlayer(userID: string) {
   });
 }
 
-export function savePolicies(policy: Omit<Policies, 'version'>) {
+export function savePolicies(policy: PolicyDocument) {
   return requestJSON<Policies>('/api/v1/policies', {
     method: 'PUT',
     body: JSON.stringify(policy),
