@@ -78,6 +78,15 @@ func New(configPath string) (*App, error) {
 		return nil, fmt.Errorf("load policy timezone: %w", err)
 	}
 	analyticsService := analytics.New(repo, cfg.Server.MaxObservationGap.Duration, location)
+	openPlayers, analyticsAt, err := repo.OpenAnalyticsPlayers(context.Background())
+	if err != nil {
+		_ = repo.Close()
+		return nil, err
+	}
+	if err := analyticsService.Restore(analyticsAt, openPlayers); err != nil {
+		_ = repo.Close()
+		return nil, err
+	}
 	guardService := guard.New(repo, policies, cfg.Server.MaxObservationGap.Duration, cfg.Enforcement.KickRetryInitial.Duration, cfg.Enforcement.KickRetryMax.Duration)
 	client := palworld.New(cfg.Server.BaseURL, cfg.Password(), cfg.Server.RequestTimeout.Duration)
 	poll, err := poller.New(client, guardService, analyticsService, cfg.Server.PollInterval.Duration, cfg.Enforcement.AnnounceMessage, cfg.Enforcement.KickMessage, time.Now)

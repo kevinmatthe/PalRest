@@ -24,6 +24,46 @@ type AnalyticsObservation struct {
 	Intervals     []AnalyticsInterval
 }
 
+// OpenAnalyticsPlayers returns the players with open analytics sessions and the
+// earliest last-observed time shared by the recovered baseline.
+func (r *Repository) OpenAnalyticsPlayers(ctx context.Context) ([]domain.Player, time.Time, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT p.user_id, p.player_id, p.name, p.account_name, p.last_online, s.last_observed_at
+FROM player_sessions s
+JOIN players p ON p.user_id = s.user_id
+WHERE s.ended_at IS NULL
+ORDER BY p.user_id`)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("query open analytics players: %w", err)
+	}
+	defer rows.Close()
+	var players []domain.Player
+	var baseline time.Time
+	for rows.Next() {
+		var player domain.Player
+		var lastOnline, lastObserved string
+		if err := rows.Scan(&player.UserID, &player.PlayerID, &player.Name, &player.AccountName, &lastOnline, &lastObserved); err != nil {
+			return nil, time.Time{}, fmt.Errorf("scan open analytics player: %w", err)
+		}
+		player.LastOnline, err = parseTime(lastOnline)
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("parse open analytics player %q last online: %w", player.UserID, err)
+		}
+		observedAt, err := parseTime(lastObserved)
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("parse open analytics player %q baseline: %w", player.UserID, err)
+		}
+		if baseline.IsZero() || observedAt.Before(baseline) {
+			baseline = observedAt
+		}
+		players = append(players, player)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, time.Time{}, fmt.Errorf("iterate open analytics players: %w", err)
+	}
+	return players, baseline, nil
+}
+
 func (r *Repository) RecordAnalyticsObservation(ctx context.Context, observation AnalyticsObservation) error {
 	if observation.At.IsZero() {
 		return fmt.Errorf("record analytics observation: observation time is zero")

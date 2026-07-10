@@ -88,6 +88,29 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 	return nil
 }
 
+// Restore establishes the in-memory baseline for sessions recovered from the
+// repository without writing a new observation.
+func (s *Service) Restore(at time.Time, players []domain.Player) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.lastAt.IsZero() || len(s.online) != 0 {
+		return fmt.Errorf("restore analytics: service is already initialized")
+	}
+	if at.IsZero() {
+		if len(players) == 0 {
+			return nil
+		}
+		return fmt.Errorf("restore analytics: baseline time is zero")
+	}
+	current, _, err := normalizePlayers(players)
+	if err != nil {
+		return fmt.Errorf("restore analytics: %w", err)
+	}
+	s.lastAt = at.UTC()
+	s.online = current
+	return nil
+}
+
 func (s *Service) Current() ([]string, time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

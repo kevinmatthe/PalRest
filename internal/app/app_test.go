@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
 )
 
 func appConfig(baseURL, dbPath, listen string, enabled bool) string {
@@ -73,6 +76,29 @@ func TestNewLoadsDisabledConfiguration(t *testing.T) {
 	}
 	if application.CurrentConfig().Policy.Default.Enabled {
 		t.Fatal("expected disabled policy")
+	}
+}
+
+func TestNewRestoresOpenAnalyticsSessions(t *testing.T) {
+	application, path := newTestApp(t)
+	at := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
+	if err := application.repo.RecordAnalyticsObservation(t.Context(), store.AnalyticsObservation{
+		At: at, LocalDate: "2026-07-11", Players: []domain.Player{{UserID: "u1", Name: "One"}}, JoinedUserIDs: []string{"u1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	ids, restoredAt := restarted.analytics.Current()
+	if len(ids) != 1 || ids[0] != "u1" || !restoredAt.Equal(at) {
+		t.Fatalf("restored ids=%v at=%v", ids, restoredAt)
 	}
 }
 

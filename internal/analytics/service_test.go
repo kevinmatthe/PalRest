@@ -102,6 +102,53 @@ func TestObserveContinuationAttributesGapToPreviousPlayers(t *testing.T) {
 	}
 }
 
+func TestRestoreContinuesOpenSessionsAndClosesMissingPlayers(t *testing.T) {
+	repo, _ := store.Open(t.Context(), t.TempDir()+"/guard.db")
+	defer repo.Close()
+	start := mustTime(t, "2026-07-11T00:01:00Z")
+	players := []domain.Player{{UserID: "u1", Name: "One"}, {UserID: "u2", Name: "Two"}}
+	first := New(repo, time.Minute, time.UTC)
+	if err := first.Observe(t.Context(), start, players); err != nil {
+		t.Fatal(err)
+	}
+	restoredPlayers, restoredAt, err := repo.OpenAnalyticsPlayers(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(repo, time.Minute, time.UTC)
+	if err := restarted.Restore(restoredAt, restoredPlayers); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Observe(t.Context(), start.Add(30*time.Second), []domain.Player{{UserID: "u1", Name: "One"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	open, at, err := repo.OpenAnalyticsPlayers(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(open) != 1 || open[0].UserID != "u1" || !at.Equal(start.Add(30*time.Second)) {
+		t.Fatalf("open=%+v at=%v", open, at)
+	}
+}
+
+func TestRestoreRejectsInvalidOrInitializedState(t *testing.T) {
+	service := New(&fakeRecorder{}, time.Minute, time.UTC)
+	if err := service.Restore(time.Time{}, []domain.Player{{UserID: "u1"}}); err == nil {
+		t.Fatal("expected zero baseline error")
+	}
+	at := mustTime(t, "2026-07-11T00:01:00Z")
+	if err := service.Restore(at, []domain.Player{{UserID: "u1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Restore(at, nil); err == nil {
+		t.Fatal("expected repeated restore error")
+	}
+	if err := service.Restore(time.Time{}, nil); err == nil {
+		t.Fatal("expected empty repeated restore error")
+	}
+}
+
 func TestObserveReportsJoinsAndLeavesInSortedOrder(t *testing.T) {
 	repo := &fakeRecorder{}
 	service := New(repo, time.Minute, time.UTC)

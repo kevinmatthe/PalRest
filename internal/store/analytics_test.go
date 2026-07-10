@@ -1,12 +1,52 @@
 package store
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
 )
+
+func TestOpenAnalyticsPlayersSurvivesReopenAndUsesEarliestBaseline(t *testing.T) {
+	repo, path := openTemp(t)
+	ctx := t.Context()
+	base := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
+	players := []domain.Player{{UserID: "u2", Name: "Two"}, {UserID: "u1", Name: "One"}}
+	if err := repo.RecordAnalyticsObservation(ctx, AnalyticsObservation{
+		At: base, LocalDate: "2026-07-11", Players: players, JoinedUserIDs: []string{"u1", "u2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `UPDATE player_sessions SET last_observed_at=? WHERE user_id='u2'`, formatTime(base.Add(time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+
+	got, at, err := repo.OpenAnalyticsPlayers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []domain.Player{{UserID: "u1", Name: "One", LastOnline: base}, {UserID: "u2", Name: "Two", LastOnline: base}}) || !at.Equal(base) {
+		t.Fatalf("players=%+v at=%v", got, at)
+	}
+}
+
+func TestOpenAnalyticsPlayersEmpty(t *testing.T) {
+	repo, _ := openTemp(t)
+	players, at, err := repo.OpenAnalyticsPlayers(t.Context())
+	if err != nil || len(players) != 0 || !at.IsZero() {
+		t.Fatalf("players=%v at=%v err=%v", players, at, err)
+	}
+}
 
 func TestRecordAnalyticsObservationPersistsLifecycleAndAggregates(t *testing.T) {
 	repo, _ := openTemp(t)
