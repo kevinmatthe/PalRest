@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -140,6 +142,87 @@ func TestWarningIsUniqueAndEnforcementIsAppendOnly(t *testing.T) {
 	events, err := repo.EnforcementEvents(context.Background(), "steam_1", samplePeriod().Key)
 	if err != nil || len(events) != 1 || events[0].Result != "success" {
 		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
+func TestPolicyStateSchemaStoresLastCreditRecovered(t *testing.T) {
+	repo, _ := openTemp(t)
+	now := time.Now().UTC()
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error {
+		if err := tx.UpsertPlayer(domain.Player{UserID: "credit-user", Name: "Credit"}, now); err != nil {
+			return err
+		}
+		_, err := tx.tx.Exec(`
+INSERT INTO policy_states(user_id, policy_revision, strategy, credit_ms, last_credit_recovered_ms, updated_at)
+VALUES(?, ?, 'credit', ?, ?, ?)`, "credit-user", "revision", 45*60*1000, 15*60*1000, formatTime(now))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var recoveredMS int64
+	if err := repo.db.QueryRow(`SELECT last_credit_recovered_ms FROM policy_states WHERE user_id=?`, "credit-user").Scan(&recoveredMS); err != nil {
+		t.Fatal(err)
+	}
+	if recoveredMS != 15*60*1000 {
+		t.Fatalf("recovered_ms=%d", recoveredMS)
+	}
+}
+
+func TestPolicyStateReadsLastCreditRecovered(t *testing.T) {
+	repo, _ := openTemp(t)
+	now := time.Now().UTC()
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error {
+		if err := tx.UpsertPlayer(domain.Player{UserID: "credit-user", Name: "Credit"}, now); err != nil {
+			return err
+		}
+		if _, err := tx.tx.Exec(`
+INSERT INTO policy_states(user_id, policy_revision, strategy, credit_ms, last_credit_recovered_ms, updated_at)
+VALUES(?, ?, 'credit', ?, ?, ?)`, "credit-user", "revision", 45*60*1000, 15*60*1000, formatTime(now)); err != nil {
+			return err
+		}
+		state, err := tx.PolicyState("credit-user", "revision")
+		if err != nil {
+			return err
+		}
+		field := reflect.ValueOf(state).FieldByName("LastCreditRecovered")
+		if !field.IsValid() {
+			return errors.New("PolicyState.LastCreditRecovered is missing")
+		}
+		if got := time.Duration(field.Int()); got != 15*time.Minute {
+			return fmt.Errorf("last recovered=%v", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPolicyStateUpsertWritesLastCreditRecovered(t *testing.T) {
+	repo, _ := openTemp(t)
+	now := time.Now().UTC()
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error {
+		if err := tx.UpsertPlayer(domain.Player{UserID: "credit-user", Name: "Credit"}, now); err != nil {
+			return err
+		}
+		return tx.UpsertPolicyState(PolicyState{
+			UserID: "credit-user", PolicyRevision: "revision", Strategy: "credit",
+			Credit: 45 * time.Minute, LastCreditAt: now.Add(-time.Hour),
+			LastCreditRecovered: 15 * time.Minute, UpdatedAt: now,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error {
+		state, err := tx.PolicyState("credit-user", "revision")
+		if err != nil {
+			return err
+		}
+		if state.LastCreditRecovered != 15*time.Minute {
+			return fmt.Errorf("last recovered=%v", state.LastCreditRecovered)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
