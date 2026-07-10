@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -117,6 +118,54 @@ func TestWarningIsUniqueAndEnforcementIsAppendOnly(t *testing.T) {
 	}
 	events, err := repo.EnforcementEvents(context.Background(), "steam_1", samplePeriod().Key)
 	if err != nil || len(events) != 1 || events[0].Result != "success" {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
+func TestOpenUpgradesVersionOneEnforcementSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "guard.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSchema := `
+CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+INSERT INTO schema_migrations(version, applied_at) VALUES(1, '2026-07-10T00:00:00Z');
+CREATE TABLE players (
+    user_id TEXT PRIMARY KEY, player_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL,
+    account_name TEXT NOT NULL DEFAULT '', first_seen TEXT NOT NULL, last_online TEXT NOT NULL
+);
+CREATE TABLE enforcement_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL REFERENCES players(user_id) ON DELETE CASCADE,
+    period_key TEXT NOT NULL, action TEXT NOT NULL, result TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 0, error_summary TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+);`
+	if _, err := db.Exec(oldSchema); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	now := time.Now().UTC()
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error {
+		if err := tx.UpsertPlayer(domain.Player{UserID: "steam_1", Name: "Kevin"}, now); err != nil {
+			return err
+		}
+		return tx.AppendEnforcement(EnforcementEvent{
+			UserID: "steam_1", PeriodKey: "period", Action: "kick", Result: "failure",
+			PolicyRevision: "revision-2", CreatedAt: now,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := repo.EnforcementEventsForPolicy(t.Context(), "steam_1", "period", "revision-2")
+	if err != nil || len(events) != 1 {
 		t.Fatalf("events=%+v err=%v", events, err)
 	}
 }

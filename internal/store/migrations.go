@@ -44,7 +44,6 @@ CREATE TABLE IF NOT EXISTS enforcement_events (
     period_key TEXT NOT NULL,
     action TEXT NOT NULL,
     result TEXT NOT NULL,
-    policy_revision TEXT NOT NULL DEFAULT '',
     generation INTEGER NOT NULL DEFAULT 0,
     error_summary TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
@@ -52,4 +51,10 @@ CREATE TABLE IF NOT EXISTS enforcement_events (
 
 CREATE INDEX IF NOT EXISTS enforcement_lookup
 ON enforcement_events(user_id, period_key, generation, created_at);
+`
+
+const schemaV2 = `
+ALTER TABLE enforcement_events ADD COLUMN policy_revision TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS enforcement_policy_lookup
+ON enforcement_events(user_id, period_key, policy_revision, created_at);
 `

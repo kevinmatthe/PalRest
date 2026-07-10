@@ -74,16 +74,69 @@ func (r *Repository) migrate(ctx context.Context) error {
 		return fmt.Errorf("begin migration: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, schemaV1); err != nil {
-		return fmt.Errorf("apply migration 1: %w", err)
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		return fmt.Errorf("create migration table: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(1, ?)`, formatTime(time.Now())); err != nil {
-		return fmt.Errorf("record migration 1: %w", err)
+	var version int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
+		return fmt.Errorf("read migration version: %w", err)
+	}
+	if version < 1 {
+		if _, err := tx.ExecContext(ctx, schemaV1); err != nil {
+			return fmt.Errorf("apply migration 1: %w", err)
+		}
+		if err := recordMigration(ctx, tx, 1); err != nil {
+			return err
+		}
+	}
+	if version < 2 {
+		hasRevision, err := columnExists(ctx, tx, "enforcement_events", "policy_revision")
+		if err != nil {
+			return err
+		}
+		if !hasRevision {
+			if _, err := tx.ExecContext(ctx, schemaV2); err != nil {
+				return fmt.Errorf("apply migration 2: %w", err)
+			}
+		} else if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS enforcement_policy_lookup ON enforcement_events(user_id, period_key, policy_revision, created_at)`); err != nil {
+			return fmt.Errorf("apply migration 2 index: %w", err)
+		}
+		if err := recordMigration(ctx, tx, 2); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}
 	return nil
+}
+
+func recordMigration(ctx context.Context, tx *sql.Tx, version int) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)`, version, formatTime(time.Now())); err != nil {
+		return fmt.Errorf("record migration %d: %w", version, err)
+	}
+	return nil
+}
+
+func columnExists(ctx context.Context, tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, kind string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func (r *Repository) Close() error { return r.db.Close() }
