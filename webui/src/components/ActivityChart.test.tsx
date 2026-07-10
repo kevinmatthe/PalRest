@@ -52,6 +52,7 @@ describe('ActivityChart', () => {
     const { container, rerender } = render(<ActivityChart kind="line" label="Players" points={[{ at: 'a', value: 1 }]} />);
     rerender(<ActivityChart kind="line" label="Players" points={[{ at: 'b', value: 2 }]} />);
     expect(container.firstChild).toHaveClass('is-updating');
+    expect(container.querySelector('.chart-plot')).toContainElement(screen.getByRole('img', { name: 'Players' }));
     act(() => vi.advanceTimersByTime(550));
     expect(container.firstChild).not.toHaveClass('is-updating');
   });

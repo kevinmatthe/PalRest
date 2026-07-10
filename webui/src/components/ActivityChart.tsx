@@ -117,12 +117,12 @@ export function ActivityChart(props: ActivityChartProps) {
   }, [props.kind, serialized]);
 
   return <div className={`activity-chart${updating ? ' is-updating' : ''}`}>
-    <svg role="img" aria-label={props.label} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} width="100%" preserveAspectRatio="none">
+    <div className="chart-plot"><svg role="img" aria-label={props.label} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} width="100%" preserveAspectRatio="none">
       <title>{props.label}</title>
       <desc>{description}</desc>
       {previous ? <ChartLayer geometry={previous} previous /> : null}
       <ChartLayer geometry={geometry} />
-    </svg>
+    </svg></div>
     <button className="activity-chart__data-toggle" type="button" aria-expanded={showData} onClick={() => setShowData((visible) => !visible)}>
       {showData ? 'Hide data table' : 'Show data table'}
     </button>
