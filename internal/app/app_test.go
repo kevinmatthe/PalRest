@@ -105,6 +105,29 @@ func TestReloadIgnoresYAMLPolicyAfterDatabaseInitialization(t *testing.T) {
 	}
 }
 
+func TestNewIgnoresInvalidYAMLPolicyWhenDatabaseAlreadyHasPolicy(t *testing.T) {
+	application, path := newTestApp(t)
+	if err := application.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := strings.Replace(string(data), "timezone: Asia/Shanghai", "timezone: Invalid/Zone", 1)
+	if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := New(path)
+	if err != nil {
+		t.Fatalf("stored database policy should make YAML policy irrelevant: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	if got := restarted.policies.Resolve("player").Timezone; got != "Asia/Shanghai" {
+		t.Fatalf("timezone=%q", got)
+	}
+}
+
 func TestReloadRejectsStartupOnlySettings(t *testing.T) {
 	application, path := newTestApp(t)
 	data, _ := os.ReadFile(path)

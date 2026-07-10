@@ -42,13 +42,27 @@ func New(configPath string) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	cfg, err := config.Parse(data, os.LookupEnv)
+	withoutPolicy, err := withoutPolicySection(data)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := config.Parse(withoutPolicy, os.LookupEnv)
 	if err != nil {
 		return nil, err
 	}
 	repo, err := store.Open(context.Background(), cfg.Storage.Path)
 	if err != nil {
 		return nil, err
+	}
+	if _, readErr := repo.PolicyDocument(context.Background()); errors.Is(readErr, store.ErrNotFound) {
+		cfg, err = config.Parse(data, os.LookupEnv)
+		if err != nil {
+			_ = repo.Close()
+			return nil, err
+		}
+	} else if readErr != nil {
+		_ = repo.Close()
+		return nil, readErr
 	}
 	policies, err := policy.New(repo, cfg.Policy)
 	if err != nil {
