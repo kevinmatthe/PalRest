@@ -24,6 +24,10 @@ func (r commitErrorRepository) WithTx(ctx context.Context, fn func(*store.Tx) er
 	return errors.New("simulated commit result failure")
 }
 
+func (r commitErrorRepository) Players(ctx context.Context) ([]domain.Player, error) {
+	return r.inner.Players(ctx)
+}
+
 func (r commitErrorRepository) Player(ctx context.Context, userID string) (domain.Player, error) {
 	return r.inner.Player(ctx, userID)
 }
@@ -114,9 +118,37 @@ func TestFirstObservationDoesNotChargeTime(t *testing.T) {
 func TestContinuousObservationChargesElapsedTime(t *testing.T) {
 	h := newHarness(t, 2*time.Hour, 2*time.Hour)
 	h.observe(h.start, player())
-	h.observe(h.start.Add(30*time.Second), player())
+	decisions := h.observe(h.start.Add(30*time.Second), player())
 	if got := h.used(h.start); got != 30*time.Second {
 		t.Fatalf("usage=%s", got)
+	}
+	if len(decisions.Observations) != 1 || decisions.Observations[0].Added != 30*time.Second || decisions.Observations[0].SkipReason != "" {
+		t.Fatalf("observations=%+v", decisions.Observations)
+	}
+}
+
+func TestObservationResultExplainsDisabledPolicy(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 2*time.Hour)
+	if err := h.policy.Update(config.Policy{
+		Timezone: "Asia/Shanghai",
+		Default: config.Rule{
+			Enabled:       false,
+			Period:        "daily",
+			ResetAt:       "04:00",
+			Limit:         config.Duration{Duration: 2 * time.Hour},
+			WarningBefore: []config.Duration{{Duration: 30 * time.Minute}},
+		},
+		Overrides: map[string]config.RuleOverride{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.observe(h.start, player())
+	decisions := h.observe(h.start.Add(30*time.Second), player())
+	if got := h.used(h.start); got != 0 {
+		t.Fatalf("usage=%s", got)
+	}
+	if len(decisions.Observations) != 1 || decisions.Observations[0].SkipReason != "policy_disabled" || decisions.Observations[0].PolicyEnabled {
+		t.Fatalf("observations=%+v", decisions.Observations)
 	}
 }
 
@@ -233,6 +265,74 @@ func TestOverLimitKickAndReconnectKick(t *testing.T) {
 	reconnected := h.observe(h.start.Add(90*time.Second), player())
 	if len(reconnected.Kicks) != 1 {
 		t.Fatalf("reconnect kicks=%+v", reconnected.Kicks)
+	}
+}
+
+func TestCooldownPolicyRequiresRestAfterPlayBudget(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 2*time.Hour)
+	if err := h.policy.Update(config.Policy{
+		Timezone: "Asia/Shanghai",
+		Default: config.Rule{
+			Enabled:       true,
+			Strategy:      "cooldown",
+			CooldownEvery: config.Duration{Duration: time.Hour},
+			CooldownRest:  config.Duration{Duration: 30 * time.Minute},
+			WarningBefore: []config.Duration{{Duration: 10 * time.Minute}},
+		},
+		Overrides: map[string]config.RuleOverride{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.observe(h.start, player())
+	first := h.observe(h.start.Add(time.Hour), player())
+	if len(first.Kicks) != 1 {
+		t.Fatalf("kicks=%+v", first.Kicks)
+	}
+	if !first.Kicks[0].ResetAt.Equal(h.start.Add(90 * time.Minute)) {
+		t.Fatalf("reset_at=%v", first.Kicks[0].ResetAt)
+	}
+	if first.Observations[0].Added != time.Hour || first.Observations[0].Remaining != 0 {
+		t.Fatalf("observations=%+v", first.Observations)
+	}
+	duringRest := h.observe(h.start.Add(70*time.Minute), player())
+	if len(duringRest.Kicks) != 1 || duringRest.Observations[0].Added != 0 {
+		t.Fatalf("during rest=%+v observations=%+v", duringRest.Kicks, duringRest.Observations)
+	}
+	afterRest := h.observe(h.start.Add(91*time.Minute), player())
+	if len(afterRest.Kicks) != 0 || afterRest.Observations[0].Used != time.Minute || afterRest.Observations[0].Remaining != 59*time.Minute {
+		t.Fatalf("after rest kicks=%+v observations=%+v", afterRest.Kicks, afterRest.Observations)
+	}
+}
+
+func TestCreditPolicyRecoversWhileOfflineAndConsumesOnline(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 2*time.Hour)
+	if err := h.policy.Update(config.Policy{
+		Timezone: "Asia/Shanghai",
+		Default: config.Rule{
+			Enabled:             true,
+			Strategy:            "credit",
+			CreditRecoverEvery:  config.Duration{Duration: time.Hour},
+			CreditRecoverAmount: config.Duration{Duration: 30 * time.Minute},
+			CreditMax:           config.Duration{Duration: time.Hour},
+			WarningBefore:       []config.Duration{{Duration: 10 * time.Minute}},
+		},
+		Overrides: map[string]config.RuleOverride{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.observe(h.start, player())
+	usedHalf := h.observe(h.start.Add(30*time.Minute), player())
+	if usedHalf.Observations[0].Remaining != 30*time.Minute {
+		t.Fatalf("used half observations=%+v", usedHalf.Observations)
+	}
+	h.observe(h.start.Add(30 * time.Minute))
+	afterOfflineRecovery := h.observe(h.start.Add(90*time.Minute), player())
+	if afterOfflineRecovery.Observations[0].Remaining != time.Hour {
+		t.Fatalf("recovered observations=%+v", afterOfflineRecovery.Observations)
+	}
+	empty := h.observe(h.start.Add(150*time.Minute), player())
+	if len(empty.Kicks) != 1 || empty.Observations[0].Remaining != 0 {
+		t.Fatalf("empty kicks=%+v observations=%+v", empty.Kicks, empty.Observations)
 	}
 }
 

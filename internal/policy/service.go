@@ -48,6 +48,9 @@ func (s *Service) Resolve(userID string) domain.ResolvedPolicy {
 		if override.Enabled != nil {
 			rule.Enabled = *override.Enabled
 		}
+		if override.Strategy != nil {
+			rule.Strategy = *override.Strategy
+		}
 		if override.Period != nil {
 			rule.Period = *override.Period
 		}
@@ -60,6 +63,21 @@ func (s *Service) Resolve(userID string) domain.ResolvedPolicy {
 		if override.Limit != nil {
 			rule.Limit = *override.Limit
 		}
+		if override.CooldownEvery != nil {
+			rule.CooldownEvery = *override.CooldownEvery
+		}
+		if override.CooldownRest != nil {
+			rule.CooldownRest = *override.CooldownRest
+		}
+		if override.CreditRecoverEvery != nil {
+			rule.CreditRecoverEvery = *override.CreditRecoverEvery
+		}
+		if override.CreditRecoverAmount != nil {
+			rule.CreditRecoverAmount = *override.CreditRecoverAmount
+		}
+		if override.CreditMax != nil {
+			rule.CreditMax = *override.CreditMax
+		}
 		if override.WarningBefore != nil {
 			rule.WarningBefore = append([]config.Duration(nil), (*override.WarningBefore)...)
 		}
@@ -69,15 +87,22 @@ func (s *Service) Resolve(userID string) domain.ResolvedPolicy {
 		warnings[i] = warning.Duration
 	}
 	exempt := ok && override.Exempt
+	strategy := normalizedStrategy(rule.Strategy)
 	resolved := domain.ResolvedPolicy{
-		Enabled:       rule.Enabled && !exempt,
-		Exempt:        exempt,
-		PeriodType:    rule.Period,
-		Timezone:      s.cfg.Timezone,
-		ResetAt:       rule.ResetAt,
-		ResetWeekday:  rule.ResetWeekday,
-		Limit:         rule.Limit.Duration,
-		WarningBefore: warnings,
+		Enabled:             rule.Enabled && !exempt,
+		Exempt:              exempt,
+		Strategy:            strategy,
+		PeriodType:          rule.Period,
+		Timezone:            s.cfg.Timezone,
+		ResetAt:             rule.ResetAt,
+		ResetWeekday:        rule.ResetWeekday,
+		Limit:               ruleLimit(rule),
+		CooldownEvery:       rule.CooldownEvery.Duration,
+		CooldownRest:        rule.CooldownRest.Duration,
+		CreditRecoverEvery:  rule.CreditRecoverEvery.Duration,
+		CreditRecoverAmount: rule.CreditRecoverAmount.Duration,
+		CreditMax:           rule.CreditMax.Duration,
+		WarningBefore:       warnings,
 	}
 	resolved.Revision = revision(resolved)
 	return resolved
@@ -87,17 +112,41 @@ func revision(rule domain.ResolvedPolicy) string {
 	parts := []string{
 		fmt.Sprintf("enabled=%t", rule.Enabled),
 		fmt.Sprintf("exempt=%t", rule.Exempt),
+		"strategy=" + rule.Strategy,
 		"period=" + rule.PeriodType,
 		"timezone=" + rule.Timezone,
 		"reset_at=" + rule.ResetAt,
 		"reset_weekday=" + strings.ToLower(rule.ResetWeekday),
 		fmt.Sprintf("limit=%d", rule.Limit.Nanoseconds()),
+		fmt.Sprintf("cooldown_every=%d", rule.CooldownEvery.Nanoseconds()),
+		fmt.Sprintf("cooldown_rest=%d", rule.CooldownRest.Nanoseconds()),
+		fmt.Sprintf("credit_recover_every=%d", rule.CreditRecoverEvery.Nanoseconds()),
+		fmt.Sprintf("credit_recover_amount=%d", rule.CreditRecoverAmount.Nanoseconds()),
+		fmt.Sprintf("credit_max=%d", rule.CreditMax.Nanoseconds()),
 	}
 	for _, warning := range rule.WarningBefore {
 		parts = append(parts, fmt.Sprintf("warning=%d", warning.Nanoseconds()))
 	}
 	hash := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return hex.EncodeToString(hash[:12])
+}
+
+func normalizedStrategy(strategy string) string {
+	if strategy == "" {
+		return "fixed_window"
+	}
+	return strategy
+}
+
+func ruleLimit(rule config.Rule) time.Duration {
+	switch normalizedStrategy(rule.Strategy) {
+	case "cooldown":
+		return rule.CooldownEvery.Duration
+	case "credit":
+		return rule.CreditMax.Duration
+	default:
+		return rule.Limit.Duration
+	}
 }
 
 func (s *Service) Period(rule domain.ResolvedPolicy, now time.Time) domain.Period {

@@ -11,15 +11,21 @@ type Player struct {
 }
 
 type ResolvedPolicy struct {
-	Revision      string
-	Enabled       bool
-	Exempt        bool
-	PeriodType    string
-	Timezone      string
-	ResetAt       string
-	ResetWeekday  string
-	Limit         time.Duration
-	WarningBefore []time.Duration
+	Revision            string
+	Enabled             bool
+	Exempt              bool
+	Strategy            string
+	PeriodType          string
+	Timezone            string
+	ResetAt             string
+	ResetWeekday        string
+	Limit               time.Duration
+	CooldownEvery       time.Duration
+	CooldownRest        time.Duration
+	CreditRecoverEvery  time.Duration
+	CreditRecoverAmount time.Duration
+	CreditMax           time.Duration
+	WarningBefore       []time.Duration
 }
 
 type Period struct {

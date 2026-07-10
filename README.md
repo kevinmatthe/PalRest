@@ -28,6 +28,13 @@ docker compose logs --tail=100 palworld-playtime-guard
 
 Palworld REST API 密码从父栈 `.env.palworld` 的 `ADMIN_PASSWORD` 注入，不应写入 `config.yaml`。
 
+如果在线时长没有增长，先看容器 JSON 日志里的 `player usage unchanged` / `player usage updated`：
+
+- `skip_reason=policy_disabled`：当前规则未启用，不会计时。
+- `skip_reason=first_observation`：玩家本次连续在线的第一轮观察，不追溯计时；下一轮才开始累计。
+- `skip_reason=gap_exceeded`：两次成功轮询间隔超过 `server.max_observation_gap`，本段时间被丢弃以避免误算。
+- `added_ms > 0`：本轮已经写入累计时长。
+
 ## 规则配置
 
 ```yaml
@@ -35,6 +42,7 @@ policy:
   timezone: Asia/Shanghai
   default:
     enabled: true
+    strategy: fixed_window
     period: daily
     reset_at: "04:00"
     limit: 2h
@@ -47,6 +55,39 @@ policy:
 ```
 
 每周规则使用 `period: weekly`，并增加 `reset_weekday: Monday`。覆盖规则未填写的字段继承默认规则。玩家名称只用于显示，累计和覆盖始终以 REST API 返回的 `userId` 为准。
+
+`strategy` 支持三种模式：
+
+- `fixed_window`：固定每日或每周窗口，字段为 `period`、`reset_at`、`reset_weekday`、`limit`。
+- `cooldown`：CD 制，字段为 `cooldown_every` 和 `cooldown_rest`。例如玩 `2h` 后必须休息 `30m`。
+- `credit`：额度恢复制，字段为 `credit_recover_every`、`credit_recover_amount`、`credit_max`。例如每离线 `1h` 恢复 `30m`，最多存 `3h`。
+
+CD 示例：
+
+```yaml
+policy:
+  timezone: Asia/Shanghai
+  default:
+    enabled: true
+    strategy: cooldown
+    cooldown_every: 2h
+    cooldown_rest: 30m
+    warning_before: [30m, 10m, 5m, 1m]
+```
+
+credit 示例：
+
+```yaml
+policy:
+  timezone: Asia/Shanghai
+  default:
+    enabled: true
+    strategy: credit
+    credit_recover_every: 1h
+    credit_recover_amount: 30m
+    credit_max: 3h
+    warning_before: [30m, 10m, 5m, 1m]
+```
 
 ## 只读 API
 

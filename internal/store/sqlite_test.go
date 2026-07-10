@@ -97,6 +97,27 @@ func TestWithTxRollsBackUsageAndPlayerTogether(t *testing.T) {
 	}
 }
 
+func TestPlayersListsKnownPlayersByLastOnline(t *testing.T) {
+	repo, _ := openTemp(t)
+	first := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	second := first.Add(time.Minute)
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error {
+		if err := tx.UpsertPlayer(domain.Player{UserID: "steam_old", Name: "Old"}, first); err != nil {
+			return err
+		}
+		return tx.UpsertPlayer(domain.Player{UserID: "steam_new", Name: "New"}, second)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	players, err := repo.Players(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(players) != 2 || players[0].UserID != "steam_new" || players[1].UserID != "steam_old" {
+		t.Fatalf("players=%+v", players)
+	}
+}
+
 func TestWarningIsUniqueAndEnforcementIsAppendOnly(t *testing.T) {
 	repo, _ := openTemp(t)
 	now := time.Now().UTC()

@@ -53,22 +53,34 @@ type Policy struct {
 }
 
 type Rule struct {
-	Enabled       bool       `yaml:"enabled" json:"enabled"`
-	Period        string     `yaml:"period" json:"period"`
-	ResetAt       string     `yaml:"reset_at" json:"reset_at"`
-	ResetWeekday  string     `yaml:"reset_weekday,omitempty" json:"reset_weekday,omitempty"`
-	Limit         Duration   `yaml:"limit" json:"limit"`
-	WarningBefore []Duration `yaml:"warning_before" json:"warning_before"`
+	Enabled             bool       `yaml:"enabled" json:"enabled"`
+	Strategy            string     `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	Period              string     `yaml:"period" json:"period"`
+	ResetAt             string     `yaml:"reset_at" json:"reset_at"`
+	ResetWeekday        string     `yaml:"reset_weekday,omitempty" json:"reset_weekday,omitempty"`
+	Limit               Duration   `yaml:"limit" json:"limit"`
+	CooldownEvery       Duration   `yaml:"cooldown_every,omitempty" json:"cooldown_every,omitempty"`
+	CooldownRest        Duration   `yaml:"cooldown_rest,omitempty" json:"cooldown_rest,omitempty"`
+	CreditRecoverEvery  Duration   `yaml:"credit_recover_every,omitempty" json:"credit_recover_every,omitempty"`
+	CreditRecoverAmount Duration   `yaml:"credit_recover_amount,omitempty" json:"credit_recover_amount,omitempty"`
+	CreditMax           Duration   `yaml:"credit_max,omitempty" json:"credit_max,omitempty"`
+	WarningBefore       []Duration `yaml:"warning_before" json:"warning_before"`
 }
 
 type RuleOverride struct {
-	Enabled       *bool       `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	Period        *string     `yaml:"period,omitempty" json:"period,omitempty"`
-	ResetAt       *string     `yaml:"reset_at,omitempty" json:"reset_at,omitempty"`
-	ResetWeekday  *string     `yaml:"reset_weekday,omitempty" json:"reset_weekday,omitempty"`
-	Limit         *Duration   `yaml:"limit,omitempty" json:"limit,omitempty"`
-	WarningBefore *[]Duration `yaml:"warning_before,omitempty" json:"warning_before,omitempty"`
-	Exempt        bool        `yaml:"exempt,omitempty" json:"exempt,omitempty"`
+	Enabled             *bool       `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Strategy            *string     `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	Period              *string     `yaml:"period,omitempty" json:"period,omitempty"`
+	ResetAt             *string     `yaml:"reset_at,omitempty" json:"reset_at,omitempty"`
+	ResetWeekday        *string     `yaml:"reset_weekday,omitempty" json:"reset_weekday,omitempty"`
+	Limit               *Duration   `yaml:"limit,omitempty" json:"limit,omitempty"`
+	CooldownEvery       *Duration   `yaml:"cooldown_every,omitempty" json:"cooldown_every,omitempty"`
+	CooldownRest        *Duration   `yaml:"cooldown_rest,omitempty" json:"cooldown_rest,omitempty"`
+	CreditRecoverEvery  *Duration   `yaml:"credit_recover_every,omitempty" json:"credit_recover_every,omitempty"`
+	CreditRecoverAmount *Duration   `yaml:"credit_recover_amount,omitempty" json:"credit_recover_amount,omitempty"`
+	CreditMax           *Duration   `yaml:"credit_max,omitempty" json:"credit_max,omitempty"`
+	WarningBefore       *[]Duration `yaml:"warning_before,omitempty" json:"warning_before,omitempty"`
+	Exempt              bool        `yaml:"exempt,omitempty" json:"exempt,omitempty"`
 }
 
 type Enforcement struct {
@@ -186,24 +198,39 @@ func (c *Config) validate(lookup func(string) (string, bool)) error {
 }
 
 func validateRule(path string, rule Rule) error {
-	if rule.Period != "daily" && rule.Period != "weekly" {
-		return fmt.Errorf("%s.period must be daily or weekly", path)
-	}
-	if _, _, err := parseClock(rule.ResetAt); err != nil {
-		return fmt.Errorf("%s.reset_at: %w", path, err)
-	}
-	if rule.Period == "weekly" {
-		if _, err := parseWeekday(rule.ResetWeekday); err != nil {
-			return fmt.Errorf("%s.reset_weekday: %w", path, err)
+	strategy := normalizedStrategy(rule.Strategy)
+	limit := ruleLimit(rule)
+	switch strategy {
+	case "fixed_window":
+		if rule.Period != "daily" && rule.Period != "weekly" {
+			return fmt.Errorf("%s.period must be daily or weekly", path)
 		}
+		if _, _, err := parseClock(rule.ResetAt); err != nil {
+			return fmt.Errorf("%s.reset_at: %w", path, err)
+		}
+		if rule.Period == "weekly" {
+			if _, err := parseWeekday(rule.ResetWeekday); err != nil {
+				return fmt.Errorf("%s.reset_weekday: %w", path, err)
+			}
+		}
+	case "cooldown":
+		if rule.CooldownEvery.Duration <= 0 || rule.CooldownRest.Duration <= 0 {
+			return fmt.Errorf("%s cooldown_every and cooldown_rest must be positive", path)
+		}
+	case "credit":
+		if rule.CreditRecoverEvery.Duration <= 0 || rule.CreditRecoverAmount.Duration <= 0 || rule.CreditMax.Duration <= 0 {
+			return fmt.Errorf("%s credit_recover_every, credit_recover_amount, and credit_max must be positive", path)
+		}
+	default:
+		return fmt.Errorf("%s.strategy must be fixed_window, cooldown, or credit", path)
 	}
-	if rule.Limit.Duration <= 0 {
+	if limit <= 0 {
 		return fmt.Errorf("%s.limit must be positive", path)
 	}
 	seen := map[time.Duration]bool{}
 	last := time.Duration(1<<63 - 1)
 	for _, warning := range rule.WarningBefore {
-		if warning.Duration <= 0 || warning.Duration >= rule.Limit.Duration {
+		if warning.Duration <= 0 || warning.Duration >= limit {
 			return fmt.Errorf("%s warning thresholds must be positive and below limit", path)
 		}
 		if seen[warning.Duration] || warning.Duration >= last {
@@ -219,6 +246,9 @@ func applyOverride(base Rule, override RuleOverride) Rule {
 	if override.Enabled != nil {
 		base.Enabled = *override.Enabled
 	}
+	if override.Strategy != nil {
+		base.Strategy = *override.Strategy
+	}
 	if override.Period != nil {
 		base.Period = *override.Period
 	}
@@ -231,10 +261,43 @@ func applyOverride(base Rule, override RuleOverride) Rule {
 	if override.Limit != nil {
 		base.Limit = *override.Limit
 	}
+	if override.CooldownEvery != nil {
+		base.CooldownEvery = *override.CooldownEvery
+	}
+	if override.CooldownRest != nil {
+		base.CooldownRest = *override.CooldownRest
+	}
+	if override.CreditRecoverEvery != nil {
+		base.CreditRecoverEvery = *override.CreditRecoverEvery
+	}
+	if override.CreditRecoverAmount != nil {
+		base.CreditRecoverAmount = *override.CreditRecoverAmount
+	}
+	if override.CreditMax != nil {
+		base.CreditMax = *override.CreditMax
+	}
 	if override.WarningBefore != nil {
 		base.WarningBefore = append([]Duration(nil), (*override.WarningBefore)...)
 	}
 	return base
+}
+
+func normalizedStrategy(strategy string) string {
+	if strategy == "" {
+		return "fixed_window"
+	}
+	return strategy
+}
+
+func ruleLimit(rule Rule) time.Duration {
+	switch normalizedStrategy(rule.Strategy) {
+	case "cooldown":
+		return rule.CooldownEvery.Duration
+	case "credit":
+		return rule.CreditMax.Duration
+	default:
+		return rule.Limit.Duration
+	}
 }
 
 func parseClock(value string) (int, int, error) {

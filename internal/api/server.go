@@ -24,6 +24,7 @@ type Status interface {
 }
 
 type Snapshots interface {
+	AllSnapshots(context.Context) ([]domain.PlayerSnapshot, error)
 	OnlineSnapshots(context.Context) ([]domain.PlayerSnapshot, error)
 	Snapshot(context.Context, string) (domain.PlayerSnapshot, error)
 }
@@ -103,6 +104,7 @@ type playerDTO struct {
 	Online           bool         `json:"online"`
 	Enabled          bool         `json:"enabled"`
 	Exempt           bool         `json:"exempt"`
+	Strategy         string       `json:"strategy"`
 	Period           string       `json:"period"`
 	UsedMS           int64        `json:"used_ms"`
 	RemainingMS      int64        `json:"remaining_ms"`
@@ -122,7 +124,7 @@ type warningDTO struct {
 }
 
 func (s *Server) getPlayers(w http.ResponseWriter, r *http.Request) {
-	snapshots, err := s.snapshots.OnlineSnapshots(r.Context())
+	snapshots, err := s.snapshots.AllSnapshots(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query_failed", "could not query player state")
 		return
@@ -167,22 +169,34 @@ func (s *Server) getPolicies(w http.ResponseWriter, _ *http.Request) {
 }
 
 type ruleDTO struct {
-	Enabled         bool    `json:"enabled"`
-	Period          string  `json:"period"`
-	ResetAt         string  `json:"reset_at"`
-	ResetWeekday    string  `json:"reset_weekday,omitempty"`
-	LimitMS         int64   `json:"limit_ms"`
-	WarningBeforeMS []int64 `json:"warning_before_ms"`
+	Enabled               bool    `json:"enabled"`
+	Strategy              string  `json:"strategy"`
+	Period                string  `json:"period"`
+	ResetAt               string  `json:"reset_at"`
+	ResetWeekday          string  `json:"reset_weekday,omitempty"`
+	LimitMS               int64   `json:"limit_ms"`
+	CooldownEveryMS       int64   `json:"cooldown_every_ms,omitempty"`
+	CooldownRestMS        int64   `json:"cooldown_rest_ms,omitempty"`
+	CreditRecoverEveryMS  int64   `json:"credit_recover_every_ms,omitempty"`
+	CreditRecoverAmountMS int64   `json:"credit_recover_amount_ms,omitempty"`
+	CreditMaxMS           int64   `json:"credit_max_ms,omitempty"`
+	WarningBeforeMS       []int64 `json:"warning_before_ms"`
 }
 
 type overrideDTO struct {
-	Enabled         *bool   `json:"enabled,omitempty"`
-	Period          *string `json:"period,omitempty"`
-	ResetAt         *string `json:"reset_at,omitempty"`
-	ResetWeekday    *string `json:"reset_weekday,omitempty"`
-	LimitMS         *int64  `json:"limit_ms,omitempty"`
-	WarningBeforeMS []int64 `json:"warning_before_ms,omitempty"`
-	Exempt          bool    `json:"exempt"`
+	Enabled               *bool   `json:"enabled,omitempty"`
+	Strategy              *string `json:"strategy,omitempty"`
+	Period                *string `json:"period,omitempty"`
+	ResetAt               *string `json:"reset_at,omitempty"`
+	ResetWeekday          *string `json:"reset_weekday,omitempty"`
+	LimitMS               *int64  `json:"limit_ms,omitempty"`
+	CooldownEveryMS       *int64  `json:"cooldown_every_ms,omitempty"`
+	CooldownRestMS        *int64  `json:"cooldown_rest_ms,omitempty"`
+	CreditRecoverEveryMS  *int64  `json:"credit_recover_every_ms,omitempty"`
+	CreditRecoverAmountMS *int64  `json:"credit_recover_amount_ms,omitempty"`
+	CreditMaxMS           *int64  `json:"credit_max_ms,omitempty"`
+	WarningBeforeMS       []int64 `json:"warning_before_ms,omitempty"`
+	Exempt                bool    `json:"exempt"`
 }
 
 func toPlayerDTO(snapshot domain.PlayerSnapshot) playerDTO {
@@ -197,7 +211,7 @@ func toPlayerDTO(snapshot domain.PlayerSnapshot) playerDTO {
 	return playerDTO{
 		UserID: snapshot.Player.UserID, PlayerID: snapshot.Player.PlayerID, Name: snapshot.Player.Name,
 		AccountName: snapshot.Player.AccountName, Online: snapshot.Online, Enabled: snapshot.Policy.Enabled,
-		Exempt: snapshot.Policy.Exempt, Period: snapshot.Policy.PeriodType, UsedMS: snapshot.Used.Milliseconds(),
+		Exempt: snapshot.Policy.Exempt, Strategy: snapshot.Policy.Strategy, Period: snapshot.Policy.PeriodType, UsedMS: snapshot.Used.Milliseconds(),
 		RemainingMS: snapshot.Remaining.Milliseconds(), LimitMS: snapshot.Policy.Limit.Milliseconds(),
 		PeriodStart: snapshot.Period.Start, NextReset: snapshot.Period.End, WarningBeforeMS: warnings,
 		EnforcementState: snapshot.Enforcement.Status, Warnings: states,
@@ -209,14 +223,40 @@ func toRuleDTO(rule config.Rule) ruleDTO {
 	for i, warning := range rule.WarningBefore {
 		warnings[i] = warning.Duration.Milliseconds()
 	}
-	return ruleDTO{rule.Enabled, rule.Period, rule.ResetAt, rule.ResetWeekday, rule.Limit.Duration.Milliseconds(), warnings}
+	return ruleDTO{
+		Enabled: rule.Enabled, Strategy: strategy(rule.Strategy), Period: rule.Period, ResetAt: rule.ResetAt,
+		ResetWeekday: rule.ResetWeekday, LimitMS: ruleLimit(rule).Milliseconds(),
+		CooldownEveryMS: rule.CooldownEvery.Duration.Milliseconds(), CooldownRestMS: rule.CooldownRest.Duration.Milliseconds(),
+		CreditRecoverEveryMS: rule.CreditRecoverEvery.Duration.Milliseconds(), CreditRecoverAmountMS: rule.CreditRecoverAmount.Duration.Milliseconds(),
+		CreditMaxMS: rule.CreditMax.Duration.Milliseconds(), WarningBeforeMS: warnings,
+	}
 }
 
 func toOverrideDTO(override config.RuleOverride) overrideDTO {
-	result := overrideDTO{Enabled: override.Enabled, Period: override.Period, ResetAt: override.ResetAt, ResetWeekday: override.ResetWeekday, Exempt: override.Exempt}
+	result := overrideDTO{Enabled: override.Enabled, Strategy: override.Strategy, Period: override.Period, ResetAt: override.ResetAt, ResetWeekday: override.ResetWeekday, Exempt: override.Exempt}
 	if override.Limit != nil {
 		value := override.Limit.Duration.Milliseconds()
 		result.LimitMS = &value
+	}
+	if override.CooldownEvery != nil {
+		value := override.CooldownEvery.Duration.Milliseconds()
+		result.CooldownEveryMS = &value
+	}
+	if override.CooldownRest != nil {
+		value := override.CooldownRest.Duration.Milliseconds()
+		result.CooldownRestMS = &value
+	}
+	if override.CreditRecoverEvery != nil {
+		value := override.CreditRecoverEvery.Duration.Milliseconds()
+		result.CreditRecoverEveryMS = &value
+	}
+	if override.CreditRecoverAmount != nil {
+		value := override.CreditRecoverAmount.Duration.Milliseconds()
+		result.CreditRecoverAmountMS = &value
+	}
+	if override.CreditMax != nil {
+		value := override.CreditMax.Duration.Milliseconds()
+		result.CreditMaxMS = &value
 	}
 	if override.WarningBefore != nil {
 		result.WarningBeforeMS = make([]int64, len(*override.WarningBefore))
@@ -225,6 +265,24 @@ func toOverrideDTO(override config.RuleOverride) overrideDTO {
 		}
 	}
 	return result
+}
+
+func strategy(value string) string {
+	if value == "" {
+		return "fixed_window"
+	}
+	return value
+}
+
+func ruleLimit(rule config.Rule) time.Duration {
+	switch strategy(rule.Strategy) {
+	case "cooldown":
+		return rule.CooldownEvery.Duration
+	case "credit":
+		return rule.CreditMax.Duration
+	default:
+		return rule.Limit.Duration
+	}
 }
 
 func requestMiddleware(next http.Handler) http.Handler {

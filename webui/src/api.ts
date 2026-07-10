@@ -24,6 +24,7 @@ export type Player = {
   online: boolean;
   enabled: boolean;
   exempt: boolean;
+  strategy: string;
   period: string;
   used_ms: number;
   remaining_ms: number;
@@ -44,19 +45,31 @@ export type WarningState = {
 
 export type Rule = {
   enabled: boolean;
+  strategy: string;
   period: string;
   reset_at: string;
   reset_weekday?: string;
   limit_ms: number;
+  cooldown_every_ms?: number;
+  cooldown_rest_ms?: number;
+  credit_recover_every_ms?: number;
+  credit_recover_amount_ms?: number;
+  credit_max_ms?: number;
   warning_before_ms: number[];
 };
 
 export type OverrideRule = {
   enabled?: boolean;
+  strategy?: string;
   period?: string;
   reset_at?: string;
   reset_weekday?: string;
   limit_ms?: number;
+  cooldown_every_ms?: number;
+  cooldown_rest_ms?: number;
+  credit_recover_every_ms?: number;
+  credit_recover_amount_ms?: number;
+  credit_max_ms?: number;
   warning_before_ms?: number[];
   exempt: boolean;
 };

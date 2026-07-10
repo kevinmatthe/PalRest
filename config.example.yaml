@@ -11,11 +11,35 @@ policy:
   timezone: Asia/Shanghai
   default:
     enabled: false
+    strategy: fixed_window
     period: daily
     reset_at: "04:00"
     limit: 2h
     warning_before: [30m, 10m, 5m, 1m]
   overrides: {}
+
+# Alternative policy.default examples:
+#
+# Cooldown mode: after 2h online, the player must rest for 30m.
+# policy:
+#   timezone: Asia/Shanghai
+#   default:
+#     enabled: true
+#     strategy: cooldown
+#     cooldown_every: 2h
+#     cooldown_rest: 30m
+#     warning_before: [30m, 10m, 5m, 1m]
+#
+# Credit mode: regain 30m credit every 1h offline, capped at 3h.
+# policy:
+#   timezone: Asia/Shanghai
+#   default:
+#     enabled: true
+#     strategy: credit
+#     credit_recover_every: 1h
+#     credit_recover_amount: 30m
+#     credit_max: 3h
+#     warning_before: [30m, 10m, 5m, 1m]
 
 enforcement:
   kick_message: "Playtime limit reached. You can play again after {{ .ResetAt }}."

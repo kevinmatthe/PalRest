@@ -58,3 +58,21 @@ ALTER TABLE enforcement_events ADD COLUMN policy_revision TEXT NOT NULL DEFAULT 
 CREATE INDEX IF NOT EXISTS enforcement_policy_lookup
 ON enforcement_events(user_id, period_key, policy_revision, created_at);
 `
+
+const schemaV3 = `
+CREATE TABLE IF NOT EXISTS policy_states (
+    user_id TEXT NOT NULL REFERENCES players(user_id) ON DELETE CASCADE,
+    policy_revision TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    window_start TEXT,
+    used_ms INTEGER NOT NULL DEFAULT 0 CHECK (used_ms >= 0),
+    cooldown_until TEXT,
+    credit_ms INTEGER NOT NULL DEFAULT 0 CHECK (credit_ms >= 0),
+    last_credit_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, policy_revision)
+);
+
+CREATE INDEX IF NOT EXISTS policy_states_user_lookup
+ON policy_states(user_id, updated_at);
+`

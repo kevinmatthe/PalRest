@@ -143,7 +143,7 @@ function App() {
           <div className="panel-header">
             <div>
               <h2>Players</h2>
-              <p>{state.kind === 'loading' && !data ? 'Loading current sessions' : `${players.length} shown from ${data?.players.length ?? 0} online snapshots`}</p>
+              <p>{state.kind === 'loading' && !data ? 'Loading known players' : `${players.length} shown from ${data?.players.length ?? 0} known players`}</p>
             </div>
             <label className="search-box">
               <Search size={16} />
@@ -173,6 +173,10 @@ function App() {
                     <dd>{formatDuration(defaultRule.limit_ms)}</dd>
                   </div>
                   <div>
+                    <dt>Strategy</dt>
+                    <dd>{titleCase(defaultRule.strategy)}</dd>
+                  </div>
+                  <div>
                     <dt>Period</dt>
                     <dd>{titleCase(defaultRule.period)}</dd>
                   </div>
@@ -185,6 +189,7 @@ function App() {
                     <dd>{data?.policies.timezone ?? '-'}</dd>
                   </div>
                 </dl>
+                <p className="strategy-copy">{strategySummary(defaultRule)}</p>
                 <div className="thresholds">
                   {defaultRule.warning_before_ms.map((warning) => (
                     <span key={warning}>{formatDuration(warning)}</span>
@@ -209,7 +214,7 @@ function App() {
                   <div className="override-row" key={userID}>
                     <div>
                       <strong>{userID}</strong>
-                      <span>{override.exempt ? 'Exempt' : override.enabled === false ? 'Disabled' : 'Custom limit'}</span>
+                      <span>{override.exempt ? 'Exempt' : override.enabled === false ? 'Disabled' : titleCase(override.strategy ?? 'Custom limit')}</span>
                     </div>
                     <span>{override.limit_ms ? formatDuration(override.limit_ms) : '-'}</span>
                   </div>
@@ -337,12 +342,15 @@ function PlayerTable({ players, loading }: { players: Player[]; loading: boolean
                     <div>
                       <strong>{player.name || player.account_name || player.user_id}</strong>
                       <span>{player.user_id}</span>
+                      <span className={`inline-state ${player.online ? 'online' : 'offline'}`}>
+                        {player.online ? 'Online' : 'Offline'}
+                      </span>
                     </div>
                   </div>
                 </td>
                 <td>
                   <span className={`tag ${player.exempt ? 'neutral' : player.enabled ? 'ok' : 'muted'}`}>
-                    {player.exempt ? 'Exempt' : player.enabled ? titleCase(player.period) : 'Disabled'}
+                    {player.exempt ? 'Exempt' : player.enabled ? titleCase(player.strategy) : 'Disabled'}
                   </span>
                 </td>
                 <td>
@@ -409,6 +417,23 @@ function initials(value: string) {
     return parts[0].slice(0, 2).toUpperCase();
   }
   return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+}
+
+function strategySummary(rule: {
+  strategy: string;
+  cooldown_every_ms?: number;
+  cooldown_rest_ms?: number;
+  credit_recover_every_ms?: number;
+  credit_recover_amount_ms?: number;
+  credit_max_ms?: number;
+}) {
+  if (rule.strategy === 'cooldown') {
+    return `Play ${formatDuration(rule.cooldown_every_ms)} then rest ${formatDuration(rule.cooldown_rest_ms)}.`;
+  }
+  if (rule.strategy === 'credit') {
+    return `Recover ${formatDuration(rule.credit_recover_amount_ms)} every ${formatDuration(rule.credit_recover_every_ms)}, capped at ${formatDuration(rule.credit_max_ms)}.`;
+  }
+  return 'Fixed reset window.';
 }
 
 createRoot(document.getElementById('root')!).render(

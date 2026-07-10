@@ -50,6 +50,18 @@ type EnforcementRetry struct {
 	LastAttempt time.Time
 }
 
+type PolicyState struct {
+	UserID         string
+	PolicyRevision string
+	Strategy       string
+	WindowStart    time.Time
+	Used           time.Duration
+	CooldownUntil  time.Time
+	Credit         time.Duration
+	LastCreditAt   time.Time
+	UpdatedAt      time.Time
+}
+
 func Open(ctx context.Context, path string) (*Repository, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
@@ -102,6 +114,14 @@ func (r *Repository) migrate(ctx context.Context) error {
 			return fmt.Errorf("apply migration 2 index: %w", err)
 		}
 		if err := recordMigration(ctx, tx, 2); err != nil {
+			return err
+		}
+	}
+	if version < 3 {
+		if _, err := tx.ExecContext(ctx, schemaV3); err != nil {
+			return fmt.Errorf("apply migration 3: %w", err)
+		}
+		if err := recordMigration(ctx, tx, 3); err != nil {
 			return err
 		}
 	}
@@ -310,6 +330,69 @@ ORDER BY id DESC`, userID, periodKey, policyRevision)
 	return state, rows.Err()
 }
 
+func (tx *Tx) PolicyState(userID, policyRevision string) (PolicyState, error) {
+	var state PolicyState
+	var windowStart, cooldownUntil, lastCreditAt sql.NullString
+	var updated string
+	var usedMS, creditMS int64
+	err := tx.tx.QueryRow(`
+SELECT user_id, policy_revision, strategy, window_start, used_ms, cooldown_until, credit_ms, last_credit_at, updated_at
+FROM policy_states WHERE user_id=? AND policy_revision=?`, userID, policyRevision).
+		Scan(&state.UserID, &state.PolicyRevision, &state.Strategy, &windowStart, &usedMS, &cooldownUntil, &creditMS, &lastCreditAt, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PolicyState{}, ErrNotFound
+	}
+	if err != nil {
+		return PolicyState{}, fmt.Errorf("read policy state: %w", err)
+	}
+	var parseErr error
+	if windowStart.Valid {
+		state.WindowStart, parseErr = parseTime(windowStart.String)
+		if parseErr != nil {
+			return PolicyState{}, parseErr
+		}
+	}
+	if cooldownUntil.Valid {
+		state.CooldownUntil, parseErr = parseTime(cooldownUntil.String)
+		if parseErr != nil {
+			return PolicyState{}, parseErr
+		}
+	}
+	if lastCreditAt.Valid {
+		state.LastCreditAt, parseErr = parseTime(lastCreditAt.String)
+		if parseErr != nil {
+			return PolicyState{}, parseErr
+		}
+	}
+	state.UpdatedAt, parseErr = parseTime(updated)
+	if parseErr != nil {
+		return PolicyState{}, parseErr
+	}
+	state.Used = time.Duration(usedMS) * time.Millisecond
+	state.Credit = time.Duration(creditMS) * time.Millisecond
+	return state, nil
+}
+
+func (tx *Tx) UpsertPolicyState(state PolicyState) error {
+	_, err := tx.tx.Exec(`
+INSERT INTO policy_states(user_id, policy_revision, strategy, window_start, used_ms, cooldown_until, credit_ms, last_credit_at, updated_at)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(user_id, policy_revision) DO UPDATE SET
+    strategy=excluded.strategy,
+    window_start=excluded.window_start,
+    used_ms=excluded.used_ms,
+    cooldown_until=excluded.cooldown_until,
+    credit_ms=excluded.credit_ms,
+    last_credit_at=excluded.last_credit_at,
+    updated_at=excluded.updated_at`,
+		state.UserID, state.PolicyRevision, state.Strategy, nullableTime(state.WindowStart), state.Used.Milliseconds(),
+		nullableTime(state.CooldownUntil), state.Credit.Milliseconds(), nullableTime(state.LastCreditAt), formatTime(state.UpdatedAt))
+	if err != nil {
+		return fmt.Errorf("upsert policy state: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) Usage(ctx context.Context, userID, periodKey string) (domain.Usage, error) {
 	var usage domain.Usage
 	var start, end, updated string
@@ -350,6 +433,28 @@ func (r *Repository) Player(ctx context.Context, userID string) (domain.Player, 
 	}
 	player.LastOnline, err = parseTime(lastOnline)
 	return player, err
+}
+
+func (r *Repository) Players(ctx context.Context) ([]domain.Player, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT user_id, player_id, name, account_name, last_online FROM players ORDER BY last_online DESC, user_id`)
+	if err != nil {
+		return nil, fmt.Errorf("query players: %w", err)
+	}
+	defer rows.Close()
+	var players []domain.Player
+	for rows.Next() {
+		var player domain.Player
+		var lastOnline string
+		if err := rows.Scan(&player.UserID, &player.PlayerID, &player.Name, &player.AccountName, &lastOnline); err != nil {
+			return nil, err
+		}
+		player.LastOnline, err = parseTime(lastOnline)
+		if err != nil {
+			return nil, err
+		}
+		players = append(players, player)
+	}
+	return players, rows.Err()
 }
 
 func (r *Repository) EnforcementEvents(ctx context.Context, userID, periodKey string) ([]EnforcementEvent, error) {
@@ -434,6 +539,13 @@ FROM warning_events WHERE user_id=? AND period_key=? ORDER BY threshold_ms DESC`
 }
 
 func formatTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return formatTime(value)
+}
 
 func parseTime(value string) (time.Time, error) {
 	parsed, err := time.Parse(time.RFC3339Nano, value)

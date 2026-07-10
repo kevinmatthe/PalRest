@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"text/template"
 	"time"
@@ -55,6 +56,7 @@ func New(client Client, guardService Guard, interval time.Duration, announceText
 }
 
 func (p *Poller) Run(ctx context.Context) {
+	slog.Info("poller started", "interval_ms", p.interval.Milliseconds())
 	select {
 	case <-ctx.Done():
 		return
@@ -66,6 +68,7 @@ func (p *Poller) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			slog.Info("poller stopped")
 			return
 		case <-ticker.C:
 			p.runScheduledCycle()
@@ -76,7 +79,9 @@ func (p *Poller) Run(ctx context.Context) {
 func (p *Poller) runScheduledCycle() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_ = p.RunOnce(ctx)
+	if err := p.RunOnce(ctx); err != nil {
+		slog.Warn("scheduled poll cycle failed", "error", err)
+	}
 }
 
 func (p *Poller) RunOnce(ctx context.Context) error {
@@ -88,15 +93,19 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 	kickTemplate := p.kickTemplate
 	p.mu.RUnlock()
 	p.updateStatus(func(status *domain.PollStatus) { status.LastAttempt = now })
+	slog.Info("poll cycle started", "at", now.Format(time.RFC3339))
 	players, err := p.client.ListPlayers(ctx)
 	if err != nil {
 		p.guard.PollFailed()
 		p.setError(err)
+		slog.Error("poll list players failed", "error", err)
 		return err
 	}
+	slog.Info("poll listed players", "online_count", len(players))
 	decisions, err := p.guard.Observe(ctx, now, players)
 	if err != nil {
 		p.setError(err)
+		slog.Error("poll observation failed", "online_count", len(players), "error", err)
 		return err
 	}
 	p.updateStatus(func(status *domain.PollStatus) {
@@ -104,6 +113,13 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 		status.LastError = ""
 		status.OnlineCount = len(players)
 	})
+	logObservations(decisions.Observations)
+	slog.Info("poll cycle completed",
+		"online_count", len(players),
+		"observed_count", len(decisions.Observations),
+		"warning_decisions", len(decisions.Warnings),
+		"kick_decisions", len(decisions.Kicks),
+	)
 
 	var effectErrors []error
 	for _, decision := range decisions.Warnings {
@@ -116,8 +132,14 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 		if resultErr == nil {
 			resultErr = p.client.Announce(ctx, message)
 		}
+		logEffectResult("warning", decision.UserID, decision.PlayerName, resultErr,
+			"threshold_ms", decision.Threshold.Milliseconds(),
+			"remaining_ms", decision.Remaining.Milliseconds(),
+			"period_key", decision.Period.Key,
+		)
 		if recordErr := p.guard.RecordWarningResult(ctx, decision, resultErr, now); recordErr != nil {
 			effectErrors = append(effectErrors, recordErr)
+			slog.Error("record warning result failed", "user_id", decision.UserID, "error", recordErr)
 		}
 		if resultErr != nil {
 			effectErrors = append(effectErrors, resultErr)
@@ -133,8 +155,14 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 		if resultErr == nil {
 			resultErr = p.client.Kick(ctx, decision.UserID, message)
 		}
+		logEffectResult("kick", decision.UserID, decision.PlayerName, resultErr,
+			"generation", decision.Generation,
+			"policy_revision", decision.PolicyRevision,
+			"period_key", decision.Period.Key,
+		)
 		if recordErr := p.guard.RecordKickResult(ctx, decision, resultErr, now); recordErr != nil {
 			effectErrors = append(effectErrors, recordErr)
+			slog.Error("record kick result failed", "user_id", decision.UserID, "error", recordErr)
 		}
 		if resultErr != nil {
 			effectErrors = append(effectErrors, resultErr)
@@ -142,6 +170,7 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 	}
 	if err := errors.Join(effectErrors...); err != nil {
 		p.setError(err)
+		slog.Warn("poll side effects completed with errors", "error", err)
 		return err
 	}
 	return nil
@@ -169,6 +198,7 @@ func (p *Poller) ApplyConfig(update func() error, announceText, kickText string)
 	p.announceTemplate = announce
 	p.kickTemplate = kick
 	p.mu.Unlock()
+	slog.Info("poller templates updated")
 	return nil
 }
 
@@ -180,6 +210,9 @@ func (p *Poller) Status() domain.PollStatus {
 
 func (p *Poller) SetConfigReloadError(message string) {
 	p.updateStatus(func(status *domain.PollStatus) { status.ConfigReloadErr = bounded(message) })
+	if message != "" {
+		slog.Warn("config reload error", "error", bounded(message))
+	}
 }
 
 func (p *Poller) updateStatus(fn func(*domain.PollStatus)) {
@@ -205,4 +238,44 @@ func bounded(message string) string {
 		return message[:500]
 	}
 	return message
+}
+
+func logObservations(observations []guard.ObservationResult) {
+	for _, observation := range observations {
+		attrs := []any{
+			"user_id", observation.UserID,
+			"player_name", observation.PlayerName,
+			"policy_enabled", observation.PolicyEnabled,
+			"exempt", observation.Exempt,
+			"continuous", observation.Continuous,
+			"accounting", observation.Accounting,
+			"skip_reason", observation.SkipReason,
+			"gap_ms", observation.Gap.Milliseconds(),
+			"max_gap_ms", observation.MaxGap.Milliseconds(),
+			"added_ms", observation.Added.Milliseconds(),
+			"used_ms", observation.Used.Milliseconds(),
+			"remaining_ms", observation.Remaining.Milliseconds(),
+			"limit_ms", observation.Limit.Milliseconds(),
+			"period_key", observation.Period.Key,
+			"period_start", observation.Period.Start.Format(time.RFC3339),
+			"period_end", observation.Period.End.Format(time.RFC3339),
+			"generation", observation.Generation,
+		}
+		if observation.Added > 0 {
+			slog.Info("player usage updated", attrs...)
+			continue
+		}
+		slog.Info("player usage unchanged", attrs...)
+	}
+}
+
+func logEffectResult(action, userID, playerName string, resultErr error, attrs ...any) {
+	all := []any{"action", action, "user_id", userID, "player_name", playerName}
+	all = append(all, attrs...)
+	if resultErr != nil {
+		all = append(all, "error", resultErr)
+		slog.Warn("poll side effect failed", all...)
+		return
+	}
+	slog.Info("poll side effect succeeded", all...)
 }

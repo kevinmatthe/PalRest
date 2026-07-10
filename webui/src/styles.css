@@ -351,6 +351,27 @@ tbody tr:last-child td {
   overflow-wrap: anywhere;
 }
 
+.inline-state {
+  display: inline-flex !important;
+  width: fit-content;
+  min-height: 20px;
+  margin-top: 6px !important;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px !important;
+  font-weight: 800;
+}
+
+.inline-state.online {
+  color: #17623f !important;
+  background: #e4f4ea;
+}
+
+.inline-state.offline {
+  color: #626f7f !important;
+  background: #eef1f5;
+}
+
 .usage-cell {
   min-width: 180px;
 }
@@ -479,6 +500,16 @@ dd {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
+}
+
+.strategy-copy {
+  padding: 9px 10px;
+  border-radius: 8px;
+  color: #3f5564;
+  background: #f3f8f8;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
 }
 
 .override-list {

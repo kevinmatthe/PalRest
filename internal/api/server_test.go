@@ -25,6 +25,10 @@ func (f fakeStatus) Status() domain.PollStatus { return f.value }
 
 type fakeSnapshots struct{ values []domain.PlayerSnapshot }
 
+func (f fakeSnapshots) AllSnapshots(context.Context) ([]domain.PlayerSnapshot, error) {
+	return append([]domain.PlayerSnapshot(nil), f.values...), nil
+}
+
 func (f fakeSnapshots) OnlineSnapshots(context.Context) ([]domain.PlayerSnapshot, error) {
 	var result []domain.PlayerSnapshot
 	for _, snapshot := range f.values {
@@ -132,14 +136,14 @@ func TestResponsesDoNotExposeSensitiveFields(t *testing.T) {
 	}
 }
 
-func TestPlayersOnlyListsOnlineSnapshots(t *testing.T) {
+func TestPlayersListsKnownOfflineSnapshots(t *testing.T) {
 	server := testServer()
 	online, _ := server.snapshots.OnlineSnapshots(t.Context())
 	server.snapshots = fakeSnapshots{append(online, domain.PlayerSnapshot{Player: domain.Player{UserID: "offline"}, Online: false})}
 	res := httptest.NewRecorder()
 	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/players", nil))
-	if strings.Contains(res.Body.String(), "offline") {
-		t.Fatalf("offline player included: %s", res.Body.String())
+	if !strings.Contains(res.Body.String(), "offline") || !strings.Contains(res.Body.String(), `"online":false`) {
+		t.Fatalf("offline player missing: %s", res.Body.String())
 	}
 }
 

@@ -29,12 +29,31 @@ type KickDecision struct {
 	PolicyRevision string
 }
 
-type Decisions struct {
-	Warnings []WarningDecision
-	Kicks    []KickDecision
+type ObservationResult struct {
+	UserID        string
+	PlayerName    string
+	PolicyEnabled bool
+	Exempt        bool
+	Continuous    bool
+	Accounting    bool
+	SkipReason    string
+	Gap           time.Duration
+	MaxGap        time.Duration
+	Added         time.Duration
+	Used          time.Duration
+	Remaining     time.Duration
+	Limit         time.Duration
+	Period        domain.Period
+	Generation    int64
 }
 
-type observation struct {
+type Decisions struct {
+	Observations []ObservationResult
+	Warnings     []WarningDecision
+	Kicks        []KickDecision
+}
+
+type continuityObservation struct {
 	at         time.Time
 	accounting bool
 	generation int64
@@ -42,6 +61,7 @@ type observation struct {
 
 type Repository interface {
 	WithTx(context.Context, func(*store.Tx) error) error
+	Players(context.Context) ([]domain.Player, error)
 	Player(context.Context, string) (domain.Player, error)
 	Usage(context.Context, string, string) (domain.Usage, error)
 	WarningEvents(context.Context, string, string) ([]store.WarningEvent, error)
@@ -55,7 +75,7 @@ type Service struct {
 	maxGap            time.Duration
 	retryInitial      time.Duration
 	retryMax          time.Duration
-	observed          map[string]observation
+	observed          map[string]continuityObservation
 	generations       map[string]int64
 	kickedConnections map[string]bool
 	snapshots         map[string]domain.PlayerSnapshot
@@ -69,7 +89,7 @@ func New(repo Repository, policies *policy.Service, maxGap, retryInitial, retryM
 		maxGap:            maxGap,
 		retryInitial:      retryInitial,
 		retryMax:          retryMax,
-		observed:          make(map[string]observation),
+		observed:          make(map[string]continuityObservation),
 		generations:       make(map[string]int64),
 		kickedConnections: make(map[string]bool),
 		snapshots:         make(map[string]domain.PlayerSnapshot),
@@ -106,32 +126,52 @@ func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.P
 				return err
 			}
 			rule := s.policies.Resolve(player.UserID)
-			period := s.policies.Period(rule, now)
+			if err := s.refreshStrategyState(tx, player.UserID, rule, now); err != nil {
+				return err
+			}
 			previous, continuous := s.observed[player.UserID]
 			if !continuous {
 				s.generations[player.UserID]++
 			}
 			generation := s.generations[player.UserID]
+			result := ObservationResult{
+				UserID: player.UserID, PlayerName: player.Name, PolicyEnabled: rule.Enabled, Exempt: rule.Exempt,
+				Continuous: continuous, Accounting: previous.accounting && rule.Enabled, MaxGap: s.maxGap,
+				Limit: rule.Limit, Generation: generation,
+			}
 			if continuous && previous.accounting && rule.Enabled {
 				gap := now.Sub(previous.at)
+				result.Gap = gap
 				if gap >= 0 && gap <= s.maxGap {
-					if err := s.addInterval(tx, player.UserID, rule, previous.at, now); err != nil {
+					added, err := s.addInterval(tx, player.UserID, rule, previous.at, now)
+					if err != nil {
 						return err
 					}
+					result.Added = added
+				} else {
+					result.SkipReason = "gap_exceeded"
 				}
+			} else if !rule.Enabled {
+				result.SkipReason = "policy_disabled"
+			} else if !continuous {
+				result.SkipReason = "first_observation"
+			} else if !previous.accounting {
+				result.SkipReason = "previous_not_accounting"
 			}
-			s.observed[player.UserID] = observation{at: now, accounting: rule.Enabled, generation: generation}
-			used, err := tx.Usage(player.UserID, period.Key)
-			if errors.Is(err, store.ErrNotFound) {
-				used = 0
-			} else if err != nil {
+			s.observed[player.UserID] = continuityObservation{at: now, accounting: rule.Enabled, generation: generation}
+			period, used, remaining, err := s.currentUsage(tx, player.UserID, rule, now)
+			if err != nil {
 				return err
 			}
-			remaining := rule.Limit - used
-			if remaining < 0 {
-				remaining = 0
+			result.Period = period
+			result.Used = used
+			result.Remaining = remaining
+			decisions.Observations = append(decisions.Observations, result)
+			overLimit, resetAt, err := s.enforcementState(tx, player.UserID, rule, period, now, used)
+			if err != nil {
+				return err
 			}
-			if rule.Enabled && used >= rule.Limit {
+			if rule.Enabled && overLimit {
 				key := retryKey(player.UserID, period.Key, rule.Revision, generation)
 				retry, err := tx.EnforcementRetry(player.UserID, period.Key, rule.Revision)
 				if err != nil {
@@ -142,7 +182,7 @@ func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.P
 					retryReady = !now.Before(retry.LastAttempt.Add(s.retryDelay(retry.Attempts)))
 				}
 				if !s.kickedConnections[key] && retryReady {
-					decisions.Kicks = append(decisions.Kicks, KickDecision{UserID: player.UserID, PlayerName: player.Name, Period: period, ResetAt: period.End, Generation: generation, PolicyRevision: rule.Revision})
+					decisions.Kicks = append(decisions.Kicks, KickDecision{UserID: player.UserID, PlayerName: player.Name, Period: period, ResetAt: resetAt, Generation: generation, PolicyRevision: rule.Revision})
 				}
 			} else if rule.Enabled {
 				for i := len(rule.WarningBefore) - 1; i >= 0; i-- {
@@ -182,7 +222,7 @@ func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.P
 }
 
 func (s *Service) clearContinuity() {
-	s.observed = make(map[string]observation)
+	s.observed = make(map[string]continuityObservation)
 	for userID, snapshot := range s.snapshots {
 		snapshot.Online = false
 		s.snapshots[userID] = snapshot
@@ -216,7 +256,19 @@ func (s *Service) RecordWarningResult(ctx context.Context, decision WarningDecis
 	})
 }
 
-func (s *Service) addInterval(tx *store.Tx, userID string, rule domain.ResolvedPolicy, start, end time.Time) error {
+func (s *Service) addInterval(tx *store.Tx, userID string, rule domain.ResolvedPolicy, start, end time.Time) (time.Duration, error) {
+	switch rule.Strategy {
+	case "cooldown":
+		return s.addCooldownInterval(tx, userID, rule, start, end)
+	case "credit":
+		return s.addCreditInterval(tx, userID, rule, start, end)
+	default:
+		return s.addFixedWindowInterval(tx, userID, rule, start, end)
+	}
+}
+
+func (s *Service) addFixedWindowInterval(tx *store.Tx, userID string, rule domain.ResolvedPolicy, start, end time.Time) (time.Duration, error) {
+	var added time.Duration
 	for cursor := start; cursor.Before(end); {
 		period := s.policies.Period(rule, cursor)
 		segmentEnd := end
@@ -224,14 +276,234 @@ func (s *Service) addInterval(tx *store.Tx, userID string, rule domain.ResolvedP
 			segmentEnd = period.End
 		}
 		if !segmentEnd.After(cursor) {
-			return fmt.Errorf("non-advancing period boundary at %s", cursor)
+			return 0, fmt.Errorf("non-advancing period boundary at %s", cursor)
 		}
 		if _, err := tx.AddUsage(userID, period, segmentEnd.Sub(cursor), end); err != nil {
-			return err
+			return 0, err
 		}
+		added += segmentEnd.Sub(cursor)
 		cursor = segmentEnd
 	}
-	return nil
+	return added, nil
+}
+
+func (s *Service) addCooldownInterval(tx *store.Tx, userID string, rule domain.ResolvedPolicy, start, end time.Time) (time.Duration, error) {
+	state, err := s.policyState(tx, userID, rule, end)
+	if err != nil {
+		return 0, err
+	}
+	if !state.CooldownUntil.IsZero() && end.Before(state.CooldownUntil) {
+		state.UpdatedAt = end
+		return 0, tx.UpsertPolicyState(state)
+	}
+	if !state.CooldownUntil.IsZero() && !end.Before(state.CooldownUntil) {
+		if start.Before(state.CooldownUntil) {
+			start = state.CooldownUntil
+		}
+		state.WindowStart = start
+		state.Used = 0
+		state.CooldownUntil = time.Time{}
+	}
+	if state.WindowStart.IsZero() {
+		state.WindowStart = start
+	}
+	delta := end.Sub(start)
+	accounted := delta
+	if remaining := rule.CooldownEvery - state.Used; remaining > 0 && delta >= remaining {
+		accounted = remaining
+		state.CooldownUntil = start.Add(remaining).Add(rule.CooldownRest)
+	}
+	state.Used += accounted
+	if state.Used >= rule.CooldownEvery {
+		state.Used = rule.CooldownEvery
+		if state.CooldownUntil.IsZero() {
+			state.CooldownUntil = end.Add(rule.CooldownRest)
+		}
+	}
+	state.UpdatedAt = end
+	if err := tx.UpsertPolicyState(state); err != nil {
+		return 0, err
+	}
+	period := s.strategyPeriod(rule, state.WindowStart, state.CooldownUntil, end)
+	if _, err := tx.AddUsage(userID, period, accounted, end); err != nil {
+		return 0, err
+	}
+	return accounted, nil
+}
+
+func (s *Service) addCreditInterval(tx *store.Tx, userID string, rule domain.ResolvedPolicy, start, end time.Time) (time.Duration, error) {
+	state, err := s.policyState(tx, userID, rule, start)
+	if err != nil {
+		return 0, err
+	}
+	state = accrueCredit(state, rule, start)
+	delta := end.Sub(start)
+	if delta < 0 {
+		return 0, fmt.Errorf("credit usage delta cannot be negative")
+	}
+	if delta >= state.Credit {
+		state.Credit = 0
+	} else {
+		state.Credit -= delta
+	}
+	state.LastCreditAt = end
+	state.UpdatedAt = end
+	if err := tx.UpsertPolicyState(state); err != nil {
+		return 0, err
+	}
+	period := s.strategyPeriod(rule, state.WindowStart, time.Time{}, end)
+	if _, err := tx.AddUsage(userID, period, delta, end); err != nil {
+		return 0, err
+	}
+	return delta, nil
+}
+
+func (s *Service) refreshStrategyState(tx *store.Tx, userID string, rule domain.ResolvedPolicy, now time.Time) error {
+	if rule.Strategy != "credit" && rule.Strategy != "cooldown" {
+		return nil
+	}
+	state, err := s.policyState(tx, userID, rule, now)
+	if err != nil {
+		return err
+	}
+	if rule.Strategy == "credit" {
+		state = accrueCredit(state, rule, now)
+	}
+	state.UpdatedAt = now
+	return tx.UpsertPolicyState(state)
+}
+
+func (s *Service) policyState(tx *store.Tx, userID string, rule domain.ResolvedPolicy, now time.Time) (store.PolicyState, error) {
+	state, err := tx.PolicyState(userID, rule.Revision)
+	if err == nil {
+		return state, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return store.PolicyState{}, err
+	}
+	state = store.PolicyState{
+		UserID: userID, PolicyRevision: rule.Revision, Strategy: rule.Strategy,
+		WindowStart: now, UpdatedAt: now,
+	}
+	if rule.Strategy == "credit" {
+		state.Credit = rule.CreditMax
+		state.LastCreditAt = now
+	}
+	return state, nil
+}
+
+func (s *Service) currentUsage(tx *store.Tx, userID string, rule domain.ResolvedPolicy, now time.Time) (domain.Period, time.Duration, time.Duration, error) {
+	switch rule.Strategy {
+	case "cooldown":
+		state, err := s.policyState(tx, userID, rule, now)
+		if err != nil {
+			return domain.Period{}, 0, 0, err
+		}
+		period := s.strategyPeriod(rule, state.WindowStart, state.CooldownUntil, now)
+		remaining := rule.CooldownEvery - state.Used
+		if !state.CooldownUntil.IsZero() && now.Before(state.CooldownUntil) {
+			remaining = 0
+		}
+		if remaining < 0 {
+			remaining = 0
+		}
+		return period, state.Used, remaining, nil
+	case "credit":
+		state, err := s.policyState(tx, userID, rule, now)
+		if err != nil {
+			return domain.Period{}, 0, 0, err
+		}
+		state = accrueCredit(state, rule, now)
+		period := s.strategyPeriod(rule, state.WindowStart, time.Time{}, now)
+		used := rule.CreditMax - state.Credit
+		if used < 0 {
+			used = 0
+		}
+		return period, used, state.Credit, nil
+	default:
+		period := s.policies.Period(rule, now)
+		used, err := tx.Usage(userID, period.Key)
+		if errors.Is(err, store.ErrNotFound) {
+			used = 0
+		} else if err != nil {
+			return domain.Period{}, 0, 0, err
+		}
+		remaining := rule.Limit - used
+		if remaining < 0 {
+			remaining = 0
+		}
+		return period, used, remaining, nil
+	}
+}
+
+func accrueCredit(state store.PolicyState, rule domain.ResolvedPolicy, now time.Time) store.PolicyState {
+	if state.LastCreditAt.IsZero() || !now.After(state.LastCreditAt) || rule.CreditRecoverEvery <= 0 {
+		return state
+	}
+	elapsed := now.Sub(state.LastCreditAt)
+	recovered := proportionalDuration(elapsed, rule.CreditRecoverAmount, rule.CreditRecoverEvery)
+	if recovered <= 0 {
+		return state
+	}
+	state.Credit += recovered
+	if state.Credit > rule.CreditMax {
+		state.Credit = rule.CreditMax
+	}
+	state.LastCreditAt = now
+	return state
+}
+
+func (s *Service) enforcementState(tx *store.Tx, userID string, rule domain.ResolvedPolicy, period domain.Period, now time.Time, fixedUsed time.Duration) (bool, time.Time, error) {
+	switch rule.Strategy {
+	case "cooldown":
+		state, err := s.policyState(tx, userID, rule, now)
+		if err != nil {
+			return false, time.Time{}, err
+		}
+		if !state.CooldownUntil.IsZero() && now.Before(state.CooldownUntil) {
+			return true, state.CooldownUntil, nil
+		}
+		return state.Used >= rule.CooldownEvery, now.Add(rule.CooldownRest), nil
+	case "credit":
+		state, err := s.policyState(tx, userID, rule, now)
+		if err != nil {
+			return false, time.Time{}, err
+		}
+		return state.Credit <= 0, creditResetAt(rule, now), nil
+	default:
+		return fixedUsed >= rule.Limit, period.End, nil
+	}
+}
+
+func (s *Service) strategyPeriod(rule domain.ResolvedPolicy, start, end, now time.Time) domain.Period {
+	if start.IsZero() {
+		start = now
+	}
+	if end.IsZero() {
+		end = start.Add(365 * 24 * time.Hour)
+	}
+	return domain.Period{Key: rule.Strategy + "|" + rule.Revision, Start: start.UTC(), End: end.UTC()}
+}
+
+func creditResetAt(rule domain.ResolvedPolicy, now time.Time) time.Time {
+	if rule.CreditRecoverAmount <= 0 {
+		return now
+	}
+	needed := rule.CreditMax
+	return now.Add(proportionalDuration(needed, rule.CreditRecoverEvery, rule.CreditRecoverAmount))
+}
+
+func proportionalDuration(value, numerator, denominator time.Duration) time.Duration {
+	if denominator <= 0 {
+		return 0
+	}
+	valueMS := value.Milliseconds()
+	numeratorMS := numerator.Milliseconds()
+	denominatorMS := denominator.Milliseconds()
+	if valueMS <= 0 || numeratorMS <= 0 || denominatorMS <= 0 {
+		return 0
+	}
+	return time.Duration(valueMS*numeratorMS/denominatorMS) * time.Millisecond
 }
 
 func (s *Service) PollFailed() {
@@ -306,6 +578,22 @@ func (s *Service) OnlineSnapshots(ctx context.Context) ([]domain.PlayerSnapshot,
 	return result, nil
 }
 
+func (s *Service) AllSnapshots(ctx context.Context) ([]domain.PlayerSnapshot, error) {
+	players, err := s.repo.Players(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]domain.PlayerSnapshot, 0, len(players))
+	for _, player := range players {
+		snapshot, err := s.Snapshot(ctx, player.UserID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, snapshot)
+	}
+	return result, nil
+}
+
 func (s *Service) Snapshot(ctx context.Context, userID string) (domain.PlayerSnapshot, error) {
 	s.mu.Lock()
 	snapshot, present := s.snapshots[userID]
@@ -320,18 +608,17 @@ func (s *Service) Snapshot(ctx context.Context, userID string) (domain.PlayerSna
 	}
 	rule := s.policies.Resolve(userID)
 	snapshot.Policy = rule
-	snapshot.Period = s.policies.Period(rule, now)
-	usage, err := s.repo.Usage(ctx, userID, snapshot.Period.Key)
-	if errors.Is(err, store.ErrNotFound) {
-		snapshot.Used = 0
-	} else if err != nil {
+	if err := s.repo.WithTx(ctx, func(tx *store.Tx) error {
+		period, used, remaining, err := s.currentUsage(tx, userID, rule, now)
+		if err != nil {
+			return err
+		}
+		snapshot.Period = period
+		snapshot.Used = used
+		snapshot.Remaining = remaining
+		return nil
+	}); err != nil {
 		return domain.PlayerSnapshot{}, err
-	} else {
-		snapshot.Used = usage.Used
-	}
-	snapshot.Remaining = snapshot.Policy.Limit - snapshot.Used
-	if snapshot.Remaining < 0 {
-		snapshot.Remaining = 0
 	}
 	warnings, err := s.repo.WarningEvents(ctx, userID, snapshot.Period.Key)
 	if err != nil {
