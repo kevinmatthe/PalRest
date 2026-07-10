@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
 
@@ -63,16 +62,6 @@ WHERE user_id=? AND ended_at IS NULL`, formatTime(observation.At), formatTime(ob
 		}
 
 		for i, interval := range observation.Intervals {
-			for _, userID := range interval.OnlineUserIDs {
-				var exists int
-				err := tx.tx.QueryRowContext(ctx, `SELECT 1 FROM players WHERE user_id=?`, userID).Scan(&exists)
-				if err == sql.ErrNoRows {
-					return fmt.Errorf("analytics interval %d references unknown online player %q", i, userID)
-				}
-				if err != nil {
-					return fmt.Errorf("check analytics interval %d player %q: %w", i, userID, err)
-				}
-			}
 			if err := recordAnalyticsInterval(ctx, tx, interval); err != nil {
 				return fmt.Errorf("record analytics interval %d: %w", i, err)
 			}

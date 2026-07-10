@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -132,6 +133,9 @@ func TestRecordAnalyticsObservationUnknownOnlinePlayerRollsBack(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected unknown player error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "foreign key") {
+		t.Fatalf("error %q does not report a foreign-key constraint failure", err)
 	}
 	assertAnalyticsTableCounts(t, repo, 0, 0, 0, 0)
 }
