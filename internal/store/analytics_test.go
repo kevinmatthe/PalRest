@@ -67,8 +67,12 @@ func TestAnalyticsQueries(t *testing.T) {
 	if len(r) != 3 || r[0].UserID != "u1" || r[1].UserID != "u2" || r[2].UserID != "u3" {
 		t.Fatalf("ranking=%#v", r)
 	}
-	_, _ = repo.db.ExecContext(ctx, `INSERT INTO concurrency_buckets VALUES(?,?,?,?,?)`, formatTime(at), 900000, 600000, 2, formatTime(at.Add(time.Minute)))
-	_, _ = repo.db.ExecContext(ctx, `INSERT INTO concurrency_buckets VALUES(?,?,?,?,?)`, formatTime(at.Add(5*time.Minute)), 0, 0, 0, "malformed")
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO concurrency_buckets VALUES(?,?,?,?,?)`, formatTime(at), 900000, 600000, 2, formatTime(at.Add(time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO concurrency_buckets VALUES(?,?,?,?,?)`, formatTime(at.Add(5*time.Minute)), 0, 0, 0, "malformed"); err != nil {
+		t.Fatal(err)
+	}
 	b, err := repo.Concurrency(ctx, at, at.Add(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -124,9 +128,13 @@ func TestCleanupAnalyticsBatchesAndPreservesOpenSessions(t *testing.T) {
 	for q, w := range map[string]int{`SELECT count(*) FROM player_sessions WHERE ended_at<?`: 2, `SELECT count(*) FROM player_sessions WHERE ended_at IS NULL`: 1, `SELECT count(*) FROM concurrency_buckets WHERE bucket_start<?`: 2, `SELECT count(*) FROM player_daily_stats WHERE local_date<'2026-07-10'`: 2} {
 		var n int
 		if arg, ok := map[string]any{`SELECT count(*) FROM player_sessions WHERE ended_at<?`: formatTime(cutoff), `SELECT count(*) FROM concurrency_buckets WHERE bucket_start<?`: formatTime(cutoff)}[q]; ok {
-			_ = repo.db.QueryRowContext(ctx, q, arg).Scan(&n)
+			if err := repo.db.QueryRowContext(ctx, q, arg).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
 		} else {
-			_ = repo.db.QueryRowContext(ctx, q).Scan(&n)
+			if err := repo.db.QueryRowContext(ctx, q).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if n != w {
 			t.Fatalf("%s=%d", q, n)
@@ -140,9 +148,13 @@ func TestCleanupAnalyticsBatchesAndPreservesOpenSessions(t *testing.T) {
 	for q, w := range map[string]int{`SELECT count(*) FROM player_sessions WHERE ended_at<?`: 0, `SELECT count(*) FROM concurrency_buckets WHERE bucket_start<?`: 0, `SELECT count(*) FROM player_daily_stats WHERE local_date<'2026-07-10'`: 0, `SELECT count(*) FROM player_sessions WHERE ended_at=?`: 1, `SELECT count(*) FROM concurrency_buckets WHERE bucket_start=?`: 1, `SELECT count(*) FROM player_daily_stats WHERE local_date='2026-07-10'`: 1} {
 		var n int
 		if arg, ok := map[string]any{`SELECT count(*) FROM player_sessions WHERE ended_at<?`: formatTime(cutoff), `SELECT count(*) FROM concurrency_buckets WHERE bucket_start<?`: formatTime(cutoff), `SELECT count(*) FROM player_sessions WHERE ended_at=?`: formatTime(cutoff), `SELECT count(*) FROM concurrency_buckets WHERE bucket_start=?`: formatTime(cutoff)}[q]; ok {
-			_ = repo.db.QueryRowContext(ctx, q, arg).Scan(&n)
+			if err := repo.db.QueryRowContext(ctx, q, arg).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
 		} else {
-			_ = repo.db.QueryRowContext(ctx, q).Scan(&n)
+			if err := repo.db.QueryRowContext(ctx, q).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if n != w {
 			t.Fatalf("%s=%d", q, n)

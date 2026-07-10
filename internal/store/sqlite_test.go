@@ -54,7 +54,7 @@ func TestOpenMigratesAnalyticsSchema(t *testing.T) {
 	if err := repo.db.QueryRowContext(t.Context(), `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 {
+	if version != 7 {
 		t.Fatalf("migration version=%d", version)
 	}
 
@@ -95,6 +95,38 @@ INSERT INTO player_sessions(user_id, started_at, last_observed_at) VALUES(?, ?, 
 INSERT INTO player_sessions(user_id, started_at, ended_at, last_observed_at, close_reason) VALUES(?, ?, ?, ?, ?)`,
 		"steam_1", formatTime(now.Add(time.Minute)), formatTime(now.Add(2*time.Minute)), formatTime(now.Add(2*time.Minute)), "offline"); err != nil {
 		t.Fatalf("insert closed session: %v", err)
+	}
+}
+
+func TestOpenUpgradesVersionSixAnalyticsSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "guard.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(schemaV1 + schemaV2 + schemaV3 + schemaV4 + schemaV5 + schemaV6 + `
+DELETE FROM schema_migrations;
+INSERT INTO schema_migrations(version,applied_at) VALUES(1,'2026-01-01T00:00:00Z'),(2,'2026-01-01T00:00:00Z'),(3,'2026-01-01T00:00:00Z'),(4,'2026-01-01T00:00:00Z'),(5,'2026-01-01T00:00:00Z'),(6,'2026-01-01T00:00:00Z');
+INSERT INTO players(user_id,name,first_seen,last_online) VALUES('u1','One','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+INSERT INTO player_sessions(user_id,started_at,ended_at,last_observed_at) VALUES('u1','2026-01-01T00:00:00Z','2026-01-01T01:00:00Z','2026-01-01T01:00:00Z');`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	var version, indexes, players, sessions int
+	for query, dest := range map[string]*int{`SELECT MAX(version) FROM schema_migrations`: &version, `SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='player_sessions_ended_at'`: &indexes, `SELECT COUNT(*) FROM players WHERE user_id='u1' AND name='One'`: &players, `SELECT COUNT(*) FROM player_sessions WHERE user_id='u1' AND ended_at='2026-01-01T01:00:00Z'`: &sessions} {
+		if err := repo.db.QueryRowContext(t.Context(), query).Scan(dest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if version != 7 || indexes != 1 || players != 1 || sessions != 1 {
+		t.Fatalf("version=%d index=%d players=%d sessions=%d", version, indexes, players, sessions)
 	}
 }
 
