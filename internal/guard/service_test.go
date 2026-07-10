@@ -2,6 +2,7 @@ package guard
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,6 +12,17 @@ import (
 	"github.com/kevinmatt/palworld-playtime-guard/internal/policy"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
 )
+
+type commitErrorRepository struct {
+	inner *store.Repository
+}
+
+func (r commitErrorRepository) WithTx(ctx context.Context, fn func(*store.Tx) error) error {
+	if err := r.inner.WithTx(ctx, fn); err != nil {
+		return err
+	}
+	return errors.New("simulated commit result failure")
+}
 
 type harness struct {
 	t       *testing.T
@@ -100,6 +112,18 @@ func TestPollFailureAndLongGapBreakContinuity(t *testing.T) {
 	h.observe(h.start.Add(2*time.Minute), player())
 	if got := h.used(h.start); got != 0 {
 		t.Fatalf("usage=%s", got)
+	}
+}
+
+func TestPersistenceFailureClearsContinuity(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, time.Hour)
+	h.observe(h.start, player())
+	h.service.repo = commitErrorRepository{inner: h.repo}
+	if _, err := h.service.Observe(t.Context(), h.start.Add(30*time.Second), []domain.Player{player()}); err == nil {
+		t.Fatal("expected persistence error")
+	}
+	if len(h.service.observed) != 0 {
+		t.Fatalf("failed observation retained continuity: %+v", h.service.observed)
 	}
 }
 

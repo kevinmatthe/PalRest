@@ -44,9 +44,13 @@ type retryState struct {
 	next     time.Time
 }
 
+type Repository interface {
+	WithTx(context.Context, func(*store.Tx) error) error
+}
+
 type Service struct {
 	mu               sync.Mutex
-	repo             *store.Repository
+	repo             Repository
 	policies         *policy.Service
 	maxGap           time.Duration
 	retryInitial     time.Duration
@@ -58,7 +62,7 @@ type Service struct {
 	snapshots        map[string]domain.PlayerSnapshot
 }
 
-func New(repo *store.Repository, policies *policy.Service, maxGap, retryInitial, retryMax time.Duration) *Service {
+func New(repo Repository, policies *policy.Service, maxGap, retryInitial, retryMax time.Duration) *Service {
 	return &Service{
 		repo:             repo,
 		policies:         policies,
@@ -164,9 +168,18 @@ func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.P
 		return nil
 	})
 	if err != nil {
+		s.clearContinuity()
 		return Decisions{}, err
 	}
 	return decisions, nil
+}
+
+func (s *Service) clearContinuity() {
+	s.observed = make(map[string]observation)
+	for userID, snapshot := range s.snapshots {
+		snapshot.Online = false
+		s.snapshots[userID] = snapshot
+	}
 }
 
 func (s *Service) RecordWarningResult(ctx context.Context, decision WarningDecision, resultErr error, now time.Time) error {
@@ -217,11 +230,7 @@ func (s *Service) addInterval(tx *store.Tx, userID string, rule domain.ResolvedP
 func (s *Service) PollFailed() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.observed = make(map[string]observation)
-	for userID, snapshot := range s.snapshots {
-		snapshot.Online = false
-		s.snapshots[userID] = snapshot
-	}
+	s.clearContinuity()
 }
 
 func (s *Service) RecordKickResult(ctx context.Context, decision KickDecision, resultErr error, now time.Time) error {
