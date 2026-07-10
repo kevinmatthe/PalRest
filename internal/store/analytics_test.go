@@ -15,7 +15,7 @@ func TestRecordAnalyticsObservationPersistsLifecycleAndAggregates(t *testing.T) 
 	players := []domain.Player{{UserID: "u1", Name: "One"}, {UserID: "u2", Name: "Two"}}
 
 	if err := repo.RecordAnalyticsObservation(ctx, AnalyticsObservation{
-		At: base, Players: players, JoinedUserIDs: []string{"u1", "u2"},
+		At: base, LocalDate: "2026-07-11", Players: players, JoinedUserIDs: []string{"u1", "u2"},
 		Intervals: []AnalyticsInterval{{Start: base, End: base.Add(30 * time.Second), OnlineUserIDs: []string{"u1", "u2"}, LocalDate: "2026-07-11"}},
 	}); err != nil {
 		t.Fatal(err)
@@ -33,14 +33,14 @@ func TestRecordAnalyticsObservationPersistsLifecycleAndAggregates(t *testing.T) 
 
 	second := base.Add(30 * time.Second)
 	if err := repo.RecordAnalyticsObservation(ctx, AnalyticsObservation{
-		At: second, Players: players,
+		At: second, LocalDate: "2026-07-11", Players: players,
 		Intervals: []AnalyticsInterval{{Start: second, End: second.Add(10 * time.Second), OnlineUserIDs: []string{"u1"}, LocalDate: "2026-07-11"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	third := base.Add(40 * time.Second)
 	if err := repo.RecordAnalyticsObservation(ctx, AnalyticsObservation{
-		At: third, Players: players,
+		At: third, LocalDate: "2026-07-11", Players: players,
 		Intervals: []AnalyticsInterval{{Start: third, End: third.Add(10 * time.Second), OnlineUserIDs: []string{"u1", "u2"}, LocalDate: "2026-07-11"}},
 	}); err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestRecordAnalyticsObservationPersistsLifecycleAndAggregates(t *testing.T) 
 		t.Fatalf("continuing last_observed_at=%s", lastObserved)
 	}
 	leaveAt := base.Add(time.Minute)
-	if err := repo.RecordAnalyticsObservation(ctx, AnalyticsObservation{At: leaveAt, Players: []domain.Player{{UserID: "u2", Name: "Two"}}, LeftUserIDs: []string{"u1"}}); err != nil {
+	if err := repo.RecordAnalyticsObservation(ctx, AnalyticsObservation{At: leaveAt, LocalDate: "2026-07-11", Players: []domain.Player{{UserID: "u2", Name: "Two"}}, LeftUserIDs: []string{"u1"}}); err != nil {
 		t.Fatal(err)
 	}
 	var ended, closedLast, reason string
@@ -86,14 +86,14 @@ func TestRecordAnalyticsObservationPersistsLifecycleAndAggregates(t *testing.T) 
 
 func TestRecordAnalyticsObservationCountsJoinWithoutInterval(t *testing.T) {
 	repo, _ := openTemp(t)
-	at := time.Date(2026, 7, 11, 23, 30, 0, 0, time.FixedZone("reporting", 8*60*60))
-	if err := repo.RecordAnalyticsObservation(t.Context(), AnalyticsObservation{At: at, Players: []domain.Player{{UserID: "u1"}}, JoinedUserIDs: []string{"u1"}}); err != nil {
+	at := time.Date(2026, 7, 11, 16, 30, 0, 0, time.UTC)
+	if err := repo.RecordAnalyticsObservation(t.Context(), AnalyticsObservation{At: at, LocalDate: "2026-07-12", Players: []domain.Player{{UserID: "u1"}}, JoinedUserIDs: []string{"u1"}}); err != nil {
 		t.Fatal(err)
 	}
 	var observed int64
 	var sessions int
 	var first, last string
-	if err := repo.db.QueryRow(`SELECT observed_ms, session_count, first_observed_at, last_observed_at FROM player_daily_stats WHERE user_id='u1' AND local_date='2026-07-11'`).Scan(&observed, &sessions, &first, &last); err != nil {
+	if err := repo.db.QueryRow(`SELECT observed_ms, session_count, first_observed_at, last_observed_at FROM player_daily_stats WHERE user_id='u1' AND local_date='2026-07-12'`).Scan(&observed, &sessions, &first, &last); err != nil {
 		t.Fatal(err)
 	}
 	if observed != 0 || sessions != 1 || first != formatTime(at) || last != formatTime(at) {
@@ -113,7 +113,7 @@ func TestRecordAnalyticsObservationInvalidIntervalRollsBack(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo, _ := openTemp(t)
 			err := repo.RecordAnalyticsObservation(t.Context(), AnalyticsObservation{
-				At: tc.start, Players: []domain.Player{{UserID: "u1"}}, JoinedUserIDs: []string{"u1"},
+				At: tc.start, LocalDate: "2026-07-11", Players: []domain.Player{{UserID: "u1"}}, JoinedUserIDs: []string{"u1"},
 				Intervals: []AnalyticsInterval{{Start: tc.start, End: tc.end, OnlineUserIDs: []string{"u1"}, LocalDate: "2026-07-11"}},
 			})
 			if err == nil {
@@ -128,7 +128,7 @@ func TestRecordAnalyticsObservationUnknownOnlinePlayerRollsBack(t *testing.T) {
 	repo, _ := openTemp(t)
 	base := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
 	err := repo.RecordAnalyticsObservation(t.Context(), AnalyticsObservation{
-		At: base, Players: []domain.Player{{UserID: "u1"}}, JoinedUserIDs: []string{"u1"},
+		At: base, LocalDate: "2026-07-11", Players: []domain.Player{{UserID: "u1"}}, JoinedUserIDs: []string{"u1"},
 		Intervals: []AnalyticsInterval{{Start: base, End: base.Add(time.Second), OnlineUserIDs: []string{"missing"}, LocalDate: "2026-07-11"}},
 	})
 	if err == nil {
@@ -138,6 +138,42 @@ func TestRecordAnalyticsObservationUnknownOnlinePlayerRollsBack(t *testing.T) {
 		t.Fatalf("error %q does not report a foreign-key constraint failure", err)
 	}
 	assertAnalyticsTableCounts(t, repo, 0, 0, 0, 0)
+}
+
+func TestRecordAnalyticsObservationRejectsSubMillisecondInterval(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
+	err := repo.RecordAnalyticsObservation(t.Context(), AnalyticsObservation{
+		At: base, LocalDate: "2026-07-11", Players: []domain.Player{{UserID: "u1"}}, JoinedUserIDs: []string{"u1"},
+		Intervals: []AnalyticsInterval{{Start: base, End: base.Add(time.Microsecond), OnlineUserIDs: []string{"u1"}, LocalDate: "2026-07-11"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "whole millisecond") {
+		t.Fatalf("error=%v", err)
+	}
+	assertAnalyticsTableCounts(t, repo, 0, 0, 0, 0)
+}
+
+func TestRecordAnalyticsObservationRejectsInvalidOnlineUserIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		userIDs []string
+	}{
+		{name: "empty", userIDs: []string{""}},
+		{name: "duplicate", userIDs: []string{"u1", "u1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, _ := openTemp(t)
+			base := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
+			err := repo.RecordAnalyticsObservation(t.Context(), AnalyticsObservation{
+				At: base, LocalDate: "2026-07-11", Players: []domain.Player{{UserID: "u1"}}, JoinedUserIDs: []string{"u1"},
+				Intervals: []AnalyticsInterval{{Start: base, End: base.Add(time.Second), OnlineUserIDs: tc.userIDs, LocalDate: "2026-07-11"}},
+			})
+			if err == nil {
+				t.Fatal("expected user ID validation error")
+			}
+			assertAnalyticsTableCounts(t, repo, 0, 0, 0, 0)
+		})
+	}
 }
 
 func assertAnalyticsTableCounts(t *testing.T, repo *Repository, players, sessions, buckets, daily int) {

@@ -17,6 +17,7 @@ type AnalyticsInterval struct {
 
 type AnalyticsObservation struct {
 	At            time.Time
+	LocalDate     string
 	Players       []domain.Player
 	JoinedUserIDs []string
 	LeftUserIDs   []string
@@ -26,6 +27,21 @@ type AnalyticsObservation struct {
 func (r *Repository) RecordAnalyticsObservation(ctx context.Context, observation AnalyticsObservation) error {
 	if observation.At.IsZero() {
 		return fmt.Errorf("record analytics observation: observation time is zero")
+	}
+	if err := validateAnalyticsLocalDate(observation.LocalDate); err != nil {
+		return fmt.Errorf("record analytics observation: %w", err)
+	}
+	joined, err := validateUniqueAnalyticsUserIDs("joined", observation.JoinedUserIDs)
+	if err != nil {
+		return fmt.Errorf("record analytics observation: %w", err)
+	}
+	if _, err := validateUniqueAnalyticsUserIDs("left", observation.LeftUserIDs); err != nil {
+		return fmt.Errorf("record analytics observation: %w", err)
+	}
+	for _, userID := range observation.LeftUserIDs {
+		if _, ok := joined[userID]; ok {
+			return fmt.Errorf("record analytics observation: user ID %q cannot be both joined and left", userID)
+		}
 	}
 	for i, interval := range observation.Intervals {
 		if err := validateAnalyticsInterval(interval); err != nil {
@@ -67,9 +83,8 @@ WHERE user_id=? AND ended_at IS NULL`, formatTime(observation.At), formatTime(ob
 			}
 		}
 
-		joinDate := observation.At.Format("2006-01-02")
 		for _, userID := range observation.JoinedUserIDs {
-			if err := upsertDailyAnalytics(ctx, tx, userID, joinDate, 0, observation.At, observation.At, 1); err != nil {
+			if err := upsertDailyAnalytics(ctx, tx, userID, observation.LocalDate, 0, observation.At, observation.At, 1); err != nil {
 				return fmt.Errorf("count analytics session for %q: %w", userID, err)
 			}
 		}
@@ -81,9 +96,14 @@ func validateAnalyticsInterval(interval AnalyticsInterval) error {
 	if !interval.Start.Before(interval.End) {
 		return fmt.Errorf("start must be before end")
 	}
-	parsed, err := time.Parse("2006-01-02", interval.LocalDate)
-	if err != nil || parsed.Format("2006-01-02") != interval.LocalDate {
-		return fmt.Errorf("local date %q must be a valid YYYY-MM-DD date", interval.LocalDate)
+	if interval.End.Sub(interval.Start).Milliseconds() <= 0 {
+		return fmt.Errorf("duration must include at least one whole millisecond")
+	}
+	if err := validateAnalyticsLocalDate(interval.LocalDate); err != nil {
+		return err
+	}
+	if _, err := validateUniqueAnalyticsUserIDs("online", interval.OnlineUserIDs); err != nil {
+		return err
 	}
 	startBucket := interval.Start.UTC().Truncate(5 * time.Minute)
 	endBucket := interval.End.Add(-time.Nanosecond).UTC().Truncate(5 * time.Minute)
@@ -91,6 +111,28 @@ func validateAnalyticsInterval(interval AnalyticsInterval) error {
 		return fmt.Errorf("interval crosses UTC 5-minute bucket boundary")
 	}
 	return nil
+}
+
+func validateAnalyticsLocalDate(localDate string) error {
+	parsed, err := time.Parse("2006-01-02", localDate)
+	if err != nil || parsed.Format("2006-01-02") != localDate {
+		return fmt.Errorf("local date %q must be a valid YYYY-MM-DD date", localDate)
+	}
+	return nil
+}
+
+func validateUniqueAnalyticsUserIDs(kind string, userIDs []string) (map[string]struct{}, error) {
+	seen := make(map[string]struct{}, len(userIDs))
+	for _, userID := range userIDs {
+		if userID == "" {
+			return nil, fmt.Errorf("%s user ID cannot be empty", kind)
+		}
+		if _, ok := seen[userID]; ok {
+			return nil, fmt.Errorf("%s user ID %q is duplicated", kind, userID)
+		}
+		seen[userID] = struct{}{}
+	}
+	return seen, nil
 }
 
 func recordAnalyticsInterval(ctx context.Context, tx *Tx, interval AnalyticsInterval) error {
