@@ -89,7 +89,13 @@ func (p *Policy) UnmarshalYAML(node *yaml.Node) error {
 		if name != "timezone" && name != "default" {
 			return fmt.Errorf("field %s not found in type config policy defaults", name)
 		}
+		if name == "default" {
+			if err := validateBootstrapRuleFields(node.Content[i+1]); err != nil {
+				return err
+			}
+		}
 	}
+
 	value := DefaultPolicy()
 	type ruleYAML Rule
 	raw := struct {
@@ -102,6 +108,23 @@ func (p *Policy) UnmarshalYAML(node *yaml.Node) error {
 	value.Timezone = raw.Timezone
 	value.Default = Rule(raw.Default)
 	*p = value
+	return nil
+}
+
+func validateBootstrapRuleFields(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("policy.default must be a mapping")
+	}
+	allowed := map[string]bool{
+		"enabled": true, "strategy": true, "period": true, "reset_at": true, "reset_weekday": true,
+		"limit": true, "cooldown_every": true, "cooldown_rest": true, "credit_recover_every": true,
+		"credit_recover_amount": true, "credit_max": true, "warning_before": true,
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		if name := node.Content[i].Value; !allowed[name] {
+			return fmt.Errorf("field %s not found in type config policy default", name)
+		}
+	}
 	return nil
 }
 

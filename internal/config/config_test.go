@@ -94,6 +94,13 @@ func TestParseRejectsYAMLPolicyOverrides(t *testing.T) {
 	}
 }
 
+func TestParseRejectsUnknownBootstrapRuleField(t *testing.T) {
+	_, err := Parse([]byte(bootstrapConfig("policy:\n  default:\n    limti: 90m\n")), env)
+	if err == nil || !strings.Contains(err.Error(), "limti") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestParseValidConfig(t *testing.T) {
 	cfg, err := Parse([]byte(validConfig), env)
 	if err != nil {
