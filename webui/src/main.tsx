@@ -6,7 +6,6 @@ import {
   CircleGauge,
   Clock3,
   Database,
-  LogIn,
   LogOut,
   RefreshCw,
   Search,
@@ -31,6 +30,7 @@ import {
   type PollStatus,
 } from './api';
 import { formatDateTime, formatDuration, formatExactDateTime, percent, titleCase } from './utils';
+import { AdminLoginModal } from './components/AdminLoginModal';
 import './styles.css';
 
 type DashboardData = {
@@ -372,9 +372,7 @@ function AdminLogin({
   onLogin: (username: string, password: string) => Promise<void>;
   onLogout: () => Promise<void>;
 }) {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [open, setOpen] = useState(false);
 
   if (!session?.enabled) {
     return <span className="status-pill">Read only</span>;
@@ -389,24 +387,10 @@ function AdminLogin({
     );
   }
 
-  return (
-    <form
-      className="login-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        setError('');
-        void onLogin(username, password).catch((err: unknown) => {
-          setError(err instanceof Error ? err.message : 'Login failed');
-        });
-      }}
-    >
-      <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Admin" />
-      <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password" type="password" />
-      <button className="icon-button" type="submit" disabled={busy} title={error || 'Log in'}>
-        <LogIn size={16} />
-      </button>
-    </form>
-  );
+  return <>
+    <button className="text-button" type="button" disabled={busy} onClick={() => setOpen(true)}>Administrator login</button>
+    <AdminLoginModal open={open} busy={busy} onClose={() => setOpen(false)} onLogin={onLogin} />
+  </>;
 }
 
 function PolicyEditor({

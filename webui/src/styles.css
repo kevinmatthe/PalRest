@@ -170,20 +170,91 @@ h2 {
   font-size: 12px;
 }
 
-.login-form {
-  display: flex;
-  align-items: center;
-  gap: 7px;
+.modal-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(17, 31, 27, 0.48);
+  backdrop-filter: blur(0.25rem);
 }
 
-.login-form input {
-  width: 118px;
-  height: 38px;
-  border: 1px solid #ccd5dd;
-  border-radius: 8px;
-  padding: 0 9px;
-  color: #172033;
+.login-modal {
+  position: relative;
+  width: 100%;
+  max-width: 26rem;
+  padding: 1.5rem;
+  border: 1px solid #cbd8d1;
+  border-radius: 0.875rem;
   background: #fff;
+  box-shadow: 0 1.5rem 4rem rgba(21, 42, 34, 0.24);
+}
+
+.login-modal h2 {
+  margin-top: 0.4rem;
+  font-size: 1.5rem;
+}
+
+.modal-copy {
+  margin-top: 0.5rem;
+  color: #687586;
+  font-size: 0.875rem;
+}
+
+.modal-close {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  display: grid;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  place-items: center;
+  border: 0;
+  border-radius: 0.5rem;
+  color: #4b5d55;
+  background: transparent;
+  cursor: pointer;
+}
+
+.credential-form {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 1.25rem;
+}
+
+.credential-form label {
+  color: #263b32;
+  font-size: 0.8125rem;
+  font-weight: 800;
+}
+
+.credential-form input {
+  width: 100%;
+  min-height: 2.75rem;
+  box-sizing: border-box;
+  margin-bottom: 0.4rem;
+  padding: 0 0.75rem;
+  border: 1px solid #bccbc3;
+  border-radius: 0.5rem;
+  color: #172033;
+  background: #fbfdfc;
+  font-size: 1rem;
+}
+
+.primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  border: 1px solid #255e50;
+  border-radius: 0.5rem;
+  color: #fff;
+  background: #2f6f60;
+  font-weight: 800;
+  cursor: pointer;
 }
 
 .notice {
