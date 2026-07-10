@@ -84,3 +84,8 @@ CREATE TABLE IF NOT EXISTS policy_documents (
     updated_at TEXT NOT NULL
 );
 `
+
+const schemaV5 = `
+ALTER TABLE policy_states
+ADD COLUMN last_credit_recovered_ms INTEGER NOT NULL DEFAULT 0 CHECK (last_credit_recovered_ms >= 0);
+`

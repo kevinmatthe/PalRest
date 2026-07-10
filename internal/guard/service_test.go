@@ -340,6 +340,101 @@ func TestCreditPolicyRecoversWhileOfflineAndConsumesOnline(t *testing.T) {
 	}
 }
 
+func TestCreditPolicyDoesNotRecoverDuringContinuousOnlinePlay(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 2*time.Hour)
+	if err := h.policy.SetPolicy(context.Background(), config.Policy{
+		Timezone: "Asia/Shanghai",
+		Default: config.Rule{
+			Enabled:             true,
+			Strategy:            "credit",
+			CreditRecoverEvery:  config.Duration{Duration: time.Hour},
+			CreditRecoverAmount: config.Duration{Duration: 30 * time.Minute},
+			CreditMax:           config.Duration{Duration: time.Hour},
+			WarningBefore:       []config.Duration{{Duration: 10 * time.Minute}},
+		},
+		Overrides: map[string]config.RuleOverride{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.observe(h.start, player())
+	half := h.observe(h.start.Add(30*time.Minute), player())
+	if half.Observations[0].Remaining != 30*time.Minute {
+		t.Fatalf("after 30 minutes remaining=%v", half.Observations[0].Remaining)
+	}
+	empty := h.observe(h.start.Add(time.Hour), player())
+	if empty.Observations[0].Remaining != 0 {
+		t.Fatalf("online recovery changed remaining credit: %+v", empty.Observations)
+	}
+}
+
+func TestCreditSnapshotDoesNotRecoverOnlinePlayer(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 2*time.Hour)
+	if err := h.policy.SetPolicy(context.Background(), config.Policy{
+		Timezone: "Asia/Shanghai",
+		Default: config.Rule{
+			Enabled:             true,
+			Strategy:            "credit",
+			CreditRecoverEvery:  config.Duration{Duration: time.Hour},
+			CreditRecoverAmount: config.Duration{Duration: 30 * time.Minute},
+			CreditMax:           config.Duration{Duration: time.Hour},
+			WarningBefore:       []config.Duration{{Duration: 10 * time.Minute}},
+		},
+		Overrides: map[string]config.RuleOverride{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.observe(h.start, player())
+	h.observe(h.start.Add(30*time.Minute), player())
+	h.service.now = func() time.Time { return h.start.Add(time.Hour) }
+	snapshot, err := h.service.Snapshot(t.Context(), player().UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Remaining != 30*time.Minute {
+		t.Fatalf("online snapshot recovered credit: remaining=%v", snapshot.Remaining)
+	}
+}
+
+func TestCreditPolicyRecordsActualLastRecoveryAfterCap(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 2*time.Hour)
+	if err := h.policy.SetPolicy(context.Background(), config.Policy{
+		Timezone: "Asia/Shanghai",
+		Default: config.Rule{
+			Enabled:             true,
+			Strategy:            "credit",
+			CreditRecoverEvery:  config.Duration{Duration: time.Hour},
+			CreditRecoverAmount: config.Duration{Duration: 30 * time.Minute},
+			CreditMax:           config.Duration{Duration: time.Hour},
+			WarningBefore:       []config.Duration{{Duration: 10 * time.Minute}},
+		},
+		Overrides: map[string]config.RuleOverride{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.observe(h.start, player())
+	h.observe(h.start.Add(10*time.Minute), player())
+	h.observe(h.start.Add(10 * time.Minute))
+	h.observe(h.start.Add(70*time.Minute), player())
+
+	snapshot, err := h.service.Snapshot(t.Context(), player().UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot.LastCreditRecovered; got != 10*time.Minute {
+		t.Fatalf("last recovery=%v, want actual capped increase 10m", got)
+	}
+
+	h.observe(h.start.Add(70 * time.Minute))
+	h.service.now = func() time.Time { return h.start.Add(130 * time.Minute) }
+	offline, err := h.service.Snapshot(t.Context(), player().UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offline.Remaining != time.Hour || offline.LastCreditRecovered != 10*time.Minute {
+		t.Fatalf("offline projection overwrote settled recovery: %+v", offline)
+	}
+}
+
 func TestKickIsNotSuppressedWhenAuditCommitFails(t *testing.T) {
 	h := newHarness(t, time.Minute, 2*time.Minute)
 	h.observe(h.start, player())

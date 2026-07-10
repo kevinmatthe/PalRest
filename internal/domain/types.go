@@ -56,14 +56,15 @@ type EnforcementState struct {
 }
 
 type PlayerSnapshot struct {
-	Player      Player
-	Policy      ResolvedPolicy
-	Period      Period
-	Used        time.Duration
-	Remaining   time.Duration
-	Warnings    []WarningState
-	Enforcement EnforcementState
-	Online      bool
+	Player              Player
+	Policy              ResolvedPolicy
+	Period              Period
+	Used                time.Duration
+	Remaining           time.Duration
+	LastCreditRecovered time.Duration
+	Warnings            []WarningState
+	Enforcement         EnforcementState
+	Online              bool
 }
 
 type PollStatus struct {

@@ -501,6 +501,22 @@ tbody tr:last-child td {
   font-size: 12px;
 }
 
+.credit-usage .usage-label {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.credit-usage .usage-label strong {
+  color: #20362f;
+  font-size: 0.8125rem;
+}
+
+.credit-recovery-copy {
+  color: #66736f;
+  font-size: 0.75rem;
+}
+
 .progress {
   position: relative;
   height: 8px;

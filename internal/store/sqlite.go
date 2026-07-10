@@ -51,15 +51,16 @@ type EnforcementRetry struct {
 }
 
 type PolicyState struct {
-	UserID         string
-	PolicyRevision string
-	Strategy       string
-	WindowStart    time.Time
-	Used           time.Duration
-	CooldownUntil  time.Time
-	Credit         time.Duration
-	LastCreditAt   time.Time
-	UpdatedAt      time.Time
+	UserID              string
+	PolicyRevision      string
+	Strategy            string
+	WindowStart         time.Time
+	Used                time.Duration
+	CooldownUntil       time.Time
+	Credit              time.Duration
+	LastCreditAt        time.Time
+	LastCreditRecovered time.Duration
+	UpdatedAt           time.Time
 }
 
 func Open(ctx context.Context, path string) (*Repository, error) {
@@ -130,6 +131,20 @@ func (r *Repository) migrate(ctx context.Context) error {
 			return fmt.Errorf("apply migration 4: %w", err)
 		}
 		if err := recordMigration(ctx, tx, 4); err != nil {
+			return err
+		}
+	}
+	if version < 5 {
+		hasRecovery, err := columnExists(ctx, tx, "policy_states", "last_credit_recovered_ms")
+		if err != nil {
+			return err
+		}
+		if !hasRecovery {
+			if _, err := tx.ExecContext(ctx, schemaV5); err != nil {
+				return fmt.Errorf("apply migration 5: %w", err)
+			}
+		}
+		if err := recordMigration(ctx, tx, 5); err != nil {
 			return err
 		}
 	}
@@ -383,11 +398,11 @@ func (tx *Tx) PolicyState(userID, policyRevision string) (PolicyState, error) {
 	var state PolicyState
 	var windowStart, cooldownUntil, lastCreditAt sql.NullString
 	var updated string
-	var usedMS, creditMS int64
+	var usedMS, creditMS, lastCreditRecoveredMS int64
 	err := tx.tx.QueryRow(`
-SELECT user_id, policy_revision, strategy, window_start, used_ms, cooldown_until, credit_ms, last_credit_at, updated_at
+SELECT user_id, policy_revision, strategy, window_start, used_ms, cooldown_until, credit_ms, last_credit_at, last_credit_recovered_ms, updated_at
 FROM policy_states WHERE user_id=? AND policy_revision=?`, userID, policyRevision).
-		Scan(&state.UserID, &state.PolicyRevision, &state.Strategy, &windowStart, &usedMS, &cooldownUntil, &creditMS, &lastCreditAt, &updated)
+		Scan(&state.UserID, &state.PolicyRevision, &state.Strategy, &windowStart, &usedMS, &cooldownUntil, &creditMS, &lastCreditAt, &lastCreditRecoveredMS, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PolicyState{}, ErrNotFound
 	}
@@ -419,13 +434,14 @@ FROM policy_states WHERE user_id=? AND policy_revision=?`, userID, policyRevisio
 	}
 	state.Used = time.Duration(usedMS) * time.Millisecond
 	state.Credit = time.Duration(creditMS) * time.Millisecond
+	state.LastCreditRecovered = time.Duration(lastCreditRecoveredMS) * time.Millisecond
 	return state, nil
 }
 
 func (tx *Tx) UpsertPolicyState(state PolicyState) error {
 	_, err := tx.tx.Exec(`
-INSERT INTO policy_states(user_id, policy_revision, strategy, window_start, used_ms, cooldown_until, credit_ms, last_credit_at, updated_at)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO policy_states(user_id, policy_revision, strategy, window_start, used_ms, cooldown_until, credit_ms, last_credit_at, last_credit_recovered_ms, updated_at)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(user_id, policy_revision) DO UPDATE SET
     strategy=excluded.strategy,
     window_start=excluded.window_start,
@@ -433,9 +449,10 @@ ON CONFLICT(user_id, policy_revision) DO UPDATE SET
     cooldown_until=excluded.cooldown_until,
     credit_ms=excluded.credit_ms,
     last_credit_at=excluded.last_credit_at,
+    last_credit_recovered_ms=excluded.last_credit_recovered_ms,
     updated_at=excluded.updated_at`,
 		state.UserID, state.PolicyRevision, state.Strategy, nullableTime(state.WindowStart), state.Used.Milliseconds(),
-		nullableTime(state.CooldownUntil), state.Credit.Milliseconds(), nullableTime(state.LastCreditAt), formatTime(state.UpdatedAt))
+		nullableTime(state.CooldownUntil), state.Credit.Milliseconds(), nullableTime(state.LastCreditAt), state.LastCreditRecovered.Milliseconds(), formatTime(state.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("upsert policy state: %w", err)
 	}

@@ -161,23 +161,25 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 type playerDTO struct {
-	UserID           string       `json:"user_id"`
-	PlayerID         string       `json:"player_id"`
-	Name             string       `json:"name"`
-	AccountName      string       `json:"account_name"`
-	Online           bool         `json:"online"`
-	Enabled          bool         `json:"enabled"`
-	Exempt           bool         `json:"exempt"`
-	Strategy         string       `json:"strategy"`
-	Period           string       `json:"period"`
-	UsedMS           int64        `json:"used_ms"`
-	RemainingMS      int64        `json:"remaining_ms"`
-	LimitMS          int64        `json:"limit_ms"`
-	PeriodStart      time.Time    `json:"period_start"`
-	NextReset        time.Time    `json:"next_reset"`
-	WarningBeforeMS  []int64      `json:"warning_before_ms"`
-	EnforcementState string       `json:"enforcement_state,omitempty"`
-	Warnings         []warningDTO `json:"warnings"`
+	UserID                string       `json:"user_id"`
+	PlayerID              string       `json:"player_id"`
+	Name                  string       `json:"name"`
+	AccountName           string       `json:"account_name"`
+	Online                bool         `json:"online"`
+	Enabled               bool         `json:"enabled"`
+	Exempt                bool         `json:"exempt"`
+	Strategy              string       `json:"strategy"`
+	Period                string       `json:"period"`
+	UsedMS                int64        `json:"used_ms"`
+	RemainingMS           int64        `json:"remaining_ms"`
+	CreditAvailableMS     *int64       `json:"credit_available_ms,omitempty"`
+	LastCreditRecoveredMS *int64       `json:"last_credit_recovered_ms,omitempty"`
+	LimitMS               int64        `json:"limit_ms"`
+	PeriodStart           time.Time    `json:"period_start"`
+	NextReset             time.Time    `json:"next_reset"`
+	WarningBeforeMS       []int64      `json:"warning_before_ms"`
+	EnforcementState      string       `json:"enforcement_state,omitempty"`
+	Warnings              []warningDTO `json:"warnings"`
 }
 
 type warningDTO struct {
@@ -386,7 +388,7 @@ func toPlayerDTO(snapshot domain.PlayerSnapshot) playerDTO {
 	for i, warning := range snapshot.Warnings {
 		states[i] = warningDTO{ThresholdMS: warning.Threshold.Milliseconds(), Status: warning.Status, Attempts: warning.Attempts, NextAttempt: warning.NextAttempt}
 	}
-	return playerDTO{
+	dto := playerDTO{
 		UserID: snapshot.Player.UserID, PlayerID: snapshot.Player.PlayerID, Name: snapshot.Player.Name,
 		AccountName: snapshot.Player.AccountName, Online: snapshot.Online, Enabled: snapshot.Policy.Enabled,
 		Exempt: snapshot.Policy.Exempt, Strategy: snapshot.Policy.Strategy, Period: snapshot.Policy.PeriodType, UsedMS: snapshot.Used.Milliseconds(),
@@ -394,6 +396,13 @@ func toPlayerDTO(snapshot domain.PlayerSnapshot) playerDTO {
 		PeriodStart: snapshot.Period.Start, NextReset: snapshot.Period.End, WarningBeforeMS: warnings,
 		EnforcementState: snapshot.Enforcement.Status, Warnings: states,
 	}
+	if snapshot.Policy.Strategy == "credit" {
+		available := snapshot.Remaining.Milliseconds()
+		lastRecovered := snapshot.LastCreditRecovered.Milliseconds()
+		dto.CreditAvailableMS = &available
+		dto.LastCreditRecoveredMS = &lastRecovered
+	}
+	return dto
 }
 
 func toRuleDTO(rule config.Rule) ruleDTO {

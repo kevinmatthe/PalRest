@@ -131,6 +131,32 @@ func TestReadOnlyRoutesAndUnknownPlayer(t *testing.T) {
 	}
 }
 
+func TestCreditPlayerResponseIncludesAvailableAndLastRecovery(t *testing.T) {
+	snapshot := domain.PlayerSnapshot{
+		Player:              domain.Player{UserID: "steam_credit", Name: "Credit"},
+		Policy:              domain.ResolvedPolicy{Enabled: true, Strategy: "credit", CreditMax: time.Hour},
+		Remaining:           45 * time.Minute,
+		LastCreditRecovered: 15 * time.Minute,
+	}
+	payload, err := json.Marshal(toPlayerDTO(snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(payload)
+	if !strings.Contains(body, `"credit_available_ms":2700000`) || !strings.Contains(body, `"last_credit_recovered_ms":900000`) {
+		t.Fatalf("credit response is missing recovery state: %s", body)
+	}
+
+	snapshot.Policy.Strategy = "fixed_window"
+	payload, err = json.Marshal(toPlayerDTO(snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "credit_available_ms") || strings.Contains(string(payload), "last_credit_recovered_ms") {
+		t.Fatalf("fixed-window response contains credit-only fields: %s", payload)
+	}
+}
+
 func TestPoliciesReportDatabaseSource(t *testing.T) {
 	server := testServer()
 	res := httptest.NewRecorder()

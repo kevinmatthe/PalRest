@@ -127,10 +127,10 @@ func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.P
 				return err
 			}
 			rule := s.policies.Resolve(player.UserID)
-			if err := s.refreshStrategyState(tx, player.UserID, rule, now); err != nil {
+			previous, continuous := s.observed[player.UserID]
+			if err := s.refreshStrategyState(tx, player.UserID, rule, now, !continuous); err != nil {
 				return err
 			}
-			previous, continuous := s.observed[player.UserID]
 			if !continuous {
 				s.generations[player.UserID]++
 			}
@@ -160,13 +160,17 @@ func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.P
 				result.SkipReason = "previous_not_accounting"
 			}
 			s.observed[player.UserID] = continuityObservation{at: now, accounting: rule.Enabled, generation: generation}
-			period, used, remaining, err := s.currentUsage(tx, player.UserID, rule, now)
+			period, used, remaining, err := s.currentUsage(tx, player.UserID, rule, now, false)
 			if err != nil {
 				return err
 			}
 			result.Period = period
 			result.Used = used
 			result.Remaining = remaining
+			lastCreditRecovered, err := s.lastCreditRecovery(tx, player.UserID, rule)
+			if err != nil {
+				return err
+			}
 			decisions.Observations = append(decisions.Observations, result)
 			overLimit, resetAt, err := s.enforcementState(tx, player.UserID, rule, period, now, used)
 			if err != nil {
@@ -211,7 +215,7 @@ func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.P
 					}
 				}
 			}
-			s.snapshots[player.UserID] = domain.PlayerSnapshot{Player: player, Policy: rule, Period: period, Used: used, Remaining: remaining, Online: true}
+			s.snapshots[player.UserID] = domain.PlayerSnapshot{Player: player, Policy: rule, Period: period, Used: used, Remaining: remaining, LastCreditRecovered: lastCreditRecovered, Online: true}
 		}
 		return nil
 	})
@@ -337,7 +341,6 @@ func (s *Service) addCreditInterval(tx *store.Tx, userID string, rule domain.Res
 	if err != nil {
 		return 0, err
 	}
-	state = accrueCredit(state, rule, start)
 	delta := end.Sub(start)
 	if delta < 0 {
 		return 0, fmt.Errorf("credit usage delta cannot be negative")
@@ -359,7 +362,7 @@ func (s *Service) addCreditInterval(tx *store.Tx, userID string, rule domain.Res
 	return delta, nil
 }
 
-func (s *Service) refreshStrategyState(tx *store.Tx, userID string, rule domain.ResolvedPolicy, now time.Time) error {
+func (s *Service) refreshStrategyState(tx *store.Tx, userID string, rule domain.ResolvedPolicy, now time.Time, recoverCredit bool) error {
 	if rule.Strategy != "credit" && rule.Strategy != "cooldown" {
 		return nil
 	}
@@ -367,8 +370,8 @@ func (s *Service) refreshStrategyState(tx *store.Tx, userID string, rule domain.
 	if err != nil {
 		return err
 	}
-	if rule.Strategy == "credit" {
-		state = accrueCredit(state, rule, now)
+	if rule.Strategy == "credit" && recoverCredit {
+		state, state.LastCreditRecovered = accrueCredit(state, rule, now)
 	}
 	state.UpdatedAt = now
 	return tx.UpsertPolicyState(state)
@@ -393,7 +396,7 @@ func (s *Service) policyState(tx *store.Tx, userID string, rule domain.ResolvedP
 	return state, nil
 }
 
-func (s *Service) currentUsage(tx *store.Tx, userID string, rule domain.ResolvedPolicy, now time.Time) (domain.Period, time.Duration, time.Duration, error) {
+func (s *Service) currentUsage(tx *store.Tx, userID string, rule domain.ResolvedPolicy, now time.Time, recoverCredit bool) (domain.Period, time.Duration, time.Duration, error) {
 	switch rule.Strategy {
 	case "cooldown":
 		state, err := s.policyState(tx, userID, rule, now)
@@ -414,7 +417,9 @@ func (s *Service) currentUsage(tx *store.Tx, userID string, rule domain.Resolved
 		if err != nil {
 			return domain.Period{}, 0, 0, err
 		}
-		state = accrueCredit(state, rule, now)
+		if recoverCredit {
+			state, _ = accrueCredit(state, rule, now)
+		}
 		period := s.strategyPeriod(rule, state.WindowStart, time.Time{}, now)
 		used := rule.CreditMax - state.Credit
 		if used < 0 {
@@ -437,21 +442,36 @@ func (s *Service) currentUsage(tx *store.Tx, userID string, rule domain.Resolved
 	}
 }
 
-func accrueCredit(state store.PolicyState, rule domain.ResolvedPolicy, now time.Time) store.PolicyState {
+func (s *Service) lastCreditRecovery(tx *store.Tx, userID string, rule domain.ResolvedPolicy) (time.Duration, error) {
+	if rule.Strategy != "credit" {
+		return 0, nil
+	}
+	state, err := tx.PolicyState(userID, rule.Revision)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return state.LastCreditRecovered, nil
+}
+
+func accrueCredit(state store.PolicyState, rule domain.ResolvedPolicy, now time.Time) (store.PolicyState, time.Duration) {
 	if state.LastCreditAt.IsZero() || !now.After(state.LastCreditAt) || rule.CreditRecoverEvery <= 0 {
-		return state
+		return state, 0
 	}
 	elapsed := now.Sub(state.LastCreditAt)
 	recovered := proportionalDuration(elapsed, rule.CreditRecoverAmount, rule.CreditRecoverEvery)
 	if recovered <= 0 {
-		return state
+		return state, 0
 	}
+	before := state.Credit
 	state.Credit += recovered
 	if state.Credit > rule.CreditMax {
 		state.Credit = rule.CreditMax
 	}
 	state.LastCreditAt = now
-	return state
+	return state, state.Credit - before
 }
 
 func (s *Service) enforcementState(tx *store.Tx, userID string, rule domain.ResolvedPolicy, period domain.Period, now time.Time, fixedUsed time.Duration) (bool, time.Time, error) {
@@ -629,13 +649,18 @@ func (s *Service) Snapshot(ctx context.Context, userID string) (domain.PlayerSna
 	rule := s.policies.Resolve(userID)
 	snapshot.Policy = rule
 	if err := s.repo.WithTx(ctx, func(tx *store.Tx) error {
-		period, used, remaining, err := s.currentUsage(tx, userID, rule, now)
+		period, used, remaining, err := s.currentUsage(tx, userID, rule, now, !snapshot.Online)
 		if err != nil {
 			return err
 		}
 		snapshot.Period = period
 		snapshot.Used = used
 		snapshot.Remaining = remaining
+		lastCreditRecovered, err := s.lastCreditRecovery(tx, userID, rule)
+		if err != nil {
+			return err
+		}
+		snapshot.LastCreditRecovered = lastCreditRecovered
 		return nil
 	}); err != nil {
 		return domain.PlayerSnapshot{}, err

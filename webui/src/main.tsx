@@ -30,8 +30,9 @@ import {
   type Policies,
   type PollStatus,
 } from './api';
-import { formatDateTime, formatDuration, formatExactDateTime, percent, titleCase } from './utils';
+import { formatDateTime, formatDuration, formatExactDateTime, titleCase } from './utils';
 import { AdminLoginModal } from './components/AdminLoginModal';
+import { PlayerUsage } from './components/PlayerUsage';
 import { PolicyManager } from './components/PolicyManager';
 import './styles.css';
 
@@ -437,7 +438,6 @@ function PlayerTable({
         </thead>
         <tbody>
           {players.map((player) => {
-            const usage = percent(player.used_ms, player.limit_ms);
             return (
               <tr key={player.user_id}>
                 <td>
@@ -458,15 +458,7 @@ function PlayerTable({
                   </span>
                 </td>
                 <td>
-                  <div className="usage-cell">
-                    <div className="usage-label">
-                      <span>{formatDuration(player.used_ms)}</span>
-                      <span>{formatDuration(player.remaining_ms)} left</span>
-                    </div>
-                    <div className="progress" aria-label={`${usage}% used`}>
-                      <span style={{ width: `${usage}%` }} />
-                    </div>
-                  </div>
+                  <PlayerUsage player={player} />
                 </td>
                 <td>
                   <div className="reset-cell">
