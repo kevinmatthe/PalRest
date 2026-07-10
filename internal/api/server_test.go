@@ -140,6 +140,21 @@ func TestPoliciesReportDatabaseSource(t *testing.T) {
 	}
 }
 
+func TestPoliciesPreserveInactiveStrategyValues(t *testing.T) {
+	server := testServer()
+	policies := server.policies.(fakePolicies)
+	policies.value.Default.Strategy = "cooldown"
+	policies.value.Default.Limit = config.Duration{Duration: time.Hour}
+	policies.value.Default.CooldownEvery = config.Duration{Duration: 2 * time.Hour}
+	policies.value.Default.CooldownRest = config.Duration{Duration: 30 * time.Minute}
+	server.policies = policies
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/policies", nil))
+	if !strings.Contains(res.Body.String(), `"limit_ms":3600000`) {
+		t.Fatalf("inactive fixed-window limit was lost: %s", res.Body.String())
+	}
+}
+
 func TestResponsesDoNotExposeSensitiveFields(t *testing.T) {
 	server := testServer()
 	for _, path := range []string{"/api/v1/status", "/api/v1/players", "/api/v1/policies"} {

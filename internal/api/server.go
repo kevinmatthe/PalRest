@@ -403,7 +403,7 @@ func toRuleDTO(rule config.Rule) ruleDTO {
 	}
 	return ruleDTO{
 		Enabled: rule.Enabled, Strategy: strategy(rule.Strategy), Period: rule.Period, ResetAt: rule.ResetAt,
-		ResetWeekday: rule.ResetWeekday, LimitMS: ruleLimit(rule).Milliseconds(),
+		ResetWeekday: rule.ResetWeekday, LimitMS: rule.Limit.Duration.Milliseconds(),
 		CooldownEveryMS: rule.CooldownEvery.Duration.Milliseconds(), CooldownRestMS: rule.CooldownRest.Duration.Milliseconds(),
 		CreditRecoverEveryMS: rule.CreditRecoverEvery.Duration.Milliseconds(), CreditRecoverAmountMS: rule.CreditRecoverAmount.Duration.Milliseconds(),
 		CreditMaxMS: rule.CreditMax.Duration.Milliseconds(), WarningBeforeMS: warnings,
