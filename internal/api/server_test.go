@@ -23,6 +23,19 @@ type fakeStatus struct{ value domain.PollStatus }
 
 func (f fakeStatus) Status() domain.PollStatus { return f.value }
 
+type fakePolicies struct{ value config.Policy }
+
+func (f fakePolicies) Policy() config.Policy                          { return f.value }
+func (f fakePolicies) SetPolicy(context.Context, config.Policy) error { return nil }
+
+type fakeResetter struct{}
+
+func (fakeResetter) ResetUser(string) {}
+
+type fakeAdminStore struct{}
+
+func (fakeAdminStore) ResetPlayerPolicyState(context.Context, string) error { return nil }
+
 type fakeSnapshots struct{ values []domain.PlayerSnapshot }
 
 func (f fakeSnapshots) AllSnapshots(context.Context) ([]domain.PlayerSnapshot, error) {
@@ -63,7 +76,7 @@ func testServer() *Server {
 		Policy: domain.ResolvedPolicy{Enabled: true, PeriodType: "daily", Timezone: "Asia/Shanghai", ResetAt: "04:00", Limit: 2 * time.Hour},
 		Period: domain.Period{Key: "period", Start: now, End: now.Add(24 * time.Hour)},
 		Used:   30 * time.Minute, Remaining: 90 * time.Minute, Online: true,
-	}}}, func() config.Config { return cfg })
+	}}}, fakePolicies{cfg.Policy}, fakeResetter{}, fakeAdminStore{}, "", "", func() config.Config { return cfg })
 }
 
 func TestHealthAndReadiness(t *testing.T) {
@@ -79,7 +92,7 @@ func TestHealthAndReadiness(t *testing.T) {
 }
 
 func TestHealthFailsWhenSQLiteIsUnavailable(t *testing.T) {
-	server := New(fakeHealth{errors.New("disk failure")}, fakeStatus{}, fakeSnapshots{}, func() config.Config { return config.Config{} })
+	server := New(fakeHealth{errors.New("disk failure")}, fakeStatus{}, fakeSnapshots{}, fakePolicies{}, fakeResetter{}, fakeAdminStore{}, "", "", func() config.Config { return config.Config{} })
 	res := httptest.NewRecorder()
 	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if res.Code != http.StatusServiceUnavailable {
@@ -88,7 +101,7 @@ func TestHealthFailsWhenSQLiteIsUnavailable(t *testing.T) {
 }
 
 func TestHealthIsDegradedAfterInvalidConfigReload(t *testing.T) {
-	server := New(fakeHealth{}, fakeStatus{domain.PollStatus{ConfigReloadErr: "invalid timezone"}}, fakeSnapshots{}, func() config.Config { return config.Config{} })
+	server := New(fakeHealth{}, fakeStatus{domain.PollStatus{ConfigReloadErr: "invalid timezone"}}, fakeSnapshots{}, fakePolicies{}, fakeResetter{}, fakeAdminStore{}, "", "", func() config.Config { return config.Config{} })
 	res := httptest.NewRecorder()
 	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"status":"degraded"`) {
@@ -160,5 +173,32 @@ func TestPlayerIncludesPersistedWarningState(t *testing.T) {
 	body := res.Body.String()
 	if !strings.Contains(body, `"threshold_ms":300000`) || !strings.Contains(body, `"status":"success"`) {
 		t.Fatalf("body=%s", body)
+	}
+}
+
+func TestAdminLoginUnlocksReset(t *testing.T) {
+	now := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	cfg := config.Config{Version: 1}
+	server := New(fakeHealth{}, fakeStatus{domain.PollStatus{LastSuccess: now}}, fakeSnapshots{}, fakePolicies{}, fakeResetter{}, fakeAdminStore{}, "admin", "secret", func() config.Config { return cfg })
+
+	unauthorized := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/api/v1/players/steam_1/reset", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized code=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+
+	login := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/login", strings.NewReader(`{"username":"admin","password":"secret"}`))
+	server.Handler().ServeHTTP(login, req)
+	if login.Code != http.StatusOK || len(login.Result().Cookies()) == 0 {
+		t.Fatalf("login code=%d cookies=%v body=%s", login.Code, login.Result().Cookies(), login.Body.String())
+	}
+
+	reset := httptest.NewRecorder()
+	resetReq := httptest.NewRequest(http.MethodPost, "/api/v1/players/steam_1/reset", nil)
+	resetReq.AddCookie(login.Result().Cookies()[0])
+	server.Handler().ServeHTTP(reset, resetReq)
+	if reset.Code != http.StatusOK || !strings.Contains(reset.Body.String(), `"status":"reset"`) {
+		t.Fatalf("reset code=%d body=%s", reset.Code, reset.Body.String())
 	}
 }

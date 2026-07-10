@@ -76,3 +76,11 @@ CREATE TABLE IF NOT EXISTS policy_states (
 CREATE INDEX IF NOT EXISTS policy_states_user_lookup
 ON policy_states(user_id, updated_at);
 `
+
+const schemaV4 = `
+CREATE TABLE IF NOT EXISTS policy_documents (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    policy_yaml TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+`

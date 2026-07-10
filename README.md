@@ -24,9 +24,11 @@ docker compose ps palworld-playtime-guard
 docker compose logs --tail=100 palworld-playtime-guard
 ```
 
-示例配置中的 `policy.default.enabled` 为 `false`。首次启动只验证连接和 API，不累计受限用时、不公告、也不 kick。检查配置后将其改为 `true`；sidecar 会在约一秒内热重载。
+示例配置中的 `policy.default.enabled` 为 `false`。首次启动只验证连接和 API，不累计受限用时、不公告、也不 kick。
 
 Palworld REST API 密码从父栈 `.env.palworld` 的 `ADMIN_PASSWORD` 注入，不应写入 `config.yaml`。
+
+策略以 SQLite 为准。`config.yaml` 中的 `policy` 只在数据库还没有策略文档时作为首次初始化 seed；之后 WebUI/API 写入的数据库策略是唯一权威源，修改 `config.yaml` 不会覆盖已有策略。
 
 如果在线时长没有增长，先看容器 JSON 日志里的 `player usage unchanged` / `player usage updated`：
 
@@ -91,7 +93,7 @@ policy:
 
 ## 只读 API
 
-服务仅在 Docker 网络中暴露 `8080`，没有宿主机端口映射：
+默认无需登录即可读取状态。服务仅在 Docker 网络中暴露 `8080`，没有宿主机端口映射：
 
 - `GET /healthz`：进程和 SQLite 状态。
 - `GET /readyz`：配置有效且至少成功轮询一次。
@@ -99,6 +101,32 @@ policy:
 - `GET /api/v1/players`：在线玩家当前周期用时和剩余额度。
 - `GET /api/v1/players/{userId}`：已知玩家当前状态。
 - `GET /api/v1/policies`：脱敏后的默认规则和用户覆盖。
+
+## 管理操作
+
+写操作默认关闭。配置以下环境变量后，WebUI 会显示管理员登录入口；登录成功后通过 HttpOnly session cookie 解锁写操作：
+
+```yaml
+http:
+  listen: 0.0.0.0:8080
+  admin_username_env: PALREST_ADMIN_USERNAME
+  admin_password_env: PALREST_ADMIN_PASSWORD
+```
+
+```env
+PALREST_ADMIN_USERNAME=admin
+PALREST_ADMIN_PASSWORD=change-me
+```
+
+已支持的管理接口：
+
+- `POST /api/v1/admin/login`：账号密码登录。
+- `POST /api/v1/admin/logout`：退出登录。
+- `GET /api/v1/admin/session`：查看管理能力和当前登录状态。
+- `PUT /api/v1/policies`：保存整份数据库策略。
+- `POST /api/v1/players/{userId}/reset`：重置指定玩家的 usage、warning、enforcement 和策略状态，并清理内存连续状态。
+
+Passkey 还未启用；`/api/v1/admin/session` 会返回 `passkey: false`。后续可在同一套管理员 session 上接 WebAuthn credential 存储。
 
 可以从同一 Docker 网络中的容器查询，例如：
 
@@ -110,6 +138,8 @@ docker run --rm --network homelab-v2 curlimages/curl:latest \
 ## WebUI
 
 WebUI 位于 `webui/`，是独立的 React + Vite 前端。它默认同源请求 `/api/v1`、`/healthz` 和 `/readyz`；本地开发时 Vite 会把这些请求代理到 Go sidecar。
+
+未登录时 WebUI 只读。管理员登录后可以重置玩家频控，并通过策略 JSON 编辑器保存数据库策略。
 
 本地开发：
 

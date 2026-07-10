@@ -49,6 +49,9 @@ enforcement:
 
 http:
   listen: 0.0.0.0:8080
+  # Optional. When both are configured, WebUI can log in and unlock write actions.
+  # admin_username_env: PALREST_ADMIN_USERNAME
+  # admin_password_env: PALREST_ADMIN_PASSWORD
 
 storage:
   path: /data/guard.db

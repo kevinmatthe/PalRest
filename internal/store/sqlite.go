@@ -125,6 +125,14 @@ func (r *Repository) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if version < 4 {
+		if _, err := tx.ExecContext(ctx, schemaV4); err != nil {
+			return fmt.Errorf("apply migration 4: %w", err)
+		}
+		if err := recordMigration(ctx, tx, 4); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}
@@ -176,6 +184,47 @@ func (r *Repository) WithTx(ctx context.Context, fn func(*Tx) error) error {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) PolicyDocument(ctx context.Context) (string, error) {
+	var policyYAML string
+	err := r.db.QueryRowContext(ctx, `SELECT policy_yaml FROM policy_documents WHERE id=1`).Scan(&policyYAML)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("read policy document: %w", err)
+	}
+	return policyYAML, nil
+}
+
+func (r *Repository) UpsertPolicyDocument(ctx context.Context, policyYAML string, now time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+INSERT INTO policy_documents(id, policy_yaml, updated_at)
+VALUES(1, ?, ?)
+ON CONFLICT(id) DO UPDATE SET policy_yaml=excluded.policy_yaml, updated_at=excluded.updated_at`, policyYAML, formatTime(now))
+	if err != nil {
+		return fmt.Errorf("upsert policy document: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) ResetPlayerPolicyState(ctx context.Context, userID string) error {
+	return r.WithTx(ctx, func(tx *Tx) error {
+		if _, err := tx.tx.ExecContext(ctx, `DELETE FROM usage_periods WHERE user_id=?`, userID); err != nil {
+			return fmt.Errorf("delete usage periods: %w", err)
+		}
+		if _, err := tx.tx.ExecContext(ctx, `DELETE FROM warning_events WHERE user_id=?`, userID); err != nil {
+			return fmt.Errorf("delete warning events: %w", err)
+		}
+		if _, err := tx.tx.ExecContext(ctx, `DELETE FROM enforcement_events WHERE user_id=?`, userID); err != nil {
+			return fmt.Errorf("delete enforcement events: %w", err)
+		}
+		if _, err := tx.tx.ExecContext(ctx, `DELETE FROM policy_states WHERE user_id=?`, userID); err != nil {
+			return fmt.Errorf("delete policy states: %w", err)
+		}
+		return nil
+	})
 }
 
 func (tx *Tx) UpsertPlayer(player domain.Player, now time.Time) error {

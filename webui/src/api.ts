@@ -85,6 +85,12 @@ export type PlayersResponse = {
   players: Player[];
 };
 
+export type AdminSession = {
+  enabled: boolean;
+  authenticated: boolean;
+  passkey: boolean;
+};
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -94,10 +100,17 @@ export class ApiError extends Error {
   }
 }
 
-async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
+async function requestJSON<T>(path: string, init: RequestInit = {}, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
-    headers: { Accept: 'application/json' },
+    method: init.method,
+    body: init.body,
+    credentials: 'same-origin',
     signal,
+    headers: {
+      Accept: 'application/json',
+      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      ...init.headers,
+    },
   });
 
   if (!response.ok) {
@@ -114,6 +127,10 @@ async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
+  return requestJSON<T>(path, {}, signal);
+}
+
 export function getHealth(signal?: AbortSignal) {
   return getJSON<HealthStatus>('/healthz', signal);
 }
@@ -128,4 +145,32 @@ export function getPlayers(signal?: AbortSignal) {
 
 export function getPolicies(signal?: AbortSignal) {
   return getJSON<Policies>('/api/v1/policies', signal);
+}
+
+export function getAdminSession(signal?: AbortSignal) {
+  return getJSON<AdminSession>('/api/v1/admin/session', signal);
+}
+
+export function loginAdmin(username: string, password: string) {
+  return requestJSON<AdminSession>('/api/v1/admin/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function logoutAdmin() {
+  return requestJSON<AdminSession>('/api/v1/admin/logout', { method: 'POST' });
+}
+
+export function resetPlayer(userID: string) {
+  return requestJSON<{ status: string; user_id: string }>(`/api/v1/players/${encodeURIComponent(userID)}/reset`, {
+    method: 'POST',
+  });
+}
+
+export function savePolicies(policy: Omit<Policies, 'version'>) {
+  return requestJSON<Policies>('/api/v1/policies', {
+    method: 'PUT',
+    body: JSON.stringify(policy),
+  });
 }

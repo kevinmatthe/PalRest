@@ -59,14 +59,18 @@ func newHarness(t *testing.T, limit, maxGap time.Duration) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
-	policyService, err := policy.New(config.Policy{
+	warnings := []config.Duration{{Duration: 30 * time.Minute}, {Duration: 5 * time.Minute}}
+	if limit <= 30*time.Minute {
+		warnings = []config.Duration{{Duration: limit / 2}}
+	}
+	policyService, err := policy.New(repo, config.Policy{
 		Timezone: "Asia/Shanghai",
 		Default: config.Rule{
 			Enabled:       true,
 			Period:        "daily",
 			ResetAt:       "04:00",
 			Limit:         config.Duration{Duration: limit},
-			WarningBefore: []config.Duration{{Duration: 30 * time.Minute}, {Duration: 5 * time.Minute}},
+			WarningBefore: warnings,
 		},
 		Overrides: map[string]config.RuleOverride{},
 	})
@@ -129,7 +133,7 @@ func TestContinuousObservationChargesElapsedTime(t *testing.T) {
 
 func TestObservationResultExplainsDisabledPolicy(t *testing.T) {
 	h := newHarness(t, 2*time.Hour, 2*time.Hour)
-	if err := h.policy.Update(config.Policy{
+	if err := h.policy.SetPolicy(context.Background(), config.Policy{
 		Timezone: "Asia/Shanghai",
 		Default: config.Rule{
 			Enabled:       false,
@@ -270,7 +274,7 @@ func TestOverLimitKickAndReconnectKick(t *testing.T) {
 
 func TestCooldownPolicyRequiresRestAfterPlayBudget(t *testing.T) {
 	h := newHarness(t, 2*time.Hour, 2*time.Hour)
-	if err := h.policy.Update(config.Policy{
+	if err := h.policy.SetPolicy(context.Background(), config.Policy{
 		Timezone: "Asia/Shanghai",
 		Default: config.Rule{
 			Enabled:       true,
@@ -306,7 +310,7 @@ func TestCooldownPolicyRequiresRestAfterPlayBudget(t *testing.T) {
 
 func TestCreditPolicyRecoversWhileOfflineAndConsumesOnline(t *testing.T) {
 	h := newHarness(t, 2*time.Hour, 2*time.Hour)
-	if err := h.policy.Update(config.Policy{
+	if err := h.policy.SetPolicy(context.Background(), config.Policy{
 		Timezone: "Asia/Shanghai",
 		Default: config.Rule{
 			Enabled:             true,
@@ -446,11 +450,13 @@ func TestSnapshotRecalculatesCurrentPeriodForKnownOfflinePlayer(t *testing.T) {
 func TestDisabledAndExemptPoliciesDoNotCharge(t *testing.T) {
 	h := newHarness(t, 2*time.Hour, time.Hour)
 	disabled := false
-	h.policy.Update(config.Policy{
+	if err := h.policy.SetPolicy(context.Background(), config.Policy{
 		Timezone:  "Asia/Shanghai",
 		Default:   config.Rule{Enabled: false, Period: "daily", ResetAt: "04:00", Limit: config.Duration{Duration: 2 * time.Hour}},
 		Overrides: map[string]config.RuleOverride{"steam_1": {Enabled: &disabled, Exempt: true}},
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	h.observe(h.start, player())
 	h.observe(h.start.Add(30*time.Second), player())
 	if got := h.used(h.start); got != 0 {

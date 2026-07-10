@@ -142,6 +142,50 @@ h2 {
   transform: translateY(1px);
 }
 
+.text-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid #ccd5dd;
+  border-radius: 8px;
+  color: #203040;
+  background: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.text-button:disabled,
+.icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.compact-button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.login-form {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.login-form input {
+  width: 118px;
+  height: 38px;
+  border: 1px solid #ccd5dd;
+  border-radius: 8px;
+  padding: 0 9px;
+  color: #172033;
+  background: #fff;
+}
+
 .notice {
   display: flex;
   align-items: center;
@@ -517,6 +561,32 @@ dd {
   gap: 9px;
   max-height: 280px;
   overflow: auto;
+}
+
+.policy-editor {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.policy-editor textarea {
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  border: 1px solid #d5dee6;
+  border-radius: 8px;
+  padding: 10px;
+  color: #172033;
+  background: #f9fbfc;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.form-error {
+  color: #9a3412;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .override-row {

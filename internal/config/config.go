@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
@@ -28,6 +29,28 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 
 func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 
+func (d *Duration) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		parsed, parseErr := time.ParseDuration(text)
+		if parseErr != nil {
+			return fmt.Errorf("invalid duration %q: %w", text, parseErr)
+		}
+		d.Duration = parsed
+		return nil
+	}
+	var ms int64
+	if err := json.Unmarshal(data, &ms); err != nil {
+		return fmt.Errorf("duration must be a Go duration string or milliseconds")
+	}
+	d.Duration = time.Duration(ms) * time.Millisecond
+	return nil
+}
+
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.String())
+}
+
 type Config struct {
 	Version     int         `yaml:"version" json:"version"`
 	Server      Server      `yaml:"server" json:"server"`
@@ -36,6 +59,8 @@ type Config struct {
 	HTTP        HTTP        `yaml:"http" json:"http"`
 	Storage     Storage     `yaml:"storage" json:"storage"`
 	password    string
+	adminUser   string
+	adminPass   string
 }
 
 type Server struct {
@@ -91,7 +116,9 @@ type Enforcement struct {
 }
 
 type HTTP struct {
-	Listen string `yaml:"listen" json:"listen"`
+	Listen           string `yaml:"listen" json:"listen"`
+	AdminUsernameEnv string `yaml:"admin_username_env,omitempty" json:"admin_username_env,omitempty"`
+	AdminPasswordEnv string `yaml:"admin_password_env,omitempty" json:"admin_password_env,omitempty"`
 }
 
 type Storage struct {
@@ -99,6 +126,10 @@ type Storage struct {
 }
 
 func (c Config) Password() string { return c.password }
+
+func (c Config) AdminEnabled() bool { return c.adminUser != "" && c.adminPass != "" }
+
+func (c Config) AdminCredentials() (string, string) { return c.adminUser, c.adminPass }
 
 func Parse(data []byte, lookup func(string) (string, bool)) (Config, error) {
 	cfg := defaults()
@@ -118,6 +149,30 @@ func Parse(data []byte, lookup func(string) (string, bool)) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func ParsePolicy(data []byte) (Policy, error) {
+	policy := Policy{Overrides: map[string]RuleOverride{}}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&policy); err != nil {
+		return Policy{}, fmt.Errorf("decode policy: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return Policy{}, fmt.Errorf("decode policy: multiple YAML documents are not allowed")
+		}
+		return Policy{}, fmt.Errorf("decode policy: %w", err)
+	}
+	if err := ValidatePolicy(policy); err != nil {
+		return Policy{}, err
+	}
+	return policy, nil
+}
+
+func MarshalPolicy(policy Policy) ([]byte, error) {
+	return yaml.Marshal(policy)
 }
 
 func defaults() Config {
@@ -159,24 +214,8 @@ func (c *Config) validate(lookup func(string) (string, bool)) error {
 		return fmt.Errorf("environment variable %s is required", c.Server.PasswordEnv)
 	}
 	c.password = password
-	loc, err := time.LoadLocation(c.Policy.Timezone)
-	if err != nil || loc == nil {
-		return fmt.Errorf("policy.timezone is invalid: %s", c.Policy.Timezone)
-	}
-	if err := validateRule("policy.default", c.Policy.Default); err != nil {
+	if err := ValidatePolicy(c.Policy); err != nil {
 		return err
-	}
-	for userID, override := range c.Policy.Overrides {
-		if strings.TrimSpace(userID) == "" {
-			return fmt.Errorf("policy override user ID cannot be empty")
-		}
-		if override.Exempt {
-			continue
-		}
-		resolved := applyOverride(c.Policy.Default, override)
-		if err := validateRule("policy.overrides."+userID, resolved); err != nil {
-			return err
-		}
 	}
 	if c.Enforcement.KickRetryInitial.Duration <= 0 || c.Enforcement.KickRetryMax.Duration < c.Enforcement.KickRetryInitial.Duration {
 		return fmt.Errorf("enforcement retry durations are invalid")
@@ -193,6 +232,47 @@ func (c *Config) validate(lookup func(string) (string, bool)) error {
 	}
 	if c.HTTP.Listen == "" || c.Storage.Path == "" {
 		return fmt.Errorf("http.listen and storage.path are required")
+	}
+	if c.HTTP.AdminUsernameEnv != "" || c.HTTP.AdminPasswordEnv != "" {
+		if c.HTTP.AdminUsernameEnv == "" || c.HTTP.AdminPasswordEnv == "" {
+			return fmt.Errorf("http admin username and password env must be configured together")
+		}
+		adminUser, ok := lookup(c.HTTP.AdminUsernameEnv)
+		if !ok || adminUser == "" {
+			return fmt.Errorf("environment variable %s is required", c.HTTP.AdminUsernameEnv)
+		}
+		adminPass, ok := lookup(c.HTTP.AdminPasswordEnv)
+		if !ok || adminPass == "" {
+			return fmt.Errorf("environment variable %s is required", c.HTTP.AdminPasswordEnv)
+		}
+		c.adminUser = adminUser
+		c.adminPass = adminPass
+	}
+	return nil
+}
+
+func ValidatePolicy(policy Policy) error {
+	loc, err := time.LoadLocation(policy.Timezone)
+	if err != nil || loc == nil {
+		return fmt.Errorf("policy.timezone is invalid: %s", policy.Timezone)
+	}
+	if policy.Overrides == nil {
+		policy.Overrides = map[string]RuleOverride{}
+	}
+	if err := validateRule("policy.default", policy.Default); err != nil {
+		return err
+	}
+	for userID, override := range policy.Overrides {
+		if strings.TrimSpace(userID) == "" {
+			return fmt.Errorf("policy override user ID cannot be empty")
+		}
+		if override.Exempt {
+			continue
+		}
+		resolved := applyOverride(policy.Default, override)
+		if err := validateRule("policy.overrides."+userID, resolved); err != nil {
+			return err
+		}
 	}
 	return nil
 }

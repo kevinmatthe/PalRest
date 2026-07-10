@@ -6,6 +6,8 @@ import {
   CircleGauge,
   Clock3,
   Database,
+  LogIn,
+  LogOut,
   RefreshCw,
   Search,
   Shield,
@@ -14,9 +16,15 @@ import {
 } from 'lucide-react';
 import {
   getHealth,
+  getAdminSession,
   getPlayers,
   getPolicies,
   getStatus,
+  loginAdmin,
+  logoutAdmin,
+  resetPlayer,
+  savePolicies,
+  type AdminSession,
   type HealthStatus,
   type Player,
   type Policies,
@@ -30,6 +38,7 @@ type DashboardData = {
   status: PollStatus;
   players: Player[];
   policies: Policies;
+  admin: AdminSession;
 };
 
 type LoadState =
@@ -44,6 +53,7 @@ function App() {
   const [query, setQuery] = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [manualRefreshKey, setManualRefreshKey] = useState(0);
+  const [adminBusy, setAdminBusy] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -52,16 +62,17 @@ function App() {
     async function load() {
       setState((current) => ({ kind: 'loading', data: current.data }));
       try {
-        const [health, status, playersResponse, policies] = await Promise.all([
+        const [health, status, playersResponse, policies, admin] = await Promise.all([
           getHealth(controller.signal),
           getStatus(controller.signal),
           getPlayers(controller.signal),
           getPolicies(controller.signal),
+          getAdminSession(controller.signal),
         ]);
         if (!mounted) {
           return;
         }
-        setState({ kind: 'ready', data: { health, status, players: playersResponse.players, policies } });
+        setState({ kind: 'ready', data: { health, status, players: playersResponse.players, policies, admin } });
         setLastRefresh(new Date());
       } catch (error) {
         if (!mounted || controller.signal.aborted) {
@@ -102,6 +113,43 @@ function App() {
   const defaultRule = data?.policies.default;
   const overrides = Object.entries(data?.policies.overrides ?? {});
   const serviceState = data ? resolveServiceState(data.health, data.status) : 'loading';
+  const refresh = () => setManualRefreshKey((value) => value + 1);
+  const onLogin = async (username: string, password: string) => {
+    setAdminBusy(true);
+    try {
+      await loginAdmin(username, password);
+      refresh();
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+  const onLogout = async () => {
+    setAdminBusy(true);
+    try {
+      await logoutAdmin();
+      refresh();
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+  const onResetPlayer = async (userID: string) => {
+    setAdminBusy(true);
+    try {
+      await resetPlayer(userID);
+      refresh();
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+  const onSavePolicies = async (next: Omit<Policies, 'version'>) => {
+    setAdminBusy(true);
+    try {
+      await savePolicies(next);
+      refresh();
+    } finally {
+      setAdminBusy(false);
+    }
+  };
 
   return (
     <main className="app-shell">
@@ -111,8 +159,9 @@ function App() {
           <h1>Palworld playtime control</h1>
         </div>
         <div className="topbar-actions">
+          <AdminLogin session={data?.admin} busy={adminBusy} onLogin={onLogin} onLogout={onLogout} />
           <StatusPill state={serviceState} />
-          <button className="icon-button" type="button" onClick={() => setManualRefreshKey((value) => value + 1)} title="Refresh now">
+          <button className="icon-button" type="button" onClick={refresh} title="Refresh now">
             <RefreshCw size={18} />
           </button>
         </div>
@@ -150,7 +199,7 @@ function App() {
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search players" />
             </label>
           </div>
-          <PlayerTable players={players} loading={state.kind === 'loading' && !data} />
+          <PlayerTable players={players} loading={state.kind === 'loading' && !data} admin={data?.admin.authenticated ?? false} busy={adminBusy} onReset={onResetPlayer} />
         </section>
 
         <aside className="side-stack">
@@ -223,6 +272,9 @@ function App() {
                 <p className="empty-copy">No per-user overrides configured.</p>
               )}
             </div>
+            {data?.admin.authenticated && (
+              <PolicyEditor policies={data.policies} busy={adminBusy} onSave={onSavePolicies} />
+            )}
           </section>
 
           <section className="panel">
@@ -309,7 +361,106 @@ function MetricCard({
   );
 }
 
-function PlayerTable({ players, loading }: { players: Player[]; loading: boolean }) {
+function AdminLogin({
+  session,
+  busy,
+  onLogin,
+  onLogout,
+}: {
+  session?: AdminSession;
+  busy: boolean;
+  onLogin: (username: string, password: string) => Promise<void>;
+  onLogout: () => Promise<void>;
+}) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  if (!session?.enabled) {
+    return <span className="status-pill">Read only</span>;
+  }
+
+  if (session.authenticated) {
+    return (
+      <button className="text-button" type="button" disabled={busy} onClick={() => void onLogout()} title="Log out">
+        <LogOut size={16} />
+        Admin
+      </button>
+    );
+  }
+
+  return (
+    <form
+      className="login-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        setError('');
+        void onLogin(username, password).catch((err: unknown) => {
+          setError(err instanceof Error ? err.message : 'Login failed');
+        });
+      }}
+    >
+      <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Admin" />
+      <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password" type="password" />
+      <button className="icon-button" type="submit" disabled={busy} title={error || 'Log in'}>
+        <LogIn size={16} />
+      </button>
+    </form>
+  );
+}
+
+function PolicyEditor({
+  policies,
+  busy,
+  onSave,
+}: {
+  policies: Policies;
+  busy: boolean;
+  onSave: (next: Omit<Policies, 'version'>) => Promise<void>;
+}) {
+  const [text, setText] = useState(() => JSON.stringify({ timezone: policies.timezone, default: policies.default, overrides: policies.overrides }, null, 2));
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setText(JSON.stringify({ timezone: policies.timezone, default: policies.default, overrides: policies.overrides }, null, 2));
+  }, [policies]);
+
+  return (
+    <form
+      className="policy-editor"
+      onSubmit={(event) => {
+        event.preventDefault();
+        setError('');
+        try {
+          const next = JSON.parse(text) as Omit<Policies, 'version'>;
+          void onSave(next).catch((err: unknown) => setError(err instanceof Error ? err.message : 'Save failed'));
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Invalid JSON');
+        }
+      }}
+    >
+      <textarea value={text} onChange={(event) => setText(event.target.value)} spellCheck={false} />
+      <button className="text-button" type="submit" disabled={busy}>
+        Save policy
+      </button>
+      {error && <p className="form-error">{error}</p>}
+    </form>
+  );
+}
+
+function PlayerTable({
+  players,
+  loading,
+  admin,
+  busy,
+  onReset,
+}: {
+  players: Player[];
+  loading: boolean;
+  admin: boolean;
+  busy: boolean;
+  onReset: (userID: string) => Promise<void>;
+}) {
   if (loading) {
     return <SkeletonRows rows={5} />;
   }
@@ -329,6 +480,7 @@ function PlayerTable({ players, loading }: { players: Player[]; loading: boolean
             <th>Reset</th>
             <th>Warning</th>
             <th>Enforcement</th>
+            {admin && <th>Actions</th>}
           </tr>
         </thead>
         <tbody>
@@ -388,6 +540,13 @@ function PlayerTable({ players, loading }: { players: Player[]; loading: boolean
                     {player.enforcement_state ? titleCase(player.enforcement_state) : 'Clear'}
                   </span>
                 </td>
+                {admin && (
+                  <td>
+                    <button className="text-button compact-button" type="button" disabled={busy} onClick={() => void onReset(player.user_id)}>
+                      Reset
+                    </button>
+                  </td>
+                )}
               </tr>
             );
           })}

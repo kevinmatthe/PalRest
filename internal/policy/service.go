@@ -1,8 +1,10 @@
 package policy
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,23 +13,64 @@ import (
 
 	"github.com/kevinmatt/palworld-playtime-guard/internal/config"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
 )
 
-type Service struct {
-	mu  sync.RWMutex
-	cfg config.Policy
-	loc *time.Location
+type Repository interface {
+	PolicyDocument(context.Context) (string, error)
+	UpsertPolicyDocument(context.Context, string, time.Time) error
 }
 
-func New(cfg config.Policy) (*Service, error) {
+type Service struct {
+	repo Repository
+	mu   sync.RWMutex
+	cfg  config.Policy
+	loc  *time.Location
+}
+
+func New(repo Repository, seed config.Policy) (*Service, error) {
+	ctx := context.Background()
+	policyYAML, err := repo.PolicyDocument(ctx)
+	if errors.Is(err, store.ErrNotFound) {
+		data, marshalErr := config.MarshalPolicy(seed)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		policyYAML = string(data)
+		if writeErr := repo.UpsertPolicyDocument(ctx, policyYAML, time.Now().UTC()); writeErr != nil {
+			return nil, writeErr
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	cfg, err := config.ParsePolicy([]byte(policyYAML))
+	if err != nil {
+		return nil, err
+	}
 	loc, err := time.LoadLocation(cfg.Timezone)
 	if err != nil {
 		return nil, fmt.Errorf("load policy timezone: %w", err)
 	}
-	return &Service{cfg: cfg, loc: loc}, nil
+	return &Service{repo: repo, cfg: cfg, loc: loc}, nil
 }
 
-func (s *Service) Update(cfg config.Policy) error {
+func (s *Service) Policy() config.Policy {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return clonePolicy(s.cfg)
+}
+
+func (s *Service) SetPolicy(ctx context.Context, cfg config.Policy) error {
+	if err := config.ValidatePolicy(cfg); err != nil {
+		return err
+	}
+	data, err := config.MarshalPolicy(cfg)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.UpsertPolicyDocument(ctx, string(data), time.Now().UTC()); err != nil {
+		return err
+	}
 	loc, err := time.LoadLocation(cfg.Timezone)
 	if err != nil {
 		return fmt.Errorf("load policy timezone: %w", err)
@@ -147,6 +190,23 @@ func ruleLimit(rule config.Rule) time.Duration {
 	default:
 		return rule.Limit.Duration
 	}
+}
+
+func clonePolicy(policy config.Policy) config.Policy {
+	clone := policy
+	clone.Default.WarningBefore = append([]config.Duration(nil), policy.Default.WarningBefore...)
+	clone.Overrides = make(map[string]config.RuleOverride, len(policy.Overrides))
+	for userID, override := range policy.Overrides {
+		if override.WarningBefore != nil {
+			warnings := append([]config.Duration(nil), (*override.WarningBefore)...)
+			override.WarningBefore = &warnings
+		}
+		clone.Overrides[userID] = override
+	}
+	if clone.Overrides == nil {
+		clone.Overrides = map[string]config.RuleOverride{}
+	}
+	return clone
 }
 
 func (s *Service) Period(rule domain.ResolvedPolicy, now time.Time) domain.Period {

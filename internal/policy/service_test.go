@@ -1,13 +1,26 @@
 package policy
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/kevinmatt/palworld-playtime-guard/internal/config"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
 )
 
 func duration(value time.Duration) config.Duration { return config.Duration{Duration: value} }
+
+func testRepo(t *testing.T) *store.Repository {
+	t.Helper()
+	repo, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "policy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	return repo
+}
 
 func basePolicy() config.Policy {
 	return config.Policy{
@@ -24,7 +37,7 @@ func basePolicy() config.Policy {
 }
 
 func TestDailyPeriodBeforeResetUsesPreviousDay(t *testing.T) {
-	svc, err := New(basePolicy())
+	svc, err := New(testRepo(t), basePolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +55,7 @@ func TestWeeklyPeriodUsesConfiguredWeekday(t *testing.T) {
 	cfg := basePolicy()
 	cfg.Default.Period = "weekly"
 	cfg.Default.ResetWeekday = "Monday"
-	svc, err := New(cfg)
+	svc, err := New(testRepo(t), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +69,7 @@ func TestWeeklyPeriodUsesConfiguredWeekday(t *testing.T) {
 }
 
 func TestExactResetStartsNewPeriod(t *testing.T) {
-	svc, _ := New(basePolicy())
+	svc, _ := New(testRepo(t), basePolicy())
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	now := time.Date(2026, 7, 10, 4, 0, 0, 0, loc)
 	got := svc.Period(svc.Resolve("steam_1"), now)
@@ -68,7 +81,7 @@ func TestExactResetStartsNewPeriod(t *testing.T) {
 func TestDailyPeriodHandlesDSTCalendarBoundaries(t *testing.T) {
 	cfg := basePolicy()
 	cfg.Timezone = "America/New_York"
-	svc, err := New(cfg)
+	svc, err := New(testRepo(t), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +98,7 @@ func TestResolveOverrideAndExemption(t *testing.T) {
 	fourHours := duration(4 * time.Hour)
 	cfg.Overrides["steam_override"] = config.RuleOverride{Limit: &fourHours}
 	cfg.Overrides["steam_exempt"] = config.RuleOverride{Exempt: true}
-	svc, _ := New(cfg)
+	svc, _ := New(testRepo(t), cfg)
 	if got := svc.Resolve("steam_override"); got.Limit != 4*time.Hour || !got.Enabled {
 		t.Fatalf("override=%+v", got)
 	}
@@ -98,7 +111,7 @@ func TestResolveOverrideAndExemption(t *testing.T) {
 }
 
 func TestPeriodKeyChangesWhenPolicyIdentityChanges(t *testing.T) {
-	svc, _ := New(basePolicy())
+	svc, _ := New(testRepo(t), basePolicy())
 	now := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
 	daily := svc.Resolve("steam_1")
 	first := svc.Period(daily, now)
@@ -110,7 +123,7 @@ func TestPeriodKeyChangesWhenPolicyIdentityChanges(t *testing.T) {
 }
 
 func TestPeriodKeyDoesNotChangeWhenOnlyLimitChanges(t *testing.T) {
-	svc, _ := New(basePolicy())
+	svc, _ := New(testRepo(t), basePolicy())
 	now := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
 	rule := svc.Resolve("steam_1")
 	first := svc.Period(rule, now)
@@ -122,11 +135,11 @@ func TestPeriodKeyDoesNotChangeWhenOnlyLimitChanges(t *testing.T) {
 }
 
 func TestPolicyRevisionChangesWhenLimitChanges(t *testing.T) {
-	svc, _ := New(basePolicy())
+	svc, _ := New(testRepo(t), basePolicy())
 	first := svc.Resolve("steam_1")
 	cfg := basePolicy()
 	cfg.Default.Limit = duration(3 * time.Hour)
-	if err := svc.Update(cfg); err != nil {
+	if err := svc.SetPolicy(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
 	second := svc.Resolve("steam_1")

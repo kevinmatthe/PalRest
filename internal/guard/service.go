@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -510,6 +511,25 @@ func (s *Service) PollFailed() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clearContinuity()
+}
+
+func (s *Service) ResetUser(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.observed, userID)
+	delete(s.generations, userID)
+	for key := range s.kickedConnections {
+		if strings.HasPrefix(key, userID+"|") {
+			delete(s.kickedConnections, key)
+		}
+	}
+	if snapshot, ok := s.snapshots[userID]; ok {
+		snapshot.Used = 0
+		snapshot.Remaining = snapshot.Policy.Limit
+		snapshot.Warnings = nil
+		snapshot.Enforcement = domain.EnforcementState{}
+		s.snapshots[userID] = snapshot
+	}
 }
 
 func (s *Service) RecordKickResult(ctx context.Context, decision KickDecision, resultErr error, now time.Time) error {

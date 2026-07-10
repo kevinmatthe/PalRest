@@ -47,7 +47,7 @@ func New(configPath string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	policies, err := policy.New(cfg.Policy)
+	policies, err := policy.New(repo, cfg.Policy)
 	if err != nil {
 		_ = repo.Close()
 		return nil, err
@@ -63,7 +63,8 @@ func New(configPath string) (*App, error) {
 		configPath: configPath, config: cfg, repo: repo, policies: policies, guard: guardService, poller: poll,
 		pollerDone: make(chan struct{}), watcherDone: make(chan struct{}),
 	}
-	apiServer := api.New(repo, poll, guardService, app.CurrentConfig)
+	adminUser, adminPass := cfg.AdminCredentials()
+	apiServer := api.New(repo, poll, guardService, policies, guardService, repo, adminUser, adminPass, app.CurrentConfig)
 	app.httpServer = apiServer.HTTPServer(cfg.HTTP.Listen)
 	return app, nil
 }
@@ -155,7 +156,7 @@ func (a *App) reload() error {
 		current.Enforcement.KickRetryInitial != next.Enforcement.KickRetryInitial || current.Enforcement.KickRetryMax != next.Enforcement.KickRetryMax {
 		return a.reloadError(fmt.Errorf("server, HTTP, storage, and retry settings require a restart"))
 	}
-	if err := a.poller.ApplyConfig(func() error { return a.policies.Update(next.Policy) }, next.Enforcement.AnnounceMessage, next.Enforcement.KickMessage); err != nil {
+	if err := a.poller.ApplyConfig(func() error { return nil }, next.Enforcement.AnnounceMessage, next.Enforcement.KickMessage); err != nil {
 		return a.reloadError(err)
 	}
 	a.configMu.Lock()
