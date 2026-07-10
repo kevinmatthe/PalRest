@@ -103,5 +103,8 @@ function OptionalText({ label, type, value, inherited, onChange }: { label: stri
 }
 
 function WarningsEditor({ values, onChange }: { values: number[]; onChange: (values: number[]) => void }) {
-  return <section className="warnings-editor"><div className="section-label"><strong>Warning thresholds</strong><button type="button" onClick={() => onChange([...values, 300_000].sort((a, b) => b - a))}>Add threshold</button></div><div className="warning-chips">{values.map((value, index) => <span key={`${value}-${index}`}><DurationField label={`Warning ${index + 1}`} milliseconds={value} onChange={(next) => onChange(values.map((item, itemIndex) => itemIndex === index ? next : item).sort((a, b) => b - a))} /><button type="button" aria-label={`Remove warning ${index + 1}`} onClick={() => onChange(values.filter((_, itemIndex) => itemIndex !== index))}>×</button></span>)}</div></section>;
+  return <section className="warnings-editor"><div className="section-label"><strong>Warning thresholds</strong><button type="button" onClick={() => {
+    const next = values.length === 0 ? 300_000 : Math.max(1, Math.floor(Math.min(...values) / 2));
+    onChange([...values, next].sort((a, b) => b - a));
+  }}>Add threshold</button></div><div className="warning-chips">{values.map((value, index) => <span key={`${value}-${index}`}><DurationField label={`Warning ${index + 1}`} milliseconds={value} onChange={(next) => onChange(values.map((item, itemIndex) => itemIndex === index ? next : item).sort((a, b) => b - a))} /><button type="button" aria-label={`Remove warning ${index + 1}`} onClick={() => onChange(values.filter((_, itemIndex) => itemIndex !== index))}>×</button></span>)}</div></section>;
 }

@@ -71,4 +71,19 @@ describe('PolicyManager', () => {
     await user.click(screen.getByRole('button', { name: 'Create override' }));
     expect(screen.getByRole('alert')).toHaveTextContent('already has an override');
   });
+
+  it('adds unique warning thresholds', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const withFiveMinutes = {
+      ...policies,
+      default: { ...policies.default, warning_before_ms: [1_800_000, 600_000, 300_000] },
+    };
+    render(<PolicyManager policies={withFiveMinutes} players={players} busy={false} onSave={onSave} onBack={() => {}} />);
+    await user.click(screen.getByRole('button', { name: 'Add threshold' }));
+    await user.click(screen.getByRole('button', { name: 'Add threshold' }));
+    await user.click(screen.getByRole('button', { name: 'Save policy' }));
+    const saved = onSave.mock.calls[0][0] as { default: { warning_before_ms: number[] } };
+    expect(new Set(saved.default.warning_before_ms).size).toBe(saved.default.warning_before_ms.length);
+  });
 });
