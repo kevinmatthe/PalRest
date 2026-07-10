@@ -133,7 +133,7 @@ func TestAnalyticsActivityFillsConcurrencyAndPartialDaily(t *testing.T) {
 }
 
 func TestAnalyticsValidationAndErrors(t *testing.T) {
-	for _, path := range []string{"/api/v1/analytics/summary?period=month", "/api/v1/analytics/activity?range=8d"} {
+	for _, path := range []string{"/api/v1/analytics/summary?ranking=year", "/api/v1/analytics/activity?range=8d"} {
 		res := httptest.NewRecorder()
 		analyticsServer(fakeAnalyticsQueries{}, fakeAnalyticsOnline{}).Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
 		if res.Code != http.StatusBadRequest {
@@ -171,7 +171,7 @@ func TestAnalyticsSummaryUsesShanghaiMondayAndTodayBoundaries(t *testing.T) {
 	q := &captureAnalyticsQueries{}
 	s := analyticsServer(q, fakeAnalyticsOnline{})
 	res := httptest.NewRecorder()
-	s.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/summary?period=week", nil))
+	s.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/summary?ranking=week", nil))
 	if res.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
 	}
@@ -202,5 +202,42 @@ func TestAnalyticsActivityDSTIteratesUTCInsteadOfAssumingPointCount(t *testing.T
 	}
 	if len(got.Concurrency) != 167*12 {
 		t.Fatalf("points=%d want=%d", len(got.Concurrency), 167*12)
+	}
+}
+
+func TestAnalyticsActivityFallBackDSTProducesOrderedNullGaps(t *testing.T) {
+	q := &captureAnalyticsQueries{}
+	s := analyticsServer(q, fakeAnalyticsOnline{})
+	s.policies = fakePolicies{value: config.Policy{Timezone: "America/New_York"}}
+	s.now = func() time.Time { return time.Date(2026, 11, 1, 17, 0, 0, 0, time.UTC) }
+	res := httptest.NewRecorder()
+	s.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/activity?range=7d", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	var got struct {
+		Concurrency []struct {
+			At       time.Time `json:"at"`
+			Average  *float64  `json:"average_count"`
+			Max      *int      `json:"max_count"`
+			Coverage float64   `json:"coverage"`
+		} `json:"concurrency"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Concurrency) != 169*12 {
+		t.Fatalf("points=%d want=%d", len(got.Concurrency), 169*12)
+	}
+	if got.Concurrency[0].At.Format(time.RFC3339) != "2026-10-26T04:00:00Z" || got.Concurrency[len(got.Concurrency)-1].At.Format(time.RFC3339) != "2026-11-02T04:55:00Z" {
+		t.Fatalf("first=%s last=%s", got.Concurrency[0].At, got.Concurrency[len(got.Concurrency)-1].At)
+	}
+	for i, point := range got.Concurrency {
+		if point.Average != nil || point.Max != nil || point.Coverage != 0 {
+			t.Fatalf("point %d not a null gap: %+v", i, point)
+		}
+		if i > 0 && point.At.Sub(got.Concurrency[i-1].At) != 5*time.Minute {
+			t.Fatalf("unordered points at %d", i)
+		}
 	}
 }

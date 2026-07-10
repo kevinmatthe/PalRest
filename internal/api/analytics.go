@@ -27,7 +27,7 @@ func (s *Server) analyticsBounds(days int) (*time.Location, time.Time, time.Time
 }
 
 func (s *Server) getAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
-	period := r.URL.Query().Get("period")
+	period := r.URL.Query().Get("ranking")
 	if period == "" {
 		period = "today"
 	}
