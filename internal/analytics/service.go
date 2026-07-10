@@ -138,8 +138,7 @@ func (s *Service) splitIntervals(start, end time.Time, onlineUserIDs []string) [
 		if bucketBoundary.Before(next) {
 			next = bucketBoundary
 		}
-		local := cursor.In(s.location)
-		midnight := time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, s.location).UTC()
+		midnight := nextLocalMidnight(cursor, s.location)
 		if midnight.After(cursor) && midnight.Before(next) {
 			next = midnight
 		}
@@ -154,4 +153,9 @@ func (s *Service) splitIntervals(start, end time.Time, onlineUserIDs []string) [
 		cursor = next
 	}
 	return intervals
+}
+
+func nextLocalMidnight(at time.Time, location *time.Location) time.Time {
+	local := at.In(location)
+	return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, location).UTC()
 }

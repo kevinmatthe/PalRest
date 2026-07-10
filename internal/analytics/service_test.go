@@ -257,24 +257,40 @@ func TestObserveSplitsAtAsiaShanghaiMidnight(t *testing.T) {
 	}
 }
 
-func TestObserveUsesCalendarMidnightAcrossDST(t *testing.T) {
+func TestNextLocalMidnightUsesCalendarBoundaryAcrossDST(t *testing.T) {
 	location, err := time.LoadLocation("America/New_York")
 	if err != nil {
 		t.Skip(err)
 	}
-	repo := &fakeRecorder{}
-	service := New(repo, 3*time.Hour, location)
-	start := time.Date(2026, 3, 8, 23, 59, 30, 0, location)
-	end := time.Date(2026, 3, 9, 0, 0, 30, 0, location)
-	if err := service.Observe(t.Context(), start, nil); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name     string
+		start    time.Time
+		want     time.Time
+		dayWidth time.Duration
+	}{
+		{
+			name:     "spring forward day",
+			start:    time.Date(2026, 3, 8, 0, 0, 0, 0, location),
+			want:     time.Date(2026, 3, 9, 0, 0, 0, 0, location),
+			dayWidth: 23 * time.Hour,
+		},
+		{
+			name:     "fall back day",
+			start:    time.Date(2026, 11, 1, 0, 0, 0, 0, location),
+			want:     time.Date(2026, 11, 2, 0, 0, 0, 0, location),
+			dayWidth: 25 * time.Hour,
+		},
 	}
-	if err := service.Observe(t.Context(), end, nil); err != nil {
-		t.Fatal(err)
-	}
-	got := repo.observations[1].Intervals
-	if len(got) != 2 || got[0].LocalDate != "2026-03-08" || got[1].LocalDate != "2026-03-09" || !got[0].End.Equal(time.Date(2026, 3, 9, 0, 0, 0, 0, location)) {
-		t.Fatalf("intervals = %#v", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := nextLocalMidnight(tt.start, location)
+			if !got.Equal(tt.want) {
+				t.Fatalf("nextLocalMidnight() = %v, want %v", got, tt.want)
+			}
+			if elapsed := got.Sub(tt.start); elapsed != tt.dayWidth {
+				t.Fatalf("elapsed = %v, want %v", elapsed, tt.dayWidth)
+			}
+		})
 	}
 }
 
