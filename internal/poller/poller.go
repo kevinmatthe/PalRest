@@ -27,9 +27,14 @@ type Guard interface {
 	RecordKickResult(context.Context, guard.KickDecision, error, time.Time) error
 }
 
+type Analytics interface {
+	Observe(context.Context, time.Time, []domain.Player) error
+}
+
 type Poller struct {
 	client           Client
 	guard            Guard
+	analytics        Analytics
 	interval         time.Duration
 	announceTemplate *template.Template
 	kickTemplate     *template.Template
@@ -39,7 +44,7 @@ type Poller struct {
 	status           domain.PollStatus
 }
 
-func New(client Client, guardService Guard, interval time.Duration, announceText, kickText string, now func() time.Time) (*Poller, error) {
+func New(client Client, guardService Guard, analytics Analytics, interval time.Duration, announceText, kickText string, now func() time.Time) (*Poller, error) {
 	announce, err := template.New("announce").Option("missingkey=error").Parse(announceText)
 	if err != nil {
 		return nil, fmt.Errorf("parse announce template: %w", err)
@@ -49,7 +54,7 @@ func New(client Client, guardService Guard, interval time.Duration, announceText
 		return nil, fmt.Errorf("parse kick template: %w", err)
 	}
 	return &Poller{
-		client: client, guard: guardService, interval: interval,
+		client: client, guard: guardService, analytics: analytics, interval: interval,
 		announceTemplate: announce, kickTemplate: kick, now: now,
 		status: domain.PollStatus{StartedAt: now().UTC(), ConfigVersion: 1},
 	}, nil
@@ -102,6 +107,12 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 		return err
 	}
 	slog.Info("poll listed players", "online_count", len(players))
+	if err := p.analytics.Observe(ctx, now, players); err != nil {
+		p.guard.PollFailed()
+		p.setError(err)
+		slog.Error("poll analytics observation failed", "online_count", len(players), "error", err)
+		return err
+	}
 	decisions, err := p.guard.Observe(ctx, now, players)
 	if err != nil {
 		p.setError(err)

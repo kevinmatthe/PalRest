@@ -68,6 +68,9 @@ func newTestApp(t *testing.T) (*App, string) {
 
 func TestNewLoadsDisabledConfiguration(t *testing.T) {
 	application, _ := newTestApp(t)
+	if application.analytics == nil {
+		t.Fatal("expected analytics service")
+	}
 	if application.CurrentConfig().Policy.Default.Enabled {
 		t.Fatal("expected disabled policy")
 	}
