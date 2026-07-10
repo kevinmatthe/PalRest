@@ -1,0 +1,6 @@
+.git
+.worktrees
+config.yaml
+data
+coverage.out
+docs
