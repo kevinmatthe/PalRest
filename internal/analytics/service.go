@@ -24,7 +24,8 @@ type Service struct {
 	repo        Recorder
 	maxGap      time.Duration
 	location    *time.Location
-	lastAt      time.Time
+	lastAt      time.Time // interval-continuity baseline; may reset on timezone change
+	asOf        time.Time // latest successfully persisted observation
 	online      map[string]domain.Player
 	lastCleanup time.Time
 }
@@ -58,11 +59,11 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 	}
 
 	s.mu.Lock()
-	if !s.lastAt.IsZero() && !at.After(s.lastAt) {
+	if !s.asOf.IsZero() && !at.After(s.asOf) {
 		s.mu.Unlock()
-		return fmt.Errorf("observe analytics: observation time %s must be after %s", at.Format(time.RFC3339Nano), s.lastAt.Format(time.RFC3339Nano))
+		return fmt.Errorf("observe analytics: observation time %s must be after %s", at.Format(time.RFC3339Nano), s.asOf.Format(time.RFC3339Nano))
 	}
-	if !s.lastAt.IsZero() && at.Sub(s.lastAt).Milliseconds() <= 0 {
+	if !s.asOf.IsZero() && at.Sub(s.asOf).Milliseconds() <= 0 {
 		s.mu.Unlock()
 		return fmt.Errorf("observe analytics: observation must advance by at least 1ms")
 	}
@@ -89,6 +90,7 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		return err
 	}
 	s.lastAt = at
+	s.asOf = at
 	s.online = current
 	doCleanup := s.lastCleanup.IsZero() || at.Sub(s.lastCleanup) >= 24*time.Hour
 	cleanupDate := ""
@@ -130,7 +132,7 @@ func (s *Service) SetLocation(location *time.Location) error {
 func (s *Service) Restore(at time.Time, players []domain.Player) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.lastAt.IsZero() || len(s.online) != 0 {
+	if !s.asOf.IsZero() || !s.lastAt.IsZero() || len(s.online) != 0 {
 		return fmt.Errorf("restore analytics: service is already initialized")
 	}
 	if at.IsZero() {
@@ -144,6 +146,7 @@ func (s *Service) Restore(at time.Time, players []domain.Player) error {
 		return fmt.Errorf("restore analytics: %w", err)
 	}
 	s.lastAt = at.UTC()
+	s.asOf = at.UTC()
 	s.online = current
 	return nil
 }
@@ -152,9 +155,9 @@ func (s *Service) Current() ([]string, time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.online) == 0 {
-		return nil, s.lastAt
+		return nil, s.asOf
 	}
-	return sortedPlayerIDs(s.online), s.lastAt
+	return sortedPlayerIDs(s.online), s.asOf
 }
 
 func normalizePlayers(players []domain.Player) (map[string]domain.Player, []domain.Player, error) {

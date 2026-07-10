@@ -129,8 +129,13 @@ func TestSetLocationDropsCrossTimezoneIntervalButRetainsOnlineState(t *testing.T
 		t.Fatal(err)
 	}
 	ids, asOf := s.Current()
-	if !reflect.DeepEqual(ids, []string{"u1"}) || !asOf.IsZero() {
+	if !reflect.DeepEqual(ids, []string{"u1"}) || !asOf.Equal(first) {
 		t.Fatalf("current ids=%v as_of=%s", ids, asOf)
+	}
+	for _, at := range []time.Time{first.Add(-time.Minute), first} {
+		if err := s.Observe(t.Context(), at, []domain.Player{u1}); err == nil {
+			t.Fatalf("Observe(%s) succeeded after timezone reset", at)
+		}
 	}
 
 	if err := s.Observe(t.Context(), first.Add(30*time.Minute), []domain.Player{u1}); err != nil {
@@ -139,6 +144,9 @@ func TestSetLocationDropsCrossTimezoneIntervalButRetainsOnlineState(t *testing.T
 	transition := repo.observations[1]
 	if len(transition.Intervals) != 0 || len(transition.JoinedUserIDs) != 0 || len(transition.LeftUserIDs) != 0 || len(transition.Players) != 1 || transition.LocalDate != "2026-07-11" {
 		t.Fatalf("transition observation=%+v", transition)
+	}
+	if _, got := s.Current(); !got.Equal(first.Add(30 * time.Minute)) {
+		t.Fatalf("as_of=%s", got)
 	}
 	if err := s.Observe(t.Context(), first.Add(time.Hour), []domain.Player{u1}); err != nil {
 		t.Fatal(err)
