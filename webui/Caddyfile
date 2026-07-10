@@ -1,0 +1,27 @@
+:{$WEBUI_PORT:8080} {
+  root * /srv
+  encode gzip zstd
+
+  header /config.js Cache-Control "no-store"
+  header {
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "no-referrer"
+  }
+
+  handle /api/* {
+    reverse_proxy {$PALREST_API_UPSTREAM:http://palworld-playtime-guard:8080}
+  }
+
+  handle /healthz {
+    reverse_proxy {$PALREST_API_UPSTREAM:http://palworld-playtime-guard:8080}
+  }
+
+  handle /readyz {
+    reverse_proxy {$PALREST_API_UPSTREAM:http://palworld-playtime-guard:8080}
+  }
+
+  handle {
+    try_files {path} /index.html
+    file_server
+  }
+}
