@@ -170,18 +170,8 @@ func (r *Repository) CleanupAnalytics(ctx context.Context, cutoff time.Time, cut
 			q string
 			a any
 		}{{`DELETE FROM player_sessions WHERE rowid IN (SELECT rowid FROM player_sessions WHERE ended_at IS NOT NULL AND ended_at<? LIMIT ?)`, formatTime(cutoff)}, {`DELETE FROM concurrency_buckets WHERE rowid IN (SELECT rowid FROM concurrency_buckets WHERE bucket_start<? LIMIT ?)`, formatTime(cutoff)}, {`DELETE FROM player_daily_stats WHERE rowid IN (SELECT rowid FROM player_daily_stats WHERE local_date<? LIMIT ?)`, cutoffDate}} {
-			for {
-				res, err := tx.tx.ExecContext(ctx, d.q, d.a, batchSize)
-				if err != nil {
-					return fmt.Errorf("cleanup analytics batch: %w", err)
-				}
-				n, err := res.RowsAffected()
-				if err != nil {
-					return err
-				}
-				if n < int64(batchSize) {
-					break
-				}
+			if _, err := tx.tx.ExecContext(ctx, d.q, d.a, batchSize); err != nil {
+				return fmt.Errorf("cleanup analytics batch: %w", err)
 			}
 		}
 		return nil
