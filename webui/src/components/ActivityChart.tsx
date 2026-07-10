@@ -67,6 +67,7 @@ export function ActivityChart(props: ActivityChartProps) {
   const serializedRef = useRef(serialized);
   const [previous, setPrevious] = useState<Geometry | null>(null);
   const [updating, setUpdating] = useState(false);
+  const [showData, setShowData] = useState(false);
 
   useEffect(() => {
     if (serializedRef.current === serialized) return;
@@ -88,19 +89,52 @@ export function ActivityChart(props: ActivityChartProps) {
     return () => window.clearTimeout(timer);
   }, [geometry, serialized]);
 
-  const descriptions = props.kind === 'line'
-    ? props.points.map((point) => `${point.at}: ${point.value === null ? 'no data' : point.value}`)
-    : props.points.map((point) => `${point.date}: ${point.value} ms`);
+  const description = useMemo(() => {
+    if (props.kind === 'line') {
+      let observed = 0;
+      let minimum = Infinity;
+      let maximum = -Infinity;
+      for (const point of props.points) {
+        if (point.value === null) continue;
+        observed += 1;
+        minimum = Math.min(minimum, point.value);
+        maximum = Math.max(maximum, point.value);
+      }
+      const missing = props.points.length - observed;
+      const range = observed ? ` Minimum ${minimum}; maximum ${maximum}.` : '';
+      return `${props.points.length} points; ${observed} observed; ${missing} missing.${range}`;
+    }
+    let total = 0;
+    let minimum = Infinity;
+    let maximum = -Infinity;
+    for (const point of props.points) {
+      total += point.value;
+      minimum = Math.min(minimum, point.value);
+      maximum = Math.max(maximum, point.value);
+    }
+    const range = props.points.length ? ` Minimum ${minimum} ms; maximum ${maximum} ms.` : '';
+    return `${props.points.length} points; total ${total} ms.${range}`;
+  }, [props.kind, serialized]);
 
   return <div className={`activity-chart${updating ? ' is-updating' : ''}`}>
     <svg role="img" aria-label={props.label} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} width="100%" preserveAspectRatio="none">
       <title>{props.label}</title>
-      <desc>{descriptions.join(', ') || 'No data'}</desc>
+      <desc>{description}</desc>
       {previous ? <ChartLayer geometry={previous} previous /> : null}
       <ChartLayer geometry={geometry} />
     </svg>
-    <ul className="activity-chart__values" style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', border: 0 }}>
-      {descriptions.map((description, index) => <li key={index}>{description}</li>)}
-    </ul>
+    <button className="activity-chart__data-toggle" type="button" aria-expanded={showData} onClick={() => setShowData((visible) => !visible)}>
+      {showData ? 'Hide data table' : 'Show data table'}
+    </button>
+    {showData ? <div className="activity-chart__data">
+      <table>
+        <caption>{props.label} data</caption>
+        <thead><tr><th scope="col">{props.kind === 'line' ? 'Time' : 'Date'}</th><th scope="col">Value</th></tr></thead>
+        <tbody>{props.kind === 'line'
+          ? props.points.map((point, index) => <tr key={`${point.at}-${index}`}><th scope="row">{point.at}</th><td>{point.value === null ? 'Missing' : point.value}</td></tr>)
+          : props.points.map((point, index) => <tr key={`${point.date}-${index}`}><th scope="row">{point.date}</th><td>{point.value} ms</td></tr>)
+        }</tbody>
+      </table>
+    </div> : null}
   </div>;
 }
