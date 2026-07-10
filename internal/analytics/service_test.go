@@ -15,11 +15,51 @@ import (
 type fakeRecorder struct {
 	observations []store.AnalyticsObservation
 	err          error
+	cleanups     []struct {
+		cutoff time.Time
+		date   string
+		batch  int
+	}
+	cleanupErr error
 }
 
 func (r *fakeRecorder) RecordAnalyticsObservation(_ context.Context, observation store.AnalyticsObservation) error {
 	r.observations = append(r.observations, observation)
 	return r.err
+}
+
+func (r *fakeRecorder) CleanupAnalytics(_ context.Context, cutoff time.Time, date string, batch int) error {
+	r.cleanups = append(r.cleanups, struct {
+		cutoff time.Time
+		date   string
+		batch  int
+	}{cutoff, date, batch})
+	return r.cleanupErr
+}
+
+func TestObserveSchedulesCleanupDailyWithLocalCutoffAndIgnoresFailure(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	repo := &fakeRecorder{cleanupErr: errors.New("cleanup failed")}
+	s := New(repo, time.Minute, loc)
+	at := mustTime(t, "2026-07-11T16:30:00Z")
+	if err := s.Observe(t.Context(), at, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Observe(t.Context(), at.Add(time.Hour), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.cleanups) != 1 {
+		t.Fatalf("cleanups=%d", len(repo.cleanups))
+	}
+	if repo.cleanups[0].cutoff != at.AddDate(0, 0, -90) || repo.cleanups[0].date != "2026-04-13" || repo.cleanups[0].batch != 500 {
+		t.Fatalf("cleanup=%#v", repo.cleanups[0])
+	}
+	if err := s.Observe(t.Context(), at.Add(24*time.Hour), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.cleanups) != 2 {
+		t.Fatalf("cleanups=%d", len(repo.cleanups))
+	}
 }
 
 func mustTime(t *testing.T, value string) time.Time {

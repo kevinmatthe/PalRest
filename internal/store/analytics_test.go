@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -37,6 +38,90 @@ func TestOpenAnalyticsPlayersSurvivesReopenAndUsesEarliestBaseline(t *testing.T)
 	}
 	if !reflect.DeepEqual(got, []domain.Player{{UserID: "u1", Name: "One", LastOnline: base}, {UserID: "u2", Name: "Two", LastOnline: base}}) || !at.Equal(base) {
 		t.Fatalf("players=%+v at=%v", got, at)
+	}
+}
+
+func TestAnalyticsQueries(t *testing.T) {
+	repo, _ := openTemp(t)
+	ctx := t.Context()
+	at := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	for _, p := range []domain.Player{{UserID: "u1", Name: "bob"}, {UserID: "u2", Name: "Ada"}, {UserID: "u3", Name: "ada"}} {
+		if err := repo.WithTx(ctx, func(tx *Tx) error { return tx.UpsertPlayer(p, at) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, x := range []struct {
+		id string
+		ms int64
+	}{{"u1", 1000}, {"u2", 1000}, {"u3", 1000}} {
+		_, err := repo.db.ExecContext(ctx, `INSERT INTO player_daily_stats VALUES(?,?,?,?,?,?)`, x.id, "2026-07-09", x.ms, formatTime(at), formatTime(at), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := repo.Ranking(ctx, "2026-07-09", "2026-07-10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r) != 3 || r[0].UserID != "u2" || r[1].UserID != "u3" || r[2].UserID != "u1" {
+		t.Fatalf("ranking=%#v", r)
+	}
+	_, _ = repo.db.ExecContext(ctx, `INSERT INTO concurrency_buckets VALUES(?,?,?,?,?)`, formatTime(at), 450000, 300000, 2, formatTime(at.Add(time.Minute)))
+	_, _ = repo.db.ExecContext(ctx, `INSERT INTO concurrency_buckets VALUES(?,?,?,?,?)`, formatTime(at.Add(5*time.Minute)), 0, 0, 0, formatTime(at))
+	b, err := repo.Concurrency(ctx, at, at.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) != 2 || b[0].Average == nil || *b[0].Average != 1.5 || b[0].Coverage != 1 || b[0].Max == nil || *b[0].Max != 2 || b[1].Average != nil || b[1].Max != nil {
+		t.Fatalf("buckets=%#v", b)
+	}
+	d, err := repo.PlayerDailyActivity(ctx, "u1", "2026-07-09", "2026-07-11")
+	if err != nil || len(d) != 1 || d[0].Observed != time.Second {
+		t.Fatalf("daily=%#v err=%v", d, err)
+	}
+	if _, err = repo.PlayerDailyActivity(ctx, "missing", "2026-07-09", "2026-07-11"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestCleanupAnalyticsBatchesAndPreservesOpenSessions(t *testing.T) {
+	repo, _ := openTemp(t)
+	ctx := t.Context()
+	at := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	for _, p := range []domain.Player{{UserID: "u1"}, {UserID: "u2"}} {
+		_ = repo.WithTx(ctx, func(tx *Tx) error { return tx.UpsertPlayer(p, at) })
+	}
+	_, _ = repo.db.ExecContext(ctx, `INSERT INTO player_sessions(user_id,started_at,last_observed_at,ended_at) VALUES(?,?,?,?)`, "u1", formatTime(at.Add(-time.Hour)), formatTime(at), formatTime(at))
+	_, _ = repo.db.ExecContext(ctx, `INSERT INTO player_sessions(user_id,started_at,last_observed_at) VALUES(?,?,?)`, "u2", formatTime(at), formatTime(at))
+	for i := 0; i < 3; i++ {
+		_, _ = repo.db.ExecContext(ctx, `INSERT INTO concurrency_buckets VALUES(?,?,?,?,?)`, formatTime(at.Add(time.Duration(i)*time.Minute)), 1, 1, 1, formatTime(at))
+	}
+	_, _ = repo.db.ExecContext(ctx, `INSERT INTO player_daily_stats VALUES(?,?,?,?,?,?)`, "u1", "2026-07-09", 1, formatTime(at), formatTime(at), 1)
+	if err := repo.CleanupAnalytics(ctx, at.Add(10*time.Minute), "2026-07-10", 1); err != nil {
+		t.Fatal(err)
+	}
+	for q, w := range map[string]int{`SELECT count(*) FROM player_sessions WHERE ended_at IS NOT NULL`: 0, `SELECT count(*) FROM player_sessions WHERE ended_at IS NULL`: 1, `SELECT count(*) FROM concurrency_buckets`: 0, `SELECT count(*) FROM player_daily_stats`: 0} {
+		var n int
+		_ = repo.db.QueryRowContext(ctx, q).Scan(&n)
+		if n != w {
+			t.Fatalf("%s=%d", q, n)
+		}
+	}
+}
+
+func TestAnalyticsQueryValidation(t *testing.T) {
+	repo, _ := openTemp(t)
+	if _, e := repo.Ranking(t.Context(), "bad", "2026-01-02"); e == nil {
+		t.Fatal("ranking")
+	}
+	if _, e := repo.Concurrency(t.Context(), time.Time{}, time.Now()); e == nil {
+		t.Fatal("concurrency")
+	}
+	if _, e := repo.PlayerDailyActivity(t.Context(), "", "2026-01-01", "2026-01-02"); e == nil {
+		t.Fatal("activity")
+	}
+	if e := repo.CleanupAnalytics(t.Context(), time.Now(), "2026-01-01", 0); e == nil {
+		t.Fatal("cleanup")
 	}
 }
 

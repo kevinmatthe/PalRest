@@ -24,6 +24,170 @@ type AnalyticsObservation struct {
 	Intervals     []AnalyticsInterval
 }
 
+type RankingRow struct {
+	UserID, Name string
+	Observed     time.Duration
+}
+type ConcurrencyBucket struct {
+	Start         time.Time
+	Average       *float64
+	Max           *int
+	MaxObservedAt *time.Time
+	Coverage      float64
+}
+type DailyActivity struct {
+	Date     string
+	Observed time.Duration
+}
+
+func validateDateRange(start, end string) error {
+	if err := validateAnalyticsLocalDate(start); err != nil {
+		return err
+	}
+	if err := validateAnalyticsLocalDate(end); err != nil {
+		return err
+	}
+	if start >= end {
+		return fmt.Errorf("start date must be before end date")
+	}
+	return nil
+}
+
+func (r *Repository) Ranking(ctx context.Context, startDate, endDate string) ([]RankingRow, error) {
+	if err := validateDateRange(startDate, endDate); err != nil {
+		return nil, fmt.Errorf("ranking: %w", err)
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT p.user_id,p.name,SUM(d.observed_ms) total FROM player_daily_stats d JOIN players p ON p.user_id=d.user_id WHERE d.local_date>=? AND d.local_date<? GROUP BY p.user_id,p.name ORDER BY total DESC,p.name COLLATE NOCASE ASC,p.user_id ASC`, startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("query ranking: %w", err)
+	}
+	defer rows.Close()
+	out := make([]RankingRow, 0)
+	for rows.Next() {
+		var x RankingRow
+		var ms int64
+		if err := rows.Scan(&x.UserID, &x.Name, &ms); err != nil {
+			return nil, fmt.Errorf("scan ranking: %w", err)
+		}
+		x.Observed = time.Duration(ms) * time.Millisecond
+		out = append(out, x)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate ranking: %w", err)
+	}
+	return out, nil
+}
+
+func (r *Repository) Concurrency(ctx context.Context, start, end time.Time) ([]ConcurrencyBucket, error) {
+	if start.IsZero() || end.IsZero() || !start.Before(end) || start.Location() != time.UTC || end.Location() != time.UTC {
+		return nil, fmt.Errorf("concurrency: UTC start must be before UTC end")
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT bucket_start,weighted_count_ms,observed_ms,max_count,max_observed_at FROM concurrency_buckets WHERE bucket_start>=? AND bucket_start<? ORDER BY bucket_start`, formatTime(start), formatTime(end))
+	if err != nil {
+		return nil, fmt.Errorf("query concurrency: %w", err)
+	}
+	defer rows.Close()
+	out := make([]ConcurrencyBucket, 0)
+	for rows.Next() {
+		var x ConcurrencyBucket
+		var bs, peak string
+		var weighted, observed int64
+		var maximum int
+		if err := rows.Scan(&bs, &weighted, &observed, &maximum, &peak); err != nil {
+			return nil, fmt.Errorf("scan concurrency: %w", err)
+		}
+		var err error
+		x.Start, err = parseTime(bs)
+		if err != nil {
+			return nil, fmt.Errorf("parse concurrency bucket start: %w", err)
+		}
+		if observed > 0 {
+			avg := float64(weighted) / float64(observed)
+			x.Average = &avg
+			x.Coverage = float64(observed) / 300000
+			if x.Coverage > 1 {
+				x.Coverage = 1
+			}
+			x.Max = &maximum
+			p, err := parseTime(peak)
+			if err != nil {
+				return nil, fmt.Errorf("parse concurrency peak: %w", err)
+			}
+			x.MaxObservedAt = &p
+		}
+		out = append(out, x)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate concurrency: %w", err)
+	}
+	return out, nil
+}
+
+func (r *Repository) PlayerDailyActivity(ctx context.Context, userID, startDate, endDate string) ([]DailyActivity, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("player daily activity: user ID is empty")
+	}
+	if err := validateDateRange(startDate, endDate); err != nil {
+		return nil, fmt.Errorf("player daily activity: %w", err)
+	}
+	var exists int
+	if err := r.db.QueryRowContext(ctx, `SELECT 1 FROM players WHERE user_id=?`, userID).Scan(&exists); err != nil {
+		return nil, ErrNotFound
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT local_date,observed_ms FROM player_daily_stats WHERE user_id=? AND local_date>=? AND local_date<? ORDER BY local_date`, userID, startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("query player daily activity: %w", err)
+	}
+	defer rows.Close()
+	out := make([]DailyActivity, 0)
+	for rows.Next() {
+		var x DailyActivity
+		var ms int64
+		if err := rows.Scan(&x.Date, &ms); err != nil {
+			return nil, fmt.Errorf("scan player daily activity: %w", err)
+		}
+		x.Observed = time.Duration(ms) * time.Millisecond
+		out = append(out, x)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate player daily activity: %w", err)
+	}
+	return out, nil
+}
+
+func (r *Repository) CleanupAnalytics(ctx context.Context, cutoff time.Time, cutoffDate string, batchSize int) error {
+	if cutoff.IsZero() {
+		return fmt.Errorf("cleanup analytics: cutoff is zero")
+	}
+	if err := validateAnalyticsLocalDate(cutoffDate); err != nil {
+		return fmt.Errorf("cleanup analytics: %w", err)
+	}
+	if batchSize <= 0 {
+		return fmt.Errorf("cleanup analytics: batch size must be positive")
+	}
+	return r.WithTx(ctx, func(tx *Tx) error {
+		for _, d := range []struct {
+			q string
+			a any
+		}{{`DELETE FROM player_sessions WHERE rowid IN (SELECT rowid FROM player_sessions WHERE ended_at IS NOT NULL AND ended_at<? LIMIT ?)`, formatTime(cutoff)}, {`DELETE FROM concurrency_buckets WHERE rowid IN (SELECT rowid FROM concurrency_buckets WHERE bucket_start<? LIMIT ?)`, formatTime(cutoff)}, {`DELETE FROM player_daily_stats WHERE rowid IN (SELECT rowid FROM player_daily_stats WHERE local_date<? LIMIT ?)`, cutoffDate}} {
+			for {
+				res, err := tx.tx.ExecContext(ctx, d.q, d.a, batchSize)
+				if err != nil {
+					return fmt.Errorf("cleanup analytics batch: %w", err)
+				}
+				n, err := res.RowsAffected()
+				if err != nil {
+					return err
+				}
+				if n < int64(batchSize) {
+					break
+				}
+			}
+		}
+		return nil
+	})
+}
+
 // OpenAnalyticsPlayers returns the players with open analytics sessions and the
 // earliest last-observed time shared by the recovered baseline.
 func (r *Repository) OpenAnalyticsPlayers(ctx context.Context) ([]domain.Player, time.Time, error) {

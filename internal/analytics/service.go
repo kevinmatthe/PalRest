@@ -3,6 +3,7 @@ package analytics
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -15,15 +16,17 @@ const analyticsBucketSize = 5 * time.Minute
 
 type Recorder interface {
 	RecordAnalyticsObservation(context.Context, store.AnalyticsObservation) error
+	CleanupAnalytics(context.Context, time.Time, string, int) error
 }
 
 type Service struct {
-	mu       sync.Mutex
-	repo     Recorder
-	maxGap   time.Duration
-	location *time.Location
-	lastAt   time.Time
-	online   map[string]domain.Player
+	mu          sync.Mutex
+	repo        Recorder
+	maxGap      time.Duration
+	location    *time.Location
+	lastAt      time.Time
+	online      map[string]domain.Player
+	lastCleanup time.Time
 }
 
 func New(repo Recorder, maxGap time.Duration, location *time.Location) *Service {
@@ -55,11 +58,12 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.lastAt.IsZero() && !at.After(s.lastAt) {
+		s.mu.Unlock()
 		return fmt.Errorf("observe analytics: observation time %s must be after %s", at.Format(time.RFC3339Nano), s.lastAt.Format(time.RFC3339Nano))
 	}
 	if !s.lastAt.IsZero() && at.Sub(s.lastAt).Milliseconds() <= 0 {
+		s.mu.Unlock()
 		return fmt.Errorf("observe analytics: observation must advance by at least 1ms")
 	}
 
@@ -81,10 +85,21 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		Intervals:     intervals,
 	}
 	if err := s.repo.RecordAnalyticsObservation(ctx, observation); err != nil {
+		s.mu.Unlock()
 		return err
 	}
 	s.lastAt = at
 	s.online = current
+	doCleanup := s.lastCleanup.IsZero() || at.Sub(s.lastCleanup) >= 24*time.Hour
+	if doCleanup {
+		s.lastCleanup = at
+	}
+	s.mu.Unlock()
+	if doCleanup {
+		if err := s.repo.CleanupAnalytics(ctx, at.AddDate(0, 0, -90), at.In(s.location).AddDate(0, 0, -90).Format(time.DateOnly), 500); err != nil {
+			slog.Warn("cleanup analytics failed", "error", err)
+		}
+	}
 	return nil
 }
 
