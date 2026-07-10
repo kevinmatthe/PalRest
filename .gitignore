@@ -1,4 +1,5 @@
 .worktrees/
+.superpowers/
 config.yaml
 data/
 playtime-guard
