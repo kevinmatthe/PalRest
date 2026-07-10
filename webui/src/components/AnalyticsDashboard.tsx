@@ -29,7 +29,9 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
     const controller = new AbortController();
     setSummaryLoading(true);
     setSummaryError('');
-    getAnalyticsSummary(rankingPeriod, controller.signal).then(setSummary).catch((error: unknown) => {
+    getAnalyticsSummary(rankingPeriod, controller.signal).then((next) => {
+      if (!controller.signal.aborted) setSummary(next);
+    }).catch((error: unknown) => {
       if (!controller.signal.aborted) setSummaryError(error instanceof Error ? error.message : 'Could not load analytics summary');
     }).finally(() => {
       if (!controller.signal.aborted) setSummaryLoading(false);
@@ -41,7 +43,9 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
     const controller = new AbortController();
     setActivityLoading(true);
     setActivityError('');
-    getAnalyticsActivity(range, selectedUserID || undefined, controller.signal).then(setActivity).catch((error: unknown) => {
+    getAnalyticsActivity(range, selectedUserID || undefined, controller.signal).then((next) => {
+      if (!controller.signal.aborted) setActivity(next);
+    }).catch((error: unknown) => {
       if (!controller.signal.aborted) setActivityError(error instanceof Error ? error.message : 'Could not load analytics activity');
     }).finally(() => {
       if (!controller.signal.aborted) setActivityLoading(false);

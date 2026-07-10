@@ -82,6 +82,7 @@ describe('AnalyticsDashboard', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/summary unavailable.*activity unavailable/i);
     expect(screen.getByText('1h 30m')).toBeInTheDocument();
     expect(screen.getByRole('row', { name: /AnuOnline 1h 00m/ })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Server concurrency' })).toBeInTheDocument();
   });
 
   it('shows an explicit empty state when analytics has no successful data', async () => {
@@ -101,5 +102,35 @@ describe('AnalyticsDashboard', () => {
     rerender(<AnalyticsDashboard players={players} refreshKey={1} />);
     await waitFor(() => expect(getAnalyticsSummary).toHaveBeenCalledTimes(1));
     expect(getAnalyticsActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts obsolete filter requests and ignores their late results', async () => {
+    let resolveOldSummary!: (value: typeof summary) => void;
+    let resolveOldActivity!: (value: typeof activity) => void;
+    vi.mocked(getAnalyticsSummary).mockImplementationOnce(() => new Promise((resolve) => { resolveOldSummary = resolve; }));
+    vi.mocked(getAnalyticsActivity).mockImplementationOnce(() => new Promise((resolve) => { resolveOldActivity = resolve; }));
+    render(<AnalyticsDashboard players={players} refreshKey={0} />);
+    const oldSummarySignal = vi.mocked(getAnalyticsSummary).mock.calls[0][1]!;
+    const oldActivitySignal = vi.mocked(getAnalyticsActivity).mock.calls[0][2]!;
+
+    vi.mocked(getAnalyticsSummary).mockResolvedValueOnce({ ...summary, ranking_period: 'week', ranking: [{ user_id: 'u2', name: 'Latest Bo', observed_ms: 9_000_000, online: false }] });
+    vi.mocked(getAnalyticsActivity)
+      .mockResolvedValueOnce({ ...activity, range: '30d', concurrency: [{ at: 'latest', average_count: 8, max_count: 8, coverage: 1 }] })
+      .mockResolvedValueOnce({ ...activity, range: '30d', concurrency: [{ at: 'selected', average_count: 9, max_count: 9, coverage: 1 }], player: { user_id: 'u2', name: 'Bo', daily: [] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Week' }));
+    fireEvent.click(screen.getByRole('button', { name: '30 days' }));
+    expect(oldSummarySignal.aborted).toBe(true);
+    expect(oldActivitySignal.aborted).toBe(true);
+    expect(await screen.findByText('Latest Bo')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Player activity' }), { target: { value: 'u2' } });
+    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenLastCalledWith('30d', 'u2', expect.any(AbortSignal)));
+
+    resolveOldSummary({ ...summary, ranking: [{ user_id: 'u1', name: 'Obsolete Anu', observed_ms: 1, online: false }] });
+    resolveOldActivity({ ...activity, concurrency: [{ at: 'obsolete', average_count: 1, max_count: 1, coverage: 1 }] });
+    await Promise.resolve();
+    expect(screen.queryByText('Obsolete Anu')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show data table' }));
+    expect(screen.getByRole('row', { name: 'selected 9' })).toBeInTheDocument();
+    expect(screen.queryByRole('row', { name: 'obsolete 1' })).not.toBeInTheDocument();
   });
 });

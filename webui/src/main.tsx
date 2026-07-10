@@ -53,7 +53,7 @@ type LoadState =
 
 const refreshIntervalMS = 10_000;
 
-function App() {
+export function App() {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   const [query, setQuery] = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -552,8 +552,11 @@ function strategySummary(rule: {
   return 'Fixed reset window.';
 }
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+const rootElement = document.getElementById('root');
+if (rootElement) {
+  createRoot(rootElement).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+}
