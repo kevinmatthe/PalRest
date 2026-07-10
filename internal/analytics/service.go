@@ -145,14 +145,16 @@ func (s *Service) splitIntervals(start, end time.Time, onlineUserIDs []string) [
 		if midnight.After(cursor) && midnight.Before(next) {
 			next = midnight
 		}
-		ids := append([]string(nil), onlineUserIDs...)
-		if ids == nil {
-			ids = []string{}
+		if next.Sub(cursor).Milliseconds() > 0 {
+			ids := append([]string(nil), onlineUserIDs...)
+			if ids == nil {
+				ids = []string{}
+			}
+			intervals = append(intervals, store.AnalyticsInterval{
+				Start: cursor, End: next, OnlineUserIDs: ids,
+				LocalDate: cursor.In(s.location).Format(time.DateOnly),
+			})
 		}
-		intervals = append(intervals, store.AnalyticsInterval{
-			Start: cursor, End: next, OnlineUserIDs: ids,
-			LocalDate: cursor.In(s.location).Format(time.DateOnly),
-		})
 		cursor = next
 	}
 	return intervals

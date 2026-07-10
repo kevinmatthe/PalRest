@@ -252,6 +252,80 @@ func TestObserveSplitsAtUTCBucketBoundaryIncludingExactEnd(t *testing.T) {
 	}
 }
 
+func TestObserveOmitsSubMillisecondFragmentsAtUTCBucketBoundary(t *testing.T) {
+	repo := &fakeRecorder{}
+	service := New(repo, time.Minute, time.UTC)
+	start := mustTime(t, "2026-07-11T00:04:59.999500Z")
+	end := mustTime(t, "2026-07-11T00:05:00.000500Z")
+	if err := service.Observe(t.Context(), start, []domain.Player{{UserID: "u1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Observe(t.Context(), end, []domain.Player{{UserID: "u1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.observations) != 2 {
+		t.Fatalf("recorder calls = %d, want 2", len(repo.observations))
+	}
+	if got := repo.observations[1].Intervals; len(got) != 0 {
+		t.Fatalf("intervals = %#v, want none", got)
+	}
+	ids, asOf := service.Current()
+	if !reflect.DeepEqual(ids, []string{"u1"}) || !asOf.Equal(end) {
+		t.Fatalf("Current = %v, %v; want [u1], %v", ids, asOf, end)
+	}
+}
+
+func TestObserveOmitsSubMillisecondFragmentsAtLocalMidnight(t *testing.T) {
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Skip(err)
+	}
+	repo := &fakeRecorder{}
+	service := New(repo, time.Minute, location)
+	start := mustTime(t, "2026-07-11T15:59:59.999500Z")
+	end := mustTime(t, "2026-07-11T16:00:00.000500Z")
+	if err := service.Observe(t.Context(), start, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Observe(t.Context(), end, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.observations) != 2 {
+		t.Fatalf("recorder calls = %d, want 2", len(repo.observations))
+	}
+	if got := repo.observations[1].Intervals; len(got) != 0 {
+		t.Fatalf("intervals = %#v, want none", got)
+	}
+	_, asOf := service.Current()
+	if !asOf.Equal(end) {
+		t.Fatalf("Current as-of = %v, want %v", asOf, end)
+	}
+}
+
+func TestObservePreservesValidFragmentAfterTinyMidnightEdge(t *testing.T) {
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Skip(err)
+	}
+	repo := &fakeRecorder{}
+	service := New(repo, time.Minute, location)
+	start := mustTime(t, "2026-07-11T15:59:59.999500Z")
+	midnight := mustTime(t, "2026-07-11T16:00:00Z")
+	end := mustTime(t, "2026-07-11T16:00:00.002500Z")
+	if err := service.Observe(t.Context(), start, []domain.Player{{UserID: "u1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Observe(t.Context(), end, []domain.Player{{UserID: "u1"}}); err != nil {
+		t.Fatal(err)
+	}
+	want := []store.AnalyticsInterval{{
+		Start: midnight, End: end, OnlineUserIDs: []string{"u1"}, LocalDate: "2026-07-12",
+	}}
+	if got := repo.observations[1].Intervals; !reflect.DeepEqual(got, want) {
+		t.Fatalf("intervals = %#v, want %#v", got, want)
+	}
+}
+
 func TestObserveSplitsAtAsiaShanghaiMidnight(t *testing.T) {
 	location, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
