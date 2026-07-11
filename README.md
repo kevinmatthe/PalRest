@@ -94,6 +94,10 @@ policy:
 - `GET /api/v1/players`：在线玩家当前周期用时和剩余额度。
 - `GET /api/v1/players/{userId}`：已知玩家当前状态。
 - `GET /api/v1/policies`：脱敏后的默认规则和用户覆盖。
+- `GET /api/v1/analytics/summary?ranking=today|week`：当前在线快照、今日汇总和玩家排行；`ranking` 默认是 `today`。
+- `GET /api/v1/analytics/activity?range=7d|30d&user_id=...&include_concurrency=true|false`：并发和可选的单玩家逐日活动；`range` 默认是 `7d`，`user_id` 默认不查询玩家，`include_concurrency` 默认是 `true`。
+
+以上 Analytics 接口与其他只读接口使用相同的读取权限，不要求管理员 session。
 
 ## 管理操作
 
@@ -152,6 +156,22 @@ docker run --rm -p 127.0.0.1:18081:8080 \
 ```
 
 `PALREST_API_UPSTREAM` 是 WebUI 容器内 Caddy 访问 Go sidecar 的地址。默认值为 `http://palworld-playtime-guard:8080`，适合与 sidecar 位于同一 Docker 网络的部署。通常不需要设置 `PALREST_API_BASE_URL`；保持为空时浏览器只访问 WebUI 容器，由 Caddy 反代 API 请求。
+
+## 玩家活动分析
+
+WebUI 顶部的 Overview / Analytics 可在运行状态和玩家活动分析之间切换。Analytics 显示当前在线人数及其 `as_of` 观测时间、今日累计观测玩家时长、今日并发峰值和活跃玩家数，并提供今日/本周排行、最近 7/30 天服务器并发曲线，以及所选玩家按本地日期汇总的每日活动。排行中的在线标记来自当前在线快照；本周按当前策略时区的周一到周日计算。
+
+活动采集覆盖 REST API 成功返回的所有玩家，不受全局规则、玩家覆盖、豁免或策略是否启用影响。采集从部署此版本后开始，不回填历史数据。首次成功观测只建立基线；两次成功观测间隔超过 `server.max_observation_gap` 时，该区间会被丢弃。轮询/API/存储失败以及过长间隔代表“未知”，不能解释为在线人数为零或玩家活动为零。
+
+并发数据按 5 分钟桶返回。`average_count` 是已观测时段按时间加权的平均在线人数，`max_count` 是桶内已观测峰值，`coverage` 表示该桶被成功覆盖的时间比例；没有有效观测的桶会保留为缺口（平均值和峰值为 `null`、覆盖率为 `0`），不会补零。单玩家查询会在存在该玩家活动数据时返回范围内逐日序列，未观测到活动的日期为零；未知玩家返回 404。
+
+`GET /api/v1/analytics/summary` 返回 `online_count`、可空的 `as_of`、`today_observed_ms`、`peak_count`、可空的 `peak_at`、`active_players`、`ranking_period` 和 `ranking`。`GET /api/v1/analytics/activity` 返回 `range`、`timezone`、左闭右开的本地日期边界 `start`/`end`、`concurrency`，以及可空的 `player`。查询参数只接受上面列出的值；无效值返回 400。
+
+Analytics 原始会话、并发桶和逐日统计以 90 天为保留窗口。清理由成功观测触发、最多每天一次，每次对每类数据最多删除 500 行，避免无界清理阻塞。当前 Policy 的 `timezone` 同时决定新的逐日归属和 API 日历边界；运行时修改时区只影响后续观测，跨越修改时刻的单个区间会被丢弃，既有数据不会重新分桶。
+
+图表刷新使用约 550 ms 的平滑位移动效；系统启用“减少动态效果”时会停用该动画。
+
+SQLite schema migration 当前最高版本为 v7；启动时会自动按顺序升级已有数据库。
 
 ## 开发验证
 
