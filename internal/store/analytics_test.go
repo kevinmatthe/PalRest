@@ -11,7 +11,7 @@ import (
 	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
 )
 
-func TestOpenAnalyticsPlayersSurvivesReopenAndUsesEarliestBaseline(t *testing.T) {
+func TestOpenAnalyticsPlayersSurvivesReopenAndUsesObservationWatermark(t *testing.T) {
 	repo, path := openTemp(t)
 	ctx := t.Context()
 	base := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
@@ -19,9 +19,6 @@ func TestOpenAnalyticsPlayersSurvivesReopenAndUsesEarliestBaseline(t *testing.T)
 	if err := repo.RecordAnalyticsObservation(ctx, AnalyticsObservation{
 		At: base, LocalDate: "2026-07-11", Players: players, JoinedUserIDs: []string{"u1", "u2"},
 	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := repo.db.ExecContext(ctx, `UPDATE player_sessions SET last_observed_at=? WHERE user_id='u2'`, formatTime(base.Add(time.Second))); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.Close(); err != nil {
@@ -207,6 +204,59 @@ func TestOpenAnalyticsPlayersEmpty(t *testing.T) {
 	players, at, err := repo.OpenAnalyticsPlayers(t.Context())
 	if err != nil || len(players) != 0 || !at.IsZero() {
 		t.Fatalf("players=%v at=%v err=%v", players, at, err)
+	}
+}
+
+func TestOpenAnalyticsPlayersPreservesEmptyObservationAcrossReopen(t *testing.T) {
+	repo, path := openTemp(t)
+	at := time.Date(2026, 7, 11, 1, 2, 3, 0, time.UTC)
+	if err := repo.RecordAnalyticsObservation(t.Context(), AnalyticsObservation{At: at, LocalDate: "2026-07-11"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	players, gotAt, err := repo.OpenAnalyticsPlayers(t.Context())
+	if err != nil || len(players) != 0 || !gotAt.Equal(at) {
+		t.Fatalf("players=%v at=%v err=%v", players, gotAt, err)
+	}
+}
+
+func TestRecordAnalyticsObservationRollsBackWatermark(t *testing.T) {
+	repo, _ := openTemp(t)
+	first := time.Date(2026, 7, 11, 1, 0, 0, 0, time.UTC)
+	if err := repo.RecordAnalyticsObservation(t.Context(), AnalyticsObservation{At: first, LocalDate: "2026-07-11"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`CREATE TRIGGER fail_bucket BEFORE INSERT ON concurrency_buckets BEGIN SELECT RAISE(ABORT, 'fail'); END`); err != nil {
+		t.Fatal(err)
+	}
+	err := repo.RecordAnalyticsObservation(t.Context(), AnalyticsObservation{At: first.Add(time.Second), LocalDate: "2026-07-11", Intervals: []AnalyticsInterval{{Start: first, End: first.Add(time.Second), LocalDate: "2026-07-11"}}})
+	if err == nil {
+		t.Fatal("invalid observation succeeded")
+	}
+	_, gotAt, err := repo.OpenAnalyticsPlayers(t.Context())
+	if err != nil || !gotAt.Equal(first) {
+		t.Fatalf("at=%v err=%v", gotAt, err)
+	}
+}
+
+func TestOpenAnalyticsPlayersRejectsSessionNewerThanWatermark(t *testing.T) {
+	repo, _ := openTemp(t)
+	at := time.Date(2026, 7, 11, 1, 0, 0, 0, time.UTC)
+	if err := repo.RecordAnalyticsObservation(t.Context(), AnalyticsObservation{At: at, LocalDate: "2026-07-11", Players: []domain.Player{{UserID: "u1"}}, JoinedUserIDs: []string{"u1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`UPDATE player_sessions SET last_observed_at=?`, formatTime(at.Add(time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.OpenAnalyticsPlayers(t.Context()); err == nil {
+		t.Fatal("corrupt session accepted")
 	}
 }
 

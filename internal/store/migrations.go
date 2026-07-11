@@ -125,3 +125,10 @@ CREATE INDEX player_daily_stats_range ON player_daily_stats(local_date, observed
 const schemaV7 = `
 CREATE INDEX IF NOT EXISTS player_sessions_ended_at ON player_sessions(ended_at) WHERE ended_at IS NOT NULL;
 `
+
+const schemaV8 = `
+CREATE TABLE IF NOT EXISTS analytics_observation_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    observed_at TEXT NOT NULL
+);
+`

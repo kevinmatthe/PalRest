@@ -54,11 +54,11 @@ func TestOpenMigratesAnalyticsSchema(t *testing.T) {
 	if err := repo.db.QueryRowContext(t.Context(), `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 7 {
+	if version != 8 {
 		t.Fatalf("migration version=%d", version)
 	}
 
-	for _, table := range []string{"player_sessions", "concurrency_buckets", "player_daily_stats"} {
+	for _, table := range []string{"player_sessions", "concurrency_buckets", "player_daily_stats", "analytics_observation_state"} {
 		var count int
 		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -98,6 +98,35 @@ INSERT INTO player_sessions(user_id, started_at, ended_at, last_observed_at, clo
 	}
 }
 
+func TestOpenMigratesVersionSevenToEightWithoutLosingAnalytics(t *testing.T) {
+	repo, path := openTemp(t)
+	at := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error { return tx.UpsertPlayer(domain.Player{UserID: "u1", Name: "One"}, at) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`DROP TABLE analytics_observation_state; DELETE FROM schema_migrations WHERE version=8`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	var version, players int
+	if err := repo.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.QueryRow(`SELECT COUNT(*) FROM players WHERE user_id='u1'`).Scan(&players); err != nil {
+		t.Fatal(err)
+	}
+	if version != 8 || players != 1 {
+		t.Fatalf("version=%d players=%d", version, players)
+	}
+}
+
 func TestOpenUpgradesVersionSixAnalyticsSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "guard.db")
 	db, err := sql.Open("sqlite", "file:"+path)
@@ -125,7 +154,7 @@ INSERT INTO player_sessions(user_id,started_at,ended_at,last_observed_at) VALUES
 			t.Fatal(err)
 		}
 	}
-	if version != 7 || indexes != 1 || players != 1 || sessions != 1 {
+	if version != 8 || indexes != 1 || players != 1 || sessions != 1 {
 		t.Fatalf("version=%d index=%d players=%d sessions=%d", version, indexes, players, sessions)
 	}
 }

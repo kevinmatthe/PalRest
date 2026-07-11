@@ -279,6 +279,25 @@ func TestRestoreRejectsInvalidOrInitializedState(t *testing.T) {
 	}
 }
 
+func TestRestoreEmptyBaselinePreservesOfflineInterval(t *testing.T) {
+	repo := &fakeRecorder{}
+	service := New(repo, time.Minute, time.UTC)
+	at := mustTime(t, "2026-07-11T00:01:00Z")
+	if err := service.Restore(at, nil); err != nil {
+		t.Fatal(err)
+	}
+	ids, asOf := service.Current()
+	if len(ids) != 0 || !asOf.Equal(at) {
+		t.Fatalf("ids=%v asOf=%v", ids, asOf)
+	}
+	if err := service.Observe(t.Context(), at.Add(30*time.Second), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.observations) != 1 || len(repo.observations[0].Intervals) != 1 || len(repo.observations[0].Intervals[0].OnlineUserIDs) != 0 {
+		t.Fatalf("observations=%+v", repo.observations)
+	}
+}
+
 func TestObserveReportsJoinsAndLeavesInSortedOrder(t *testing.T) {
 	repo := &fakeRecorder{}
 	service := New(repo, time.Minute, time.UTC)

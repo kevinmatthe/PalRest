@@ -186,9 +186,24 @@ func (r *Repository) CleanupAnalytics(ctx context.Context, cutoff time.Time, cut
 	})
 }
 
-// OpenAnalyticsPlayers returns the players with open analytics sessions and the
-// earliest last-observed time shared by the recovered baseline.
+// OpenAnalyticsPlayers returns open sessions and the latest successfully
+// committed observation watermark. The watermark is authoritative; an open
+// session newer than it indicates corrupt recovery state.
 func (r *Repository) OpenAnalyticsPlayers(ctx context.Context) ([]domain.Player, time.Time, error) {
+	var watermarkText string
+	err := r.db.QueryRowContext(ctx, `SELECT observed_at FROM analytics_observation_state WHERE id=1`).Scan(&watermarkText)
+	if errors.Is(err, sql.ErrNoRows) {
+		watermarkText = ""
+	} else if err != nil {
+		return nil, time.Time{}, fmt.Errorf("read analytics observation watermark: %w", err)
+	}
+	var watermark time.Time
+	if watermarkText != "" {
+		watermark, err = parseTime(watermarkText)
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("parse analytics observation watermark: %w", err)
+		}
+	}
 	rows, err := r.db.QueryContext(ctx, `
 SELECT p.user_id, p.player_id, p.name, p.account_name, p.last_online, s.last_observed_at
 FROM player_sessions s
@@ -200,7 +215,6 @@ ORDER BY p.user_id`)
 	}
 	defer rows.Close()
 	var players []domain.Player
-	var baseline time.Time
 	for rows.Next() {
 		var player domain.Player
 		var lastOnline, lastObserved string
@@ -215,15 +229,18 @@ ORDER BY p.user_id`)
 		if err != nil {
 			return nil, time.Time{}, fmt.Errorf("parse open analytics player %q baseline: %w", player.UserID, err)
 		}
-		if baseline.IsZero() || observedAt.Before(baseline) {
-			baseline = observedAt
+		if watermark.IsZero() {
+			return nil, time.Time{}, fmt.Errorf("open analytics session %q exists without observation watermark", player.UserID)
+		}
+		if observedAt.After(watermark) {
+			return nil, time.Time{}, fmt.Errorf("open analytics session %q baseline %s is newer than watermark %s", player.UserID, observedAt.Format(time.RFC3339Nano), watermark.Format(time.RFC3339Nano))
 		}
 		players = append(players, player)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, time.Time{}, fmt.Errorf("iterate open analytics players: %w", err)
 	}
-	return players, baseline, nil
+	return players, watermark, nil
 }
 
 func (r *Repository) RecordAnalyticsObservation(ctx context.Context, observation AnalyticsObservation) error {
@@ -252,6 +269,11 @@ func (r *Repository) RecordAnalyticsObservation(ctx context.Context, observation
 	}
 
 	return r.WithTx(ctx, func(tx *Tx) error {
+		if _, err := tx.tx.ExecContext(ctx, `
+INSERT INTO analytics_observation_state(id, observed_at) VALUES(1, ?)
+ON CONFLICT(id) DO UPDATE SET observed_at=excluded.observed_at`, formatTime(observation.At)); err != nil {
+			return fmt.Errorf("record analytics observation watermark: %w", err)
+		}
 		for _, player := range observation.Players {
 			if err := tx.UpsertPlayer(player, observation.At); err != nil {
 				return fmt.Errorf("record analytics player %q: %w", player.UserID, err)
