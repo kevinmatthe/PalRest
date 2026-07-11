@@ -299,12 +299,12 @@ func (u directPolicyUpdater) ApplyPolicyTimezone(update func() error, location *
 	if location == nil {
 		return errors.New("analytics location is nil")
 	}
-	if err := update(); err != nil {
-		return err
-	}
 	setter, ok := u.analytics.(analyticsLocationSetter)
 	if !ok {
 		return errors.New("analytics location update is unavailable")
+	}
+	if err := update(); err != nil {
+		return err
 	}
 	return setter.SetLocation(location)
 }

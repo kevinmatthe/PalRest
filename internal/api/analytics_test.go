@@ -64,15 +64,31 @@ func (*observationRecorder) CleanupAnalytics(context.Context, time.Time, string,
 type mutablePolicies struct {
 	value config.Policy
 	err   error
+	calls int
 }
 
 func (f *mutablePolicies) Policy() config.Policy { return f.value }
 func (f *mutablePolicies) SetPolicy(_ context.Context, value config.Policy) error {
+	f.calls++
 	if f.err != nil {
 		return f.err
 	}
 	f.value = value
 	return nil
+}
+
+type currentOnlyAnalytics struct{}
+
+func (currentOnlyAnalytics) Current() ([]string, time.Time) { return nil, time.Time{} }
+
+func TestDirectPolicyUpdaterRejectsMissingLocationSetterBeforeUpdate(t *testing.T) {
+	policies := &mutablePolicies{}
+	err := (directPolicyUpdater{analytics: currentOnlyAnalytics{}}).ApplyPolicyTimezone(func() error {
+		return policies.SetPolicy(t.Context(), config.DefaultPolicy())
+	}, time.UTC)
+	if err == nil || policies.calls != 0 {
+		t.Fatalf("err=%v calls=%d", err, policies.calls)
+	}
 }
 
 type captureAnalyticsQueries struct {

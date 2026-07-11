@@ -104,6 +104,9 @@ func TestOpenMigratesVersionSevenToEightWithoutLosingAnalytics(t *testing.T) {
 	if err := repo.WithTx(t.Context(), func(tx *Tx) error { return tx.UpsertPlayer(domain.Player{UserID: "u1", Name: "One"}, at) }); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := repo.db.Exec(`INSERT INTO player_sessions(user_id, started_at, last_observed_at) VALUES('u1', ?, ?)`, formatTime(at.Add(-time.Minute)), formatTime(at)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := repo.db.Exec(`DROP TABLE analytics_observation_state; DELETE FROM schema_migrations WHERE version=8`); err != nil {
 		t.Fatal(err)
 	}
@@ -115,15 +118,42 @@ func TestOpenMigratesVersionSevenToEightWithoutLosingAnalytics(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer repo.Close()
-	var version, players int
+	var version int
 	if err := repo.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.db.QueryRow(`SELECT COUNT(*) FROM players WHERE user_id='u1'`).Scan(&players); err != nil {
+	players, watermark, err := repo.OpenAnalyticsPlayers(t.Context())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 8 || players != 1 {
-		t.Fatalf("version=%d players=%d", version, players)
+	if version != 8 || len(players) != 1 || players[0].UserID != "u1" || !watermark.Equal(at) {
+		t.Fatalf("version=%d players=%+v watermark=%v", version, players, watermark)
+	}
+}
+
+func TestOpenMigratesVersionSevenClosedSessionWatermark(t *testing.T) {
+	repo, path := openTemp(t)
+	at := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error { return tx.UpsertPlayer(domain.Player{UserID: "u1"}, at) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`INSERT INTO player_sessions(user_id, started_at, ended_at, last_observed_at) VALUES('u1', ?, ?, ?)`, formatTime(at.Add(-time.Minute)), formatTime(at), formatTime(at)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`DROP TABLE analytics_observation_state; DELETE FROM schema_migrations WHERE version=8`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	players, watermark, err := repo.OpenAnalyticsPlayers(t.Context())
+	if err != nil || len(players) != 0 || !watermark.Equal(at) {
+		t.Fatalf("players=%+v watermark=%v err=%v", players, watermark, err)
 	}
 }
 

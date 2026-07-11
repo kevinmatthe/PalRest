@@ -131,4 +131,8 @@ CREATE TABLE IF NOT EXISTS analytics_observation_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     observed_at TEXT NOT NULL
 );
+INSERT OR IGNORE INTO analytics_observation_state(id, observed_at)
+SELECT 1, MAX(last_observed_at)
+FROM player_sessions
+HAVING COUNT(*) > 0;
 `
