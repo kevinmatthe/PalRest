@@ -322,6 +322,7 @@ func TestPolicyTimezoneChangeUpdatesAnalyticsAndSubsequentQueryBounds(t *testing
 	policies := &mutablePolicies{value: policy}
 	s := testServer()
 	s.analytics, s.analyticsOnline, s.policies = q, analyticsService, policies
+	s.policyUpdater = directPolicyUpdater{analytics: analyticsService}
 	s.now = func() time.Time { return time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC) }
 	s.auth = newAdminAuth("admin", "secret")
 	login := httptest.NewRecorder()
@@ -360,6 +361,7 @@ func TestFailedPolicySaveDoesNotChangeAnalyticsLocation(t *testing.T) {
 	s := testServer()
 	s.analyticsOnline = recorder
 	s.policies = &mutablePolicies{value: policy, err: errors.New("save failed")}
+	s.policyUpdater = directPolicyUpdater{analytics: recorder}
 	s.auth = newAdminAuth("admin", "secret")
 	login := httptest.NewRecorder()
 	s.Handler().ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/api/v1/admin/login", strings.NewReader(`{"username":"admin","password":"secret"}`)))

@@ -29,6 +29,7 @@ type Guard interface {
 
 type Analytics interface {
 	Observe(context.Context, time.Time, []domain.Player) error
+	SetLocation(*time.Location) error
 }
 
 type Poller struct {
@@ -189,6 +190,21 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 
 func (p *Poller) UpdateTemplates(announceText, kickText string) error {
 	return p.ApplyConfig(func() error { return nil }, announceText, kickText)
+}
+
+// ApplyPolicyTimezone serializes policy persistence and its analytics calendar
+// transition against poll cycles. Lock ordering is cycleMu before any policy or
+// analytics locks; callbacks must not call ApplyConfig or this method again.
+func (p *Poller) ApplyPolicyTimezone(update func() error, location *time.Location) error {
+	if location == nil {
+		return fmt.Errorf("apply policy timezone: location is nil")
+	}
+	p.cycleMu.Lock()
+	defer p.cycleMu.Unlock()
+	if err := update(); err != nil {
+		return err
+	}
+	return p.analytics.SetLocation(location)
 }
 
 func (p *Poller) ApplyConfig(update func() error, announceText, kickText string) error {

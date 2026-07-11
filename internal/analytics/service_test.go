@@ -298,6 +298,47 @@ func TestRestoreEmptyBaselinePreservesOfflineInterval(t *testing.T) {
 	}
 }
 
+func TestRestoreEmptyRepositoryBaselineRecordsZeroConcurrency(t *testing.T) {
+	path := t.TempDir() + "/guard.db"
+	start := mustTime(t, "2026-07-11T00:01:00Z")
+	repo, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := New(repo, time.Minute, time.UTC)
+	if err := first.Observe(t.Context(), start, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err = store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	players, at, err := repo.OpenAnalyticsPlayers(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(repo, time.Minute, time.UTC)
+	if err := restarted.Restore(at, players); err != nil {
+		t.Fatal(err)
+	}
+	end := start.Add(30 * time.Second)
+	if err := restarted.Observe(t.Context(), end, nil); err != nil {
+		t.Fatal(err)
+	}
+	ids, asOf := restarted.Current()
+	if len(ids) != 0 || !asOf.Equal(end) {
+		t.Fatalf("ids=%v asOf=%v", ids, asOf)
+	}
+	buckets, err := repo.Concurrency(t.Context(), start.Truncate(5*time.Minute), start.Truncate(5*time.Minute).Add(5*time.Minute))
+	if err != nil || len(buckets) != 1 || buckets[0].Average == nil || *buckets[0].Average != 0 || buckets[0].Coverage != 0.1 {
+		t.Fatalf("buckets=%+v err=%v", buckets, err)
+	}
+}
+
 func TestObserveReportsJoinsAndLeavesInSortedOrder(t *testing.T) {
 	repo := &fakeRecorder{}
 	service := New(repo, time.Minute, time.UTC)

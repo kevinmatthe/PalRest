@@ -99,7 +99,7 @@ func New(configPath string) (*App, error) {
 		pollerDone: make(chan struct{}), watcherDone: make(chan struct{}),
 	}
 	adminUser, adminPass := cfg.AdminCredentials()
-	apiServer := api.New(repo, poll, guardService, repo, analyticsService, policies, guardService, repo, adminUser, adminPass, app.CurrentConfig)
+	apiServer := api.New(repo, poll, guardService, repo, analyticsService, policies, guardService, repo, adminUser, adminPass, app.CurrentConfig, poll)
 	app.httpServer = apiServer.HTTPServer(cfg.HTTP.Listen)
 	return app, nil
 }

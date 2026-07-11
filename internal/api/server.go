@@ -38,7 +38,10 @@ type AnalyticsQueries interface {
 
 type AnalyticsOnline interface {
 	Current() ([]string, time.Time)
-	SetLocation(*time.Location) error
+}
+
+type PolicyUpdater interface {
+	ApplyPolicyTimezone(func() error, *time.Location) error
 }
 
 type Policies interface {
@@ -61,6 +64,7 @@ type Server struct {
 	analytics       AnalyticsQueries
 	analyticsOnline AnalyticsOnline
 	policies        Policies
+	policyUpdater   PolicyUpdater
 	resetter        Resetter
 	adminStore      AdminStore
 	auth            *adminAuth
@@ -69,12 +73,16 @@ type Server struct {
 	now             func() time.Time
 }
 
-func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQueries, analyticsOnline AnalyticsOnline, policies Policies, resetter Resetter, adminStore AdminStore, adminUser, adminPass string, configFn func() config.Config) *Server {
+func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQueries, analyticsOnline AnalyticsOnline, policies Policies, resetter Resetter, adminStore AdminStore, adminUser, adminPass string, configFn func() config.Config, updater ...PolicyUpdater) *Server {
 	var auth *adminAuth
 	if adminUser != "" || adminPass != "" {
 		auth = newAdminAuth(adminUser, adminPass)
 	}
-	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, resetter: resetter, adminStore: adminStore, auth: auth, config: configFn, now: time.Now}
+	policyUpdater := PolicyUpdater(directPolicyUpdater{analytics: analyticsOnline})
+	if len(updater) != 0 {
+		policyUpdater = updater[0]
+	}
+	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, auth: auth, config: configFn, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.healthz)
 	mux.HandleFunc("GET /readyz", server.readyz)
@@ -277,17 +285,28 @@ func (s *Server) putPolicies(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_policy", err.Error())
 		return
 	}
-	if err := s.policies.SetPolicy(r.Context(), policy); err != nil {
+	if err := s.policyUpdater.ApplyPolicyTimezone(func() error { return s.policies.SetPolicy(r.Context(), policy) }, location); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_policy", err.Error())
 		return
 	}
-	// Analytics daily rows retain their original calendar dates. The new
-	// timezone applies prospectively to observations recorded after this save.
-	if err := s.analyticsOnline.SetLocation(location); err != nil {
-		writeError(w, http.StatusInternalServerError, "query_failed", "could not update analytics timezone")
-		return
-	}
 	writeJSON(w, http.StatusOK, policyResponse(s.config().Version, policy))
+}
+
+type analyticsLocationSetter interface{ SetLocation(*time.Location) error }
+type directPolicyUpdater struct{ analytics AnalyticsOnline }
+
+func (u directPolicyUpdater) ApplyPolicyTimezone(update func() error, location *time.Location) error {
+	if location == nil {
+		return errors.New("analytics location is nil")
+	}
+	if err := update(); err != nil {
+		return err
+	}
+	setter, ok := u.analytics.(analyticsLocationSetter)
+	if !ok {
+		return errors.New("analytics location update is unavailable")
+	}
+	return setter.SetLocation(location)
 }
 
 type policyPayload struct {

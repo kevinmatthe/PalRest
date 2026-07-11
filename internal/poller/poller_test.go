@@ -62,6 +62,7 @@ type fakeAnalytics struct {
 	err      error
 	observed int
 	order    *[]string
+	location *time.Location
 }
 
 func (f *fakeAnalytics) Observe(context.Context, time.Time, []domain.Player) error {
@@ -70,6 +71,54 @@ func (f *fakeAnalytics) Observe(context.Context, time.Time, []domain.Player) err
 		*f.order = append(*f.order, "analytics")
 	}
 	return f.err
+}
+func (f *fakeAnalytics) SetLocation(location *time.Location) error {
+	f.location = location
+	if f.order != nil {
+		*f.order = append(*f.order, "location")
+	}
+	return nil
+}
+
+func TestApplyPolicyTimezoneExcludesPollCycleAndOrdersUpdateFirst(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	order := []string{}
+	p, _ := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{order: &order}, time.Minute, "warning", "kick", time.Now)
+	done := make(chan error, 1)
+	go func() {
+		done <- p.ApplyPolicyTimezone(func() error { order = append(order, "update"); close(entered); <-release; return nil }, time.UTC)
+	}()
+	<-entered
+	pollDone := make(chan error, 1)
+	go func() { pollDone <- p.RunOnce(t.Context()) }()
+	select {
+	case err := <-pollDone:
+		t.Fatalf("poll overlapped transition: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-pollDone; err != nil {
+		t.Fatal(err)
+	}
+	if len(order) < 2 || order[0] != "update" || order[1] != "location" {
+		t.Fatalf("order=%v", order)
+	}
+}
+
+func TestApplyPolicyTimezoneFailureDoesNotChangeLocation(t *testing.T) {
+	analytics := &fakeAnalytics{}
+	p, _ := New(&fakeClient{}, &fakeGuard{}, analytics, time.Minute, "warning", "kick", time.Now)
+	want := errors.New("save failed")
+	if err := p.ApplyPolicyTimezone(func() error { return want }, time.UTC); !errors.Is(err, want) {
+		t.Fatalf("err=%v", err)
+	}
+	if analytics.location != nil {
+		t.Fatalf("location=%v", analytics.location)
+	}
 }
 
 func TestRunOncePerformsAndRecordsDecisions(t *testing.T) {
