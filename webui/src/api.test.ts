@@ -34,8 +34,12 @@ describe('analytics API', () => {
 
   it('can omit concurrency for focused player activity requests', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(activityFixture)));
-    await getAnalyticsActivity('7d', 'u1', false);
+    const controller = new AbortController();
+    await getAnalyticsActivity('7d', 'u1', controller.signal, false);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/analytics/activity?range=7d&user_id=u1&include_concurrency=false');
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ signal: controller.signal }));
+    controller.abort();
+    expect(controller.signal.aborted).toBe(true);
   });
 
   it('preserves existing API error behavior', async () => {

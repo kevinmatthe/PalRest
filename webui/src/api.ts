@@ -198,7 +198,7 @@ export function getAnalyticsSummary(ranking: 'today' | 'week', signal?: AbortSig
   return getJSON<AnalyticsSummary>(`/api/v1/analytics/summary?${query}`, signal);
 }
 
-export function getAnalyticsActivity(range: '7d' | '30d', userID?: string, includeConcurrency = true, signal?: AbortSignal) {
+export function getAnalyticsActivity(range: '7d' | '30d', userID?: string, signal?: AbortSignal, includeConcurrency = true) {
   const query = new URLSearchParams({ range });
   if (userID !== undefined) query.set('user_id', userID);
   if (!includeConcurrency) query.set('include_concurrency', 'false');

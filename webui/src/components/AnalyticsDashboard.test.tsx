@@ -45,7 +45,7 @@ describe('AnalyticsDashboard', () => {
     expect(screen.getByRole('row', { name: /AnuOnline 1h 00m/ })).toBeInTheDocument();
     expect(screen.getAllByTestId('line-segment')).toHaveLength(1);
     expect(getAnalyticsSummary).toHaveBeenCalledWith('today', expect.any(AbortSignal));
-    expect(getAnalyticsActivity).toHaveBeenCalledWith('7d', undefined, true, expect.any(AbortSignal));
+    expect(getAnalyticsActivity).toHaveBeenCalledWith('7d', undefined, expect.any(AbortSignal), true);
   });
 
   it('refetches only the endpoint controlled by each filter and exposes pressed state', async () => {
@@ -58,7 +58,7 @@ describe('AnalyticsDashboard', () => {
     expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
     vi.clearAllMocks();
     fireEvent.click(screen.getByRole('button', { name: '30 days' }));
-    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenCalledWith('30d', undefined, true, expect.any(AbortSignal)));
+    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenCalledWith('30d', undefined, expect.any(AbortSignal), true));
     expect(getAnalyticsSummary).not.toHaveBeenCalled();
   });
 
@@ -70,7 +70,7 @@ describe('AnalyticsDashboard', () => {
     await screen.findByText('1h 30m');
     vi.clearAllMocks();
     fireEvent.change(screen.getByRole('combobox', { name: 'Player activity' }), { target: { value: 'u2' } });
-    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenLastCalledWith('7d', 'u2', false, expect.any(AbortSignal)));
+    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenLastCalledWith('7d', 'u2', expect.any(AbortSignal), false));
     expect(getAnalyticsActivity).toHaveBeenCalledTimes(1);
     expect(await screen.findByRole('img', { name: 'Bo daily activity' })).toBeInTheDocument();
   });
@@ -113,7 +113,7 @@ describe('AnalyticsDashboard', () => {
     vi.mocked(getAnalyticsActivity).mockImplementationOnce(() => new Promise((resolve) => { resolveOldActivity = resolve; }));
     render(<AnalyticsDashboard players={players} refreshKey={0} />);
     const oldSummarySignal = vi.mocked(getAnalyticsSummary).mock.calls[0][1]!;
-    const oldActivitySignal = vi.mocked(getAnalyticsActivity).mock.calls[0][3]!;
+    const oldActivitySignal = vi.mocked(getAnalyticsActivity).mock.calls[0][2]!;
 
     vi.mocked(getAnalyticsSummary).mockResolvedValueOnce({ ...summary, ranking_period: 'week', ranking: [{ user_id: 'u2', name: 'Latest Bo', observed_ms: 9_000_000, online: false }] });
     vi.mocked(getAnalyticsActivity)
@@ -125,7 +125,7 @@ describe('AnalyticsDashboard', () => {
     expect(oldActivitySignal.aborted).toBe(true);
     expect(await screen.findByText('Latest Bo')).toBeInTheDocument();
     fireEvent.change(screen.getByRole('combobox', { name: 'Player activity' }), { target: { value: 'u2' } });
-    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenLastCalledWith('30d', 'u2', false, expect.any(AbortSignal)));
+    await waitFor(() => expect(getAnalyticsActivity).toHaveBeenLastCalledWith('30d', 'u2', expect.any(AbortSignal), false));
 
     resolveOldSummary({ ...summary, ranking: [{ user_id: 'u1', name: 'Obsolete Anu', observed_ms: 1, online: false }] });
     resolveOldActivity({ ...activity, concurrency: [{ at: 'obsolete', average_count: 1, max_count: 1, coverage: 1 }] });

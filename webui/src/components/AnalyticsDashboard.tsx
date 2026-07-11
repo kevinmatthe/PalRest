@@ -52,7 +52,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
     const controller = new AbortController();
     setServerLoading(true);
     setServerError('');
-    getAnalyticsActivity(range, undefined, true, controller.signal).then((next) => {
+    getAnalyticsActivity(range, undefined, controller.signal, true).then((next) => {
       if (!controller.signal.aborted && next.range === range) {
         setServerActivity(next);
         setServerKey(range);
@@ -74,7 +74,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
       return () => controller.abort();
     }
     setPlayerLoading(true);
-    getAnalyticsActivity(range, selectedUserID, false, controller.signal).then((next) => {
+    getAnalyticsActivity(range, selectedUserID, controller.signal, false).then((next) => {
       if (!controller.signal.aborted && next.range === range && next.player?.user_id === selectedUserID) {
         setPlayerActivity(next);
         setPlayerKey(requestKey);
