@@ -76,7 +76,7 @@ func testServer() *Server {
 		Policy: domain.ResolvedPolicy{Enabled: true, PeriodType: "daily", Timezone: "Asia/Shanghai", ResetAt: "04:00", Limit: 2 * time.Hour},
 		Period: domain.Period{Key: "period", Start: now, End: now.Add(24 * time.Hour)},
 		Used:   30 * time.Minute, Remaining: 90 * time.Minute, Online: true,
-	}}}, fakePolicies{cfg.Policy}, fakeResetter{}, fakeAdminStore{}, "", "", func() config.Config { return cfg })
+	}}}, fakeAnalyticsQueries{}, fakeAnalyticsOnline{}, fakePolicies{cfg.Policy}, fakeResetter{}, fakeAdminStore{}, "", "", func() config.Config { return cfg })
 }
 
 func TestHealthAndReadiness(t *testing.T) {
@@ -92,7 +92,7 @@ func TestHealthAndReadiness(t *testing.T) {
 }
 
 func TestHealthFailsWhenSQLiteIsUnavailable(t *testing.T) {
-	server := New(fakeHealth{errors.New("disk failure")}, fakeStatus{}, fakeSnapshots{}, fakePolicies{}, fakeResetter{}, fakeAdminStore{}, "", "", func() config.Config { return config.Config{} })
+	server := New(fakeHealth{errors.New("disk failure")}, fakeStatus{}, fakeSnapshots{}, fakeAnalyticsQueries{}, fakeAnalyticsOnline{}, fakePolicies{}, fakeResetter{}, fakeAdminStore{}, "", "", func() config.Config { return config.Config{} })
 	res := httptest.NewRecorder()
 	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if res.Code != http.StatusServiceUnavailable {
@@ -101,7 +101,7 @@ func TestHealthFailsWhenSQLiteIsUnavailable(t *testing.T) {
 }
 
 func TestHealthIsDegradedAfterInvalidConfigReload(t *testing.T) {
-	server := New(fakeHealth{}, fakeStatus{domain.PollStatus{ConfigReloadErr: "invalid timezone"}}, fakeSnapshots{}, fakePolicies{}, fakeResetter{}, fakeAdminStore{}, "", "", func() config.Config { return config.Config{} })
+	server := New(fakeHealth{}, fakeStatus{domain.PollStatus{ConfigReloadErr: "invalid timezone"}}, fakeSnapshots{}, fakeAnalyticsQueries{}, fakeAnalyticsOnline{}, fakePolicies{}, fakeResetter{}, fakeAdminStore{}, "", "", func() config.Config { return config.Config{} })
 	res := httptest.NewRecorder()
 	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"status":"degraded"`) {
@@ -112,12 +112,14 @@ func TestHealthIsDegradedAfterInvalidConfigReload(t *testing.T) {
 func TestReadOnlyRoutesAndUnknownPlayer(t *testing.T) {
 	server := testServer()
 	paths := map[string]int{
-		"/api/v1/status":          http.StatusOK,
-		"/api/v1/players":         http.StatusOK,
-		"/api/v1/players/steam_1": http.StatusOK,
-		"/api/v1/players/missing": http.StatusNotFound,
-		"/api/v1/policies":        http.StatusOK,
-		"/api/v1/unknown":         http.StatusNotFound,
+		"/api/v1/status":             http.StatusOK,
+		"/api/v1/players":            http.StatusOK,
+		"/api/v1/players/steam_1":    http.StatusOK,
+		"/api/v1/players/missing":    http.StatusNotFound,
+		"/api/v1/policies":           http.StatusOK,
+		"/api/v1/analytics/summary":  http.StatusOK,
+		"/api/v1/analytics/activity": http.StatusOK,
+		"/api/v1/unknown":            http.StatusNotFound,
 	}
 	for path, want := range paths {
 		res := httptest.NewRecorder()
@@ -229,7 +231,7 @@ func TestPlayerIncludesPersistedWarningState(t *testing.T) {
 func TestAdminLoginUnlocksReset(t *testing.T) {
 	now := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
 	cfg := config.Config{Version: 1}
-	server := New(fakeHealth{}, fakeStatus{domain.PollStatus{LastSuccess: now}}, fakeSnapshots{}, fakePolicies{}, fakeResetter{}, fakeAdminStore{}, "admin", "secret", func() config.Config { return cfg })
+	server := New(fakeHealth{}, fakeStatus{domain.PollStatus{LastSuccess: now}}, fakeSnapshots{}, fakeAnalyticsQueries{}, fakeAnalyticsOnline{}, fakePolicies{}, fakeResetter{}, fakeAdminStore{}, "admin", "secret", func() config.Config { return cfg })
 
 	unauthorized := httptest.NewRecorder()
 	server.Handler().ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/api/v1/players/steam_1/reset", nil))

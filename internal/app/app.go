@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kevinmatt/palworld-playtime-guard/internal/analytics"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/api"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/config"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/guard"
@@ -29,6 +30,7 @@ type App struct {
 	repo        *store.Repository
 	policies    *policy.Service
 	guard       *guard.Service
+	analytics   *analytics.Service
 	poller      *poller.Poller
 	httpServer  *http.Server
 	pollerDone  chan struct{}
@@ -70,19 +72,34 @@ func New(configPath string) (*App, error) {
 		return nil, err
 	}
 	cfg.Policy = policies.Policy()
+	location, err := time.LoadLocation(cfg.Policy.Timezone)
+	if err != nil {
+		_ = repo.Close()
+		return nil, fmt.Errorf("load policy timezone: %w", err)
+	}
+	analyticsService := analytics.New(repo, cfg.Server.MaxObservationGap.Duration, location)
+	openPlayers, analyticsAt, err := repo.OpenAnalyticsPlayers(context.Background())
+	if err != nil {
+		_ = repo.Close()
+		return nil, err
+	}
+	if err := analyticsService.Restore(analyticsAt, openPlayers); err != nil {
+		_ = repo.Close()
+		return nil, err
+	}
 	guardService := guard.New(repo, policies, cfg.Server.MaxObservationGap.Duration, cfg.Enforcement.KickRetryInitial.Duration, cfg.Enforcement.KickRetryMax.Duration)
 	client := palworld.New(cfg.Server.BaseURL, cfg.Password(), cfg.Server.RequestTimeout.Duration)
-	poll, err := poller.New(client, guardService, cfg.Server.PollInterval.Duration, cfg.Enforcement.AnnounceMessage, cfg.Enforcement.KickMessage, time.Now)
+	poll, err := poller.New(client, guardService, analyticsService, cfg.Server.PollInterval.Duration, cfg.Enforcement.AnnounceMessage, cfg.Enforcement.KickMessage, time.Now)
 	if err != nil {
 		_ = repo.Close()
 		return nil, err
 	}
 	app := &App{
-		configPath: configPath, config: cfg, repo: repo, policies: policies, guard: guardService, poller: poll,
+		configPath: configPath, config: cfg, repo: repo, policies: policies, guard: guardService, analytics: analyticsService, poller: poll,
 		pollerDone: make(chan struct{}), watcherDone: make(chan struct{}),
 	}
 	adminUser, adminPass := cfg.AdminCredentials()
-	apiServer := api.New(repo, poll, guardService, policies, guardService, repo, adminUser, adminPass, app.CurrentConfig)
+	apiServer := api.New(repo, poll, guardService, repo, analyticsService, policies, guardService, repo, adminUser, adminPass, app.CurrentConfig, poll)
 	app.httpServer = apiServer.HTTPServer(cfg.HTTP.Listen)
 	return app, nil
 }

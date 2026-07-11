@@ -47,6 +47,148 @@ func TestOpenEnablesSQLiteSafetyPragmas(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesAnalyticsSchema(t *testing.T) {
+	repo, _ := openTemp(t)
+
+	var version int
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 8 {
+		t.Fatalf("migration version=%d", version)
+	}
+
+	for _, table := range []string{"player_sessions", "concurrency_buckets", "player_daily_stats", "analytics_observation_state"} {
+		var count int
+		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("table %s count=%d", table, count)
+		}
+	}
+	var cleanupIndex int
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='player_sessions_ended_at'`).Scan(&cleanupIndex); err != nil {
+		t.Fatal(err)
+	}
+	if cleanupIndex != 1 {
+		t.Fatalf("player_sessions_ended_at count=%d", cleanupIndex)
+	}
+
+	now := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
+	if _, err := repo.db.ExecContext(t.Context(), `
+INSERT INTO players(user_id, name, first_seen, last_online) VALUES(?, ?, ?, ?)`,
+		"steam_1", "Kevin", formatTime(now), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(t.Context(), `
+INSERT INTO player_sessions(user_id, started_at, last_observed_at) VALUES(?, ?, ?)`,
+		"steam_1", formatTime(now), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(t.Context(), `
+INSERT INTO player_sessions(user_id, started_at, last_observed_at) VALUES(?, ?, ?)`,
+		"steam_1", formatTime(now.Add(time.Minute)), formatTime(now.Add(time.Minute))); err == nil {
+		t.Fatal("expected duplicate open session to fail")
+	}
+	if _, err := repo.db.ExecContext(t.Context(), `
+INSERT INTO player_sessions(user_id, started_at, ended_at, last_observed_at, close_reason) VALUES(?, ?, ?, ?, ?)`,
+		"steam_1", formatTime(now.Add(time.Minute)), formatTime(now.Add(2*time.Minute)), formatTime(now.Add(2*time.Minute)), "offline"); err != nil {
+		t.Fatalf("insert closed session: %v", err)
+	}
+}
+
+func TestOpenMigratesVersionSevenToEightWithoutLosingAnalytics(t *testing.T) {
+	repo, path := openTemp(t)
+	at := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error { return tx.UpsertPlayer(domain.Player{UserID: "u1", Name: "One"}, at) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`INSERT INTO player_sessions(user_id, started_at, last_observed_at) VALUES('u1', ?, ?)`, formatTime(at.Add(-time.Minute)), formatTime(at)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`DROP TABLE analytics_observation_state; DELETE FROM schema_migrations WHERE version=8`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	var version int
+	if err := repo.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	players, watermark, err := repo.OpenAnalyticsPlayers(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != 8 || len(players) != 1 || players[0].UserID != "u1" || !watermark.Equal(at) {
+		t.Fatalf("version=%d players=%+v watermark=%v", version, players, watermark)
+	}
+}
+
+func TestOpenMigratesVersionSevenClosedSessionWatermark(t *testing.T) {
+	repo, path := openTemp(t)
+	at := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error { return tx.UpsertPlayer(domain.Player{UserID: "u1"}, at) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`INSERT INTO player_sessions(user_id, started_at, ended_at, last_observed_at) VALUES('u1', ?, ?, ?)`, formatTime(at.Add(-time.Minute)), formatTime(at), formatTime(at)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`DROP TABLE analytics_observation_state; DELETE FROM schema_migrations WHERE version=8`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	players, watermark, err := repo.OpenAnalyticsPlayers(t.Context())
+	if err != nil || len(players) != 0 || !watermark.Equal(at) {
+		t.Fatalf("players=%+v watermark=%v err=%v", players, watermark, err)
+	}
+}
+
+func TestOpenUpgradesVersionSixAnalyticsSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "guard.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(schemaV1 + schemaV2 + schemaV3 + schemaV4 + schemaV5 + schemaV6 + `
+DELETE FROM schema_migrations;
+INSERT INTO schema_migrations(version,applied_at) VALUES(1,'2026-01-01T00:00:00Z'),(2,'2026-01-01T00:00:00Z'),(3,'2026-01-01T00:00:00Z'),(4,'2026-01-01T00:00:00Z'),(5,'2026-01-01T00:00:00Z'),(6,'2026-01-01T00:00:00Z');
+INSERT INTO players(user_id,name,first_seen,last_online) VALUES('u1','One','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+INSERT INTO player_sessions(user_id,started_at,ended_at,last_observed_at) VALUES('u1','2026-01-01T00:00:00Z','2026-01-01T01:00:00Z','2026-01-01T01:00:00Z');`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	var version, indexes, players, sessions int
+	for query, dest := range map[string]*int{`SELECT MAX(version) FROM schema_migrations`: &version, `SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='player_sessions_ended_at'`: &indexes, `SELECT COUNT(*) FROM players WHERE user_id='u1' AND name='One'`: &players, `SELECT COUNT(*) FROM player_sessions WHERE user_id='u1' AND ended_at='2026-01-01T01:00:00Z'`: &sessions} {
+		if err := repo.db.QueryRowContext(t.Context(), query).Scan(dest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if version != 8 || indexes != 1 || players != 1 || sessions != 1 {
+		t.Fatalf("version=%d index=%d players=%d sessions=%d", version, indexes, players, sessions)
+	}
+}
+
 func TestUsagePersistsAcrossReopen(t *testing.T) {
 	repo, path := openTemp(t)
 	now := time.Date(2026, 7, 10, 0, 0, 30, 0, time.UTC)

@@ -34,6 +34,8 @@ import { formatDateTime, formatDuration, formatExactDateTime, titleCase } from '
 import { AdminLoginModal } from './components/AdminLoginModal';
 import { PlayerUsage } from './components/PlayerUsage';
 import { PolicyManager } from './components/PolicyManager';
+import { AnalyticsDashboard } from './components/AnalyticsDashboard';
+import { policyCondition } from './policyCondition';
 import './styles.css';
 
 type DashboardData = {
@@ -51,35 +53,39 @@ type LoadState =
 
 const refreshIntervalMS = 10_000;
 
-function App() {
+export function App() {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   const [query, setQuery] = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [manualRefreshKey, setManualRefreshKey] = useState(0);
   const [adminBusy, setAdminBusy] = useState(false);
-  const [view, setView] = useState<'dashboard' | 'policy'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'analytics' | 'policy'>('dashboard');
+  const [analyticsCadenceKey, setAnalyticsCadenceKey] = useState(0);
 
   useEffect(() => {
     let mounted = true;
-    const controller = new AbortController();
+    let controller: AbortController | undefined;
 
     async function load() {
+      controller?.abort();
+      controller = new AbortController();
+      const requestController = controller;
       setState((current) => ({ kind: 'loading', data: current.data }));
       try {
         const [health, status, playersResponse, policies, admin] = await Promise.all([
-          getHealth(controller.signal),
-          getStatus(controller.signal),
-          getPlayers(controller.signal),
-          getPolicies(controller.signal),
-          getAdminSession(controller.signal),
+          getHealth(requestController.signal),
+          getStatus(requestController.signal),
+          getPlayers(requestController.signal),
+          getPolicies(requestController.signal),
+          getAdminSession(requestController.signal),
         ]);
-        if (!mounted) {
+        if (!mounted || requestController.signal.aborted) {
           return;
         }
         setState({ kind: 'ready', data: { health, status, players: playersResponse.players, policies, admin } });
         setLastRefresh(new Date());
       } catch (error) {
-        if (!mounted || controller.signal.aborted) {
+        if (!mounted || requestController.signal.aborted) {
           return;
         }
         const message = error instanceof Error ? error.message : 'Could not load dashboard data';
@@ -87,11 +93,14 @@ function App() {
       }
     }
 
-    load();
-    const timer = window.setInterval(load, refreshIntervalMS);
+    void load();
+    const timer = window.setInterval(() => {
+      setAnalyticsCadenceKey((value) => value + 1);
+      void load();
+    }, refreshIntervalMS);
     return () => {
       mounted = false;
-      controller.abort();
+      controller?.abort();
       window.clearInterval(timer);
     };
   }, [manualRefreshKey]);
@@ -115,6 +124,7 @@ function App() {
     data?.players.filter((player) => player.enabled && !player.exempt && player.remaining_ms <= 10 * 60 * 1000).length ?? 0;
   const enforcedPlayers = data?.players.filter((player) => player.enforcement_state).length ?? 0;
   const defaultRule = data?.policies.default;
+  const defaultCondition = defaultRule ? policyCondition(defaultRule) : undefined;
   const overrides = Object.entries(data?.policies.overrides ?? {});
   const serviceState = data ? resolveServiceState(data.health, data.status) : 'loading';
   const refresh = () => setManualRefreshKey((value) => value + 1);
@@ -164,7 +174,7 @@ function App() {
           <h1>Palworld playtime control</h1>
         </div>
         <div className="topbar-actions">
-          {data?.admin.authenticated && view === 'dashboard' && <button className="text-button" type="button" onClick={() => setView('policy')}><Shield size={16} />Manage policy</button>}
+          {data?.admin.authenticated && view !== 'policy' && <button className="text-button" type="button" onClick={() => setView('policy')}><Shield size={16} />Manage policy</button>}
           <AdminLogin session={data?.admin} busy={adminBusy} onLogin={onLogin} onLogout={onLogout} />
           <StatusPill state={serviceState} />
           <button className="icon-button" type="button" onClick={refresh} title="Refresh now">
@@ -180,9 +190,14 @@ function App() {
         </section>
       )}
 
+      {view !== 'policy' ? <nav className="view-tabs" aria-label="Console views">
+        <button type="button" aria-current={view === 'dashboard' ? 'page' : undefined} onClick={() => setView('dashboard')}>Overview</button>
+        <button type="button" aria-current={view === 'analytics' ? 'page' : undefined} onClick={() => setView('analytics')}>Analytics</button>
+      </nav> : null}
+
       {view === 'policy' && data?.admin.authenticated ? (
         <PolicyManager policies={data.policies} players={data.players} busy={adminBusy} onSave={onSavePolicies} onBack={() => setView('dashboard')} />
-      ) : <>
+      ) : view === 'analytics' ? <AnalyticsDashboard players={data?.players ?? []} refreshKey={manualRefreshKey + analyticsCadenceKey} /> : <>
       <section className="status-grid" aria-label="Service status">
         <MetricCard icon={<Users size={20} />} label="Online players" value={activePlayers.toString()} detail={`API reports ${data?.status.online_count ?? 0}`} />
         <MetricCard icon={<CircleGauge size={20} />} label="Near limit" value={atRiskPlayers.toString()} detail="10 minutes or less" tone={atRiskPlayers > 0 ? 'warn' : 'ok'} />
@@ -227,8 +242,8 @@ function App() {
                 </div>
                 <dl>
                   <div>
-                    <dt>Limit</dt>
-                    <dd>{formatDuration(defaultRule.limit_ms)}</dd>
+                    <dt>{defaultCondition?.label}</dt>
+                    <dd>{formatDuration(defaultCondition?.valueMs)}</dd>
                   </div>
                   <div>
                     <dt>Strategy</dt>
@@ -539,8 +554,11 @@ function strategySummary(rule: {
   return 'Fixed reset window.';
 }
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+const rootElement = document.getElementById('root');
+if (rootElement) {
+  createRoot(rootElement).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+}

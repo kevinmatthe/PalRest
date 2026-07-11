@@ -29,6 +29,21 @@ type Snapshots interface {
 	Snapshot(context.Context, string) (domain.PlayerSnapshot, error)
 }
 
+type AnalyticsQueries interface {
+	Ranking(context.Context, string, string) ([]store.RankingRow, error)
+	Concurrency(context.Context, time.Time, time.Time) ([]store.ConcurrencyBucket, error)
+	PlayerDailyActivity(context.Context, string, string, string) ([]store.DailyActivity, error)
+	Player(context.Context, string) (domain.Player, error)
+}
+
+type AnalyticsOnline interface {
+	Current() ([]string, time.Time)
+}
+
+type PolicyUpdater interface {
+	ApplyPolicyTimezone(func() error, *time.Location) error
+}
+
 type Policies interface {
 	Policy() config.Policy
 	SetPolicy(context.Context, config.Policy) error
@@ -43,23 +58,31 @@ type AdminStore interface {
 }
 
 type Server struct {
-	health     Health
-	status     Status
-	snapshots  Snapshots
-	policies   Policies
-	resetter   Resetter
-	adminStore AdminStore
-	auth       *adminAuth
-	config     func() config.Config
-	handler    http.Handler
+	health          Health
+	status          Status
+	snapshots       Snapshots
+	analytics       AnalyticsQueries
+	analyticsOnline AnalyticsOnline
+	policies        Policies
+	policyUpdater   PolicyUpdater
+	resetter        Resetter
+	adminStore      AdminStore
+	auth            *adminAuth
+	config          func() config.Config
+	handler         http.Handler
+	now             func() time.Time
 }
 
-func New(health Health, status Status, snapshots Snapshots, policies Policies, resetter Resetter, adminStore AdminStore, adminUser, adminPass string, configFn func() config.Config) *Server {
+func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQueries, analyticsOnline AnalyticsOnline, policies Policies, resetter Resetter, adminStore AdminStore, adminUser, adminPass string, configFn func() config.Config, updater ...PolicyUpdater) *Server {
 	var auth *adminAuth
 	if adminUser != "" || adminPass != "" {
 		auth = newAdminAuth(adminUser, adminPass)
 	}
-	server := &Server{health: health, status: status, snapshots: snapshots, policies: policies, resetter: resetter, adminStore: adminStore, auth: auth, config: configFn}
+	policyUpdater := PolicyUpdater(directPolicyUpdater{analytics: analyticsOnline})
+	if len(updater) != 0 {
+		policyUpdater = updater[0]
+	}
+	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, auth: auth, config: configFn, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.healthz)
 	mux.HandleFunc("GET /readyz", server.readyz)
@@ -69,6 +92,8 @@ func New(health Health, status Status, snapshots Snapshots, policies Policies, r
 	mux.HandleFunc("GET /api/v1/status", server.getStatus)
 	mux.HandleFunc("GET /api/v1/players", server.getPlayers)
 	mux.HandleFunc("GET /api/v1/players/{userID}", server.getPlayer)
+	mux.HandleFunc("GET /api/v1/analytics/summary", server.getAnalyticsSummary)
+	mux.HandleFunc("GET /api/v1/analytics/activity", server.getAnalyticsActivity)
 	mux.HandleFunc("POST /api/v1/players/{userID}/reset", server.resetPlayer)
 	mux.HandleFunc("GET /api/v1/policies", server.getPolicies)
 	mux.HandleFunc("PUT /api/v1/policies", server.putPolicies)
@@ -255,11 +280,33 @@ func (s *Server) putPolicies(w http.ResponseWriter, r *http.Request) {
 	if policy.Overrides == nil {
 		policy.Overrides = map[string]config.RuleOverride{}
 	}
-	if err := s.policies.SetPolicy(r.Context(), policy); err != nil {
+	location, err := time.LoadLocation(policy.Timezone)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_policy", err.Error())
+		return
+	}
+	if err := s.policyUpdater.ApplyPolicyTimezone(func() error { return s.policies.SetPolicy(r.Context(), policy) }, location); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_policy", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, policyResponse(s.config().Version, policy))
+}
+
+type analyticsLocationSetter interface{ SetLocation(*time.Location) error }
+type directPolicyUpdater struct{ analytics AnalyticsOnline }
+
+func (u directPolicyUpdater) ApplyPolicyTimezone(update func() error, location *time.Location) error {
+	if location == nil {
+		return errors.New("analytics location is nil")
+	}
+	setter, ok := u.analytics.(analyticsLocationSetter)
+	if !ok {
+		return errors.New("analytics location update is unavailable")
+	}
+	if err := update(); err != nil {
+		return err
+	}
+	return setter.SetLocation(location)
 }
 
 type policyPayload struct {
