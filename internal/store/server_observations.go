@@ -62,6 +62,9 @@ func (r *Repository) RecordServerMetricObservation(ctx context.Context, write Se
 	}
 	write.At = write.At.UTC()
 	return r.WithTx(ctx, func(tx *Tx) error {
+		if err := lockServerObservationState(ctx, tx.tx, "metrics"); err != nil {
+			return fmt.Errorf("record server metric observation: lock current state: %w", err)
+		}
 		latestAt, latestMetrics, err := latestServerMetricStateTx(ctx, tx.tx)
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return err
@@ -211,6 +214,9 @@ func (r *Repository) RecordServerDocumentObservation(ctx context.Context, write 
 	write.At = write.At.UTC()
 	changed := false
 	err := r.WithTx(ctx, func(tx *Tx) error {
+		if err := lockServerObservationState(ctx, tx.tx, write.Kind); err != nil {
+			return fmt.Errorf("record server document observation: lock current state: %w", err)
+		}
 		var stateAt, stateHash string
 		stateErr := tx.tx.QueryRowContext(ctx, `
 SELECT observed_at,content_hash FROM server_observation_state WHERE kind=?`, write.Kind).Scan(&stateAt, &stateHash)
@@ -251,6 +257,9 @@ SELECT event_id FROM server_document_observations WHERE kind=? AND observed_at=?
 				changed = true
 				return nil
 			}
+			if !serverDocumentTokenMatches(write.Expected, true, stateAt, stateHash) {
+				return fmt.Errorf("record server document observation: %w", ErrObservationConflict)
+			}
 			if stateHash == write.Hash {
 				if write.Event != nil {
 					return fmt.Errorf("record server document observation: unchanged document cannot have a transition event")
@@ -264,7 +273,7 @@ SELECT event_id FROM server_document_observations WHERE kind=? AND observed_at=?
 				return nil
 			}
 		}
-		if !serverDocumentTokenMatches(write.Expected, stateErr == nil, stateAt, stateHash) {
+		if stateErr != nil && !serverDocumentTokenMatches(write.Expected, false, stateAt, stateHash) {
 			return fmt.Errorf("record server document observation: %w", ErrObservationConflict)
 		}
 
@@ -290,6 +299,11 @@ ON CONFLICT(kind) DO UPDATE SET observed_at=excluded.observed_at,content_hash=ex
 		return nil
 	})
 	return changed, err
+}
+
+func lockServerObservationState(ctx context.Context, tx *sql.Tx, kind string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE server_observation_state SET observed_at=observed_at WHERE kind=?`, kind)
+	return err
 }
 
 func serverMetricTokenMatches(expected *ServerMetricToken, exists bool, at time.Time, metrics domain.ServerMetrics) bool {

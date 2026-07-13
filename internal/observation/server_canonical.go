@@ -11,6 +11,12 @@ import (
 	"strings"
 )
 
+const (
+	maxNumberLexemeLength      = 512
+	maxNumberSignificantDigits = 256
+	maxNumberExponentMagnitude = 1024
+)
+
 func canonicalDocument(value any) ([]byte, string, error) {
 	canonical, err := json.Marshal(value)
 	if err != nil {
@@ -98,6 +104,9 @@ func canonicalFloat(value float64, bitSize int) (json.Number, error) {
 }
 
 func canonicalNumber(value string) (json.Number, error) {
+	if err := validateNumberLexeme(value); err != nil {
+		return "", err
+	}
 	rational, ok := new(big.Rat).SetString(value)
 	if !ok {
 		return "", fmt.Errorf("settings contain an invalid number")
@@ -141,6 +150,78 @@ func canonicalNumber(value string) (json.Number, error) {
 		result = "-" + result
 	}
 	return json.Number(result), nil
+}
+
+func validateNumberLexeme(value string) error {
+	if len(value) == 0 || len(value) > maxNumberLexemeLength {
+		return fmt.Errorf("settings number lexeme exceeds bounded length")
+	}
+	i := 0
+	if value[i] == '-' {
+		i++
+		if i == len(value) {
+			return fmt.Errorf("settings contain an invalid number")
+		}
+	}
+	digitStart := i
+	if value[i] == '0' {
+		i++
+		if i < len(value) && value[i] >= '0' && value[i] <= '9' {
+			return fmt.Errorf("settings contain an invalid number")
+		}
+	} else if value[i] >= '1' && value[i] <= '9' {
+		for i < len(value) && value[i] >= '0' && value[i] <= '9' {
+			i++
+		}
+	} else {
+		return fmt.Errorf("settings contain an invalid number")
+	}
+	integerEnd := i
+	if i < len(value) && value[i] == '.' {
+		i++
+		fractionStart := i
+		for i < len(value) && value[i] >= '0' && value[i] <= '9' {
+			i++
+		}
+		if i == fractionStart {
+			return fmt.Errorf("settings contain an invalid number")
+		}
+	}
+	mantissaEnd := i
+	if significantDigits(value[digitStart:integerEnd], value[integerEnd:mantissaEnd]) > maxNumberSignificantDigits {
+		return fmt.Errorf("settings number exceeds %d significant digits", maxNumberSignificantDigits)
+	}
+	if i < len(value) && (value[i] == 'e' || value[i] == 'E') {
+		i++
+		if i < len(value) && (value[i] == '+' || value[i] == '-') {
+			i++
+		}
+		exponentStart := i
+		exponent := 0
+		for i < len(value) && value[i] >= '0' && value[i] <= '9' {
+			exponent = exponent*10 + int(value[i]-'0')
+			if exponent > maxNumberExponentMagnitude {
+				return fmt.Errorf("settings number exponent exceeds %d", maxNumberExponentMagnitude)
+			}
+			i++
+		}
+		if i == exponentStart {
+			return fmt.Errorf("settings contain an invalid number")
+		}
+	}
+	if i != len(value) {
+		return fmt.Errorf("settings contain an invalid number")
+	}
+	return nil
+}
+
+func significantDigits(integer, fractionWithDot string) int {
+	digits := integer + strings.TrimPrefix(fractionWithDot, ".")
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" {
+		return 1
+	}
+	return len(digits)
 }
 
 func factorCount(value *big.Int, factor int64) int {

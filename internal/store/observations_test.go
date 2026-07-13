@@ -320,6 +320,31 @@ func TestServerDocumentObservationRejectsCASConflictWithoutWrites(t *testing.T) 
 	}
 }
 
+func TestUnchangedServerDocumentStillRequiresCurrentCASToken(t *testing.T) {
+	repo, _ := openTemp(t)
+	t1 := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	a := testDocumentObservation("settings", t1, `{"value":"A"}`, nil)
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), a); err != nil {
+		t.Fatal(err)
+	}
+	stale := &ServerDocumentToken{Exists: true, At: t1, Hash: a.Hash}
+	t2 := a
+	t2.At = t1.Add(time.Minute)
+	t2.Expected = stale
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), t2); err != nil {
+		t.Fatal(err)
+	}
+	t3 := t2
+	t3.At = t1.Add(2 * time.Minute)
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), t3); !errors.Is(err, ErrObservationConflict) {
+		t.Fatalf("err=%v want ErrObservationConflict", err)
+	}
+	latest, err := repo.LatestServerDocument(t.Context(), "settings")
+	if err != nil || latest.At != t2.At {
+		t.Fatalf("latest=%+v err=%v", latest, err)
+	}
+}
+
 func TestLatestServerDocumentSurvivesReopen(t *testing.T) {
 	repo, path := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)

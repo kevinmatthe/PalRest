@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
-	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -84,11 +82,7 @@ func (c *Client) Settings(ctx context.Context) (domain.ServerSettings, error) {
 	if err := c.getJSON(ctx, "/settings", &values, true); err != nil {
 		return domain.ServerSettings{}, fmt.Errorf("get Palworld settings: %w", err)
 	}
-	normalized, err := normalizeJSONValue(values)
-	if err != nil {
-		return domain.ServerSettings{}, fmt.Errorf("normalize Palworld settings: %w", err)
-	}
-	return domain.ServerSettings{Values: normalized.(map[string]any)}, nil
+	return domain.ServerSettings{Values: values}, nil
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, destination any, useNumber bool) error {
@@ -130,47 +124,6 @@ func (c *Client) getJSON(ctx context.Context, path string, destination any, useN
 		return fmt.Errorf("decode Palworld response %s: trailing data", path)
 	}
 	return nil
-}
-
-func normalizeJSONValue(value any) (any, error) {
-	switch value := value.(type) {
-	case json.Number:
-		rational, ok := new(big.Rat).SetString(value.String())
-		if !ok {
-			return nil, fmt.Errorf("invalid JSON number")
-		}
-		if rational.IsInt() {
-			absolute := new(big.Int).Abs(new(big.Int).Set(rational.Num()))
-			if absolute.Cmp(big.NewInt(9007199254740991)) > 0 {
-				return json.Number(rational.Num().String()), nil
-			}
-		}
-		decimal, err := value.Float64()
-		if err != nil || math.IsNaN(decimal) || math.IsInf(decimal, 0) {
-			return nil, fmt.Errorf("invalid JSON number")
-		}
-		return decimal, nil
-	case map[string]any:
-		for key, child := range value {
-			normalized, err := normalizeJSONValue(child)
-			if err != nil {
-				return nil, err
-			}
-			value[key] = normalized
-		}
-		return value, nil
-	case []any:
-		for index, child := range value {
-			normalized, err := normalizeJSONValue(child)
-			if err != nil {
-				return nil, err
-			}
-			value[index] = normalized
-		}
-		return value, nil
-	default:
-		return value, nil
-	}
 }
 
 func (c *Client) Announce(ctx context.Context, message string) error {

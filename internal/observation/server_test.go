@@ -57,6 +57,39 @@ type atomicRepositorySpy struct {
 	documentAmbiguous map[string]bool
 }
 
+type interleavingRepository struct {
+	delegate  *store.Repository
+	once      sync.Once
+	hook      func()
+	mu        sync.Mutex
+	metrics   []store.ServerMetricObservation
+	documents []store.ServerDocumentObservation
+}
+
+func (r *interleavingRepository) RecordServerMetricObservation(ctx context.Context, write store.ServerMetricObservation) error {
+	r.mu.Lock()
+	r.metrics = append(r.metrics, write)
+	r.mu.Unlock()
+	r.once.Do(r.hook)
+	return r.delegate.RecordServerMetricObservation(ctx, write)
+}
+
+func (r *interleavingRepository) LatestServerMetricObservation(ctx context.Context) (store.ServerMetricSnapshot, error) {
+	return r.delegate.LatestServerMetricObservation(ctx)
+}
+
+func (r *interleavingRepository) RecordServerDocumentObservation(ctx context.Context, write store.ServerDocumentObservation) (bool, error) {
+	r.mu.Lock()
+	r.documents = append(r.documents, write)
+	r.mu.Unlock()
+	r.once.Do(r.hook)
+	return r.delegate.RecordServerDocumentObservation(ctx, write)
+}
+
+func (r *interleavingRepository) LatestServerDocument(ctx context.Context, kind string) (store.ServerDocumentSnapshot, error) {
+	return r.delegate.LatestServerDocument(ctx, kind)
+}
+
 func (r *atomicRepositorySpy) RecordServerMetricObservation(ctx context.Context, write store.ServerMetricObservation) error {
 	r.mu.Lock()
 	r.metrics = append(r.metrics, write)
@@ -214,6 +247,9 @@ func (r *serverRecorderFake) RecordServerDocumentObservation(ctx context.Context
 	}
 	previous, exists := r.latestDocuments[write.Kind]
 	if exists && previous.Hash == write.Hash {
+		previous.At = write.At.UTC()
+		previous.Event = nil
+		r.latestDocuments[write.Kind] = previous
 		return false, nil
 	}
 	r.latestDocuments[write.Kind] = store.ServerDocumentSnapshot{
@@ -555,6 +591,45 @@ func TestServerSettingsCanonicalizesEquivalentExponentsAndNegativeZero(t *testin
 	}
 }
 
+func TestServerSettingsRejectsPathologicalNumberLexemes(t *testing.T) {
+	for name, number := range map[string]json.Number{
+		"too many digits": json.Number(strings.Repeat("9", 257)),
+		"huge exponent":   json.Number("1e1025"),
+		"tiny exponent":   json.Number("1e-1025"),
+		"long lexeme":     json.Number("0." + strings.Repeat("0", 600) + "1"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := &serverRecorderFake{}
+			err := newServerService(recorder).RecordSettings(t.Context(), time.Now(), domain.ServerSettings{Values: map[string]any{"value": number}})
+			if err == nil {
+				t.Fatal("expected bounded numeric validation error")
+			}
+			if len(recorder.documentCalls) != 0 {
+				t.Fatalf("invalid number persisted: %#v", recorder.documentCalls)
+			}
+		})
+	}
+}
+
+func TestServerSettingsKeepsTinyAndLargeFractionalChangesDistinct(t *testing.T) {
+	recorder := &serverRecorderFake{}
+	service := newServerService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	for index, number := range []json.Number{"0", "1e-400", "9007199254740992.1", "9007199254740992.2"} {
+		if err := service.RecordSettings(t.Context(), base.Add(time.Duration(index)*time.Minute), domain.ServerSettings{Values: map[string]any{"value": number}}); err != nil {
+			t.Fatalf("%s: %v", number, err)
+		}
+	}
+	if len(recorder.documentCalls) != 4 {
+		t.Fatalf("calls=%#v", recorder.documentCalls)
+	}
+	for index := 1; index < len(recorder.documentCalls); index++ {
+		if recorder.documentCalls[index-1].hash == recorder.documentCalls[index].hash {
+			t.Fatalf("numbers collapsed at %d: %#v", index, recorder.documentCalls)
+		}
+	}
+}
+
 func TestServerSettingsKeepsDistinctLargeIntegerHashes(t *testing.T) {
 	recorder := &serverRecorderFake{}
 	service := newServerService(recorder)
@@ -763,7 +838,12 @@ func TestServerServiceAcceptsExactRetryAfterAmbiguousAtomicMetricCommit(t *testi
 	if err := service.RecordMetrics(t.Context(), base.Add(time.Minute), restart); err != nil {
 		t.Fatalf("exact retry after ambiguous commit: %v", err)
 	}
-	if len(spy.metrics) != 2 || spy.metrics[0].Event == nil || spy.metrics[0].Event.EventType != "server_restarted" || !reflect.DeepEqual(spy.metrics[0], spy.metrics[1]) {
+	if len(spy.metrics) != 2 {
+		t.Fatalf("atomic writes=%#v", spy.metrics)
+	}
+	firstMetric, replayedMetric := spy.metrics[0], spy.metrics[1]
+	firstMetric.Expected, replayedMetric.Expected = nil, nil
+	if spy.metrics[0].Event == nil || spy.metrics[0].Event.EventType != "server_restarted" || !reflect.DeepEqual(firstMetric, replayedMetric) {
 		t.Fatalf("atomic writes=%#v", spy.metrics)
 	}
 	if err := repo.RecordServerMetricObservation(t.Context(), spy.metrics[0]); err != nil {
@@ -808,13 +888,128 @@ func TestServerServiceAcceptsNewerCallAfterAmbiguousDocumentCommits(t *testing.T
 	if err := service.RecordSettings(t.Context(), base.Add(2*time.Minute), domain.ServerSettings{Values: map[string]any{"value": "C"}}); err != nil {
 		t.Fatalf("newer settings after ambiguous commit: %v", err)
 	}
-	if len(spy.documents) != 6 || !reflect.DeepEqual(spy.documents[0], spy.documents[1]) || !reflect.DeepEqual(spy.documents[3], spy.documents[4]) {
+	if len(spy.documents) != 6 {
+		t.Fatalf("document writes=%#v", spy.documents)
+	}
+	firstInfo, replayedInfo := spy.documents[0], spy.documents[1]
+	firstInfo.Expected, replayedInfo.Expected = nil, nil
+	firstSettings, replayedSettings := spy.documents[3], spy.documents[4]
+	firstSettings.Expected, replayedSettings.Expected = nil, nil
+	if !reflect.DeepEqual(firstInfo, replayedInfo) || !reflect.DeepEqual(firstSettings, replayedSettings) {
 		t.Fatalf("document writes=%#v", spy.documents)
 	}
 	for _, write := range spy.documents {
 		if write.Event == nil {
 			t.Fatalf("transition missing atomic event: %+v", write)
 		}
+	}
+}
+
+func TestServerMetricCASRetryRederivesRestartAgainstWinningWriter(t *testing.T) {
+	repo, _ := openServerRepository(t)
+	defer repo.Close()
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	seed := observation.NewServer(repo, func() string { return "seed" })
+	if err := seed.RecordMetrics(t.Context(), base, domain.ServerMetrics{UptimeSeconds: 100, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	winner := observation.NewServer(repo, func() string { return "winner-restart" })
+	interleaved := &interleavingRepository{delegate: repo}
+	interleaved.hook = func() {
+		if err := winner.RecordMetrics(t.Context(), base.Add(time.Minute), domain.ServerMetrics{UptimeSeconds: 80, ServerFrameTime: 1}); err != nil {
+			t.Errorf("winning writer: %v", err)
+		}
+	}
+	loser := observation.NewServer(interleaved, func() string { return "retried-restart" })
+	if err := loser.RecordMetrics(t.Context(), base.Add(2*time.Minute), domain.ServerMetrics{UptimeSeconds: 50, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(interleaved.metrics) != 2 || interleaved.metrics[0].Expected == nil || interleaved.metrics[1].Expected == nil {
+		t.Fatalf("writes=%#v", interleaved.metrics)
+	}
+	if interleaved.metrics[1].Event == nil || !strings.Contains(interleaved.metrics[1].Event.PayloadJSON, `"old_uptime_seconds":80`) {
+		t.Fatalf("retried event=%#v", interleaved.metrics[1].Event)
+	}
+}
+
+func TestServerDocumentCASRetryRederivesChangeAgainstWinningWriter(t *testing.T) {
+	repo, _ := openServerRepository(t)
+	defer repo.Close()
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	seed := observation.NewServer(repo, func() string { return "seed" })
+	if err := seed.RecordSettings(t.Context(), base, domain.ServerSettings{Values: map[string]any{"value": "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	winner := observation.NewServer(repo, func() string { return "winner-settings" })
+	interleaved := &interleavingRepository{delegate: repo}
+	interleaved.hook = func() {
+		if err := winner.RecordSettings(t.Context(), base.Add(time.Minute), domain.ServerSettings{Values: map[string]any{"value": "B"}}); err != nil {
+			t.Errorf("winning writer: %v", err)
+		}
+	}
+	loser := observation.NewServer(interleaved, func() string { return "retried-settings" })
+	if err := loser.RecordSettings(t.Context(), base.Add(2*time.Minute), domain.ServerSettings{Values: map[string]any{"value": "C"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(interleaved.documents) != 2 || interleaved.documents[0].Expected == nil || interleaved.documents[1].Expected == nil {
+		t.Fatalf("writes=%#v", interleaved.documents)
+	}
+	winnerSnapshot, err := repo.LatestServerDocument(t.Context(), "settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if interleaved.documents[1].Event == nil || !strings.Contains(interleaved.documents[1].Event.PayloadJSON, `"old_hash":"`+interleaved.documents[1].Expected.Hash+`"`) {
+		t.Fatalf("retried event=%#v expected=%#v latest=%#v", interleaved.documents[1].Event, interleaved.documents[1].Expected, winnerSnapshot)
+	}
+}
+
+func TestServerCASRetriesAreBounded(t *testing.T) {
+	t.Run("metrics", func(t *testing.T) {
+		recorder := &serverRecorderFake{metricErrors: []error{store.ErrObservationConflict, store.ErrObservationConflict, store.ErrObservationConflict, nil}}
+		err := newServerService(recorder).RecordMetrics(t.Context(), time.Now(), domain.ServerMetrics{ServerFrameTime: 1})
+		if !errors.Is(err, store.ErrObservationConflict) || len(recorder.metricsCalls) != 3 {
+			t.Fatalf("err=%v calls=%d", err, len(recorder.metricsCalls))
+		}
+	})
+	t.Run("documents", func(t *testing.T) {
+		recorder := &serverRecorderFake{documentErrors: []error{store.ErrObservationConflict, store.ErrObservationConflict, store.ErrObservationConflict, nil}}
+		err := newServerService(recorder).RecordSettings(t.Context(), time.Now(), domain.ServerSettings{Values: map[string]any{"value": "A"}})
+		if !errors.Is(err, store.ErrObservationConflict) || len(recorder.documentCalls) != 3 {
+			t.Fatalf("err=%v calls=%d", err, len(recorder.documentCalls))
+		}
+	})
+}
+
+func TestServerRestartDetectionSurvivesRawRetentionAndReopen(t *testing.T) {
+	repo, path := openServerRepository(t)
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	service := observation.NewServer(repo, observation.NewID)
+	if err := service.RecordMetrics(t.Context(), old, domain.ServerMetrics{UptimeSeconds: 100, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := repo.CleanupRawObservations(t.Context(), old.Add(100*24*time.Hour), 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	service = observation.NewServer(reopened, func() string { return "restart-after-retention" })
+	if err := service.Restore(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordMetrics(t.Context(), old.Add(101*24*time.Hour), domain.ServerMetrics{UptimeSeconds: 1, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := reopened.LatestServerMetricObservation(t.Context())
+	if err != nil || latest.Event == nil || latest.Event.EventType != "server_restarted" || !strings.Contains(latest.Event.PayloadJSON, `"old_uptime_seconds":100`) {
+		t.Fatalf("latest=%+v err=%v", latest, err)
 	}
 }
 

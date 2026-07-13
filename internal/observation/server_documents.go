@@ -37,71 +37,68 @@ func (s *ServerService) recordDocument(ctx context.Context, kind string, at time
 		return fmt.Errorf("record observed server %s: observation time is zero", kind)
 	}
 	at = at.UTC()
-	latest, err := s.repository.LatestServerDocument(ctx, kind)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return fmt.Errorf("record observed server %s: read durable baseline: %w", kind, err)
-	}
-
-	processBaseline := *cache
-	if processBaseline.valid && processBaseline.at.After(latest.At) {
-		switch {
-		case at.Before(processBaseline.at):
-			return fmt.Errorf("record observed server %s: observation time %s is before process baseline %s", kind, at.Format(time.RFC3339Nano), processBaseline.at.Format(time.RFC3339Nano))
-		case at.Equal(processBaseline.at):
-			if processBaseline.hash != hash {
-				return fmt.Errorf("record observed server %s: observation at %s does not match process baseline", kind, at.Format(time.RFC3339Nano))
+	for attempt := 0; attempt < 3; attempt++ {
+		latest, err := s.repository.LatestServerDocument(ctx, kind)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("record observed server %s: read durable baseline: %w", kind, err)
+		}
+		expected := &store.ServerDocumentToken{}
+		latestVersion := ""
+		if err == nil {
+			expected.Exists = true
+			expected.At = latest.At
+			expected.Hash = latest.Hash
+			if kind == "info" {
+				var latestInfo domain.ServerInfo
+				if decodeErr := json.Unmarshal(latest.Canonical, &latestInfo); decodeErr != nil {
+					return fmt.Errorf("record observed server info: decode durable baseline: %w", decodeErr)
+				}
+				latestVersion = latestInfo.Version
 			}
-			return nil
-		}
-	}
-
-	latestVersion := ""
-	if err == nil && kind == "info" {
-		var latestInfo domain.ServerInfo
-		if decodeErr := json.Unmarshal(latest.Canonical, &latestInfo); decodeErr != nil {
-			return fmt.Errorf("record observed server info: decode durable baseline: %w", decodeErr)
-		}
-		latestVersion = latestInfo.Version
-	}
-	if err == nil {
-		*cache = serverDocumentBaseline{valid: true, at: latest.At, hash: latest.Hash, version: latestVersion}
-		switch {
-		case at.Before(latest.At):
-			return fmt.Errorf("record observed server %s: observation time %s is before durable baseline %s", kind, at.Format(time.RFC3339Nano), latest.At.Format(time.RFC3339Nano))
-		case at.Equal(latest.At):
-			if latest.Hash != hash || !bytes.Equal(latest.Canonical, canonical) {
-				return fmt.Errorf("record observed server %s: observation at %s does not match durable document", kind, at.Format(time.RFC3339Nano))
+			*cache = serverDocumentBaseline{valid: true, at: latest.At, hash: latest.Hash, version: latestVersion}
+			switch {
+			case at.Before(latest.At):
+				return fmt.Errorf("record observed server %s: observation time %s is before durable baseline %s", kind, at.Format(time.RFC3339Nano), latest.At.Format(time.RFC3339Nano))
+			case at.Equal(latest.At):
+				if latest.Hash != hash || !bytes.Equal(latest.Canonical, canonical) {
+					return fmt.Errorf("record observed server %s: observation at %s does not match durable document", kind, at.Format(time.RFC3339Nano))
+				}
+				replay := store.ServerDocumentObservation{
+					Kind: kind, At: at, Canonical: canonical, Hash: hash, Event: latest.Event, Expected: expected,
+				}
+				if _, replayErr := s.repository.RecordServerDocumentObservation(ctx, replay); replayErr != nil {
+					return fmt.Errorf("record observed server %s: prove durable replay: %w", kind, replayErr)
+				}
+				return nil
 			}
-			if _, replayErr := s.repository.RecordServerDocumentObservation(ctx, store.ServerDocumentObservation{
-				Kind: kind, At: at, Canonical: canonical, Hash: hash, Event: latest.Event,
-			}); replayErr != nil {
-				return fmt.Errorf("record observed server %s: prove durable replay: %w", kind, replayErr)
+		}
+		write := store.ServerDocumentObservation{Kind: kind, At: at, Canonical: canonical, Hash: hash, Expected: expected}
+		if err == nil && latest.Hash != hash {
+			eventType := ""
+			switch {
+			case kind == "settings":
+				eventType = "server_settings_changed"
+			case version != latestVersion:
+				eventType = "server_version_changed"
 			}
-			return nil
-		}
-	}
-	write := store.ServerDocumentObservation{Kind: kind, At: at, Canonical: canonical, Hash: hash}
-	if err == nil && latest.Hash != hash {
-		eventType := ""
-		switch {
-		case kind == "settings":
-			eventType = "server_settings_changed"
-		case version != latestVersion:
-			eventType = "server_version_changed"
-		}
-		if eventType != "" {
-			event, eventErr := s.newDocumentEvent(eventType, at, latest.Hash, hash, latestVersion, version)
-			if eventErr != nil {
-				return eventErr
+			if eventType != "" {
+				event, eventErr := s.newDocumentEvent(eventType, at, latest.Hash, hash, latestVersion, version)
+				if eventErr != nil {
+					return eventErr
+				}
+				write.Event = &event
 			}
-			write.Event = &event
 		}
+		if _, writeErr := s.repository.RecordServerDocumentObservation(ctx, write); writeErr != nil {
+			if errors.Is(writeErr, store.ErrObservationConflict) {
+				continue
+			}
+			return fmt.Errorf("record observed server %s: %w", kind, writeErr)
+		}
+		*cache = serverDocumentBaseline{valid: true, at: at, hash: hash, version: version}
+		return nil
 	}
-	if _, err := s.repository.RecordServerDocumentObservation(ctx, write); err != nil {
-		return fmt.Errorf("record observed server %s: %w", kind, err)
-	}
-	*cache = serverDocumentBaseline{valid: true, at: at, hash: hash, version: version}
-	return nil
+	return fmt.Errorf("record observed server %s: %w after 3 attempts", kind, store.ErrObservationConflict)
 }
 
 func (s *ServerService) newDocumentEvent(eventType string, at time.Time, oldHash, newHash, oldVersion, newVersion string) (store.ActivityEvent, error) {

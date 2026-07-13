@@ -76,9 +76,9 @@ func TestReadOnlyEndpointsDecodeOfficialSchemas(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSettings := domain.ServerSettings{Values: map[string]any{
-		"Difficulty": "None", "ExpRate": 1.0, "ServerPlayerMaxNum": float64(32),
-		"RESTAPIEnabled": true, "Nested": map[string]any{"Limit": float64(12)},
-		"Modes": []any{float64(1), 2.5},
+		"Difficulty": "None", "ExpRate": json.Number("1.0"), "ServerPlayerMaxNum": json.Number("32"),
+		"RESTAPIEnabled": true, "Nested": map[string]any{"Limit": json.Number("12")},
+		"Modes": []any{json.Number("1"), json.Number("2.5")},
 	}}
 	if !reflect.DeepEqual(settings, wantSettings) {
 		t.Fatalf("settings=%#v, want %#v", settings, wantSettings)
@@ -95,15 +95,18 @@ func TestSettingsPreservesIntegersBeyondIEEE754SafeRange(t *testing.T) {
 		t.Fatal(err)
 	}
 	for key, want := range map[string]string{
-		"large_a": "9007199254740992", "large_b": "9007199254740993", "large_exp": "9007199254740993",
+		"large_a": "9007199254740992", "large_b": "9007199254740993", "large_exp": "9.007199254740993e15",
 	} {
 		number, ok := settings.Values[key].(json.Number)
 		if !ok || number.String() != want {
 			t.Fatalf("%s=%#v want json.Number(%q)", key, settings.Values[key], want)
 		}
 	}
-	if settings.Values["safe"] != float64(9007199254740991) || settings.Values["official"] != float64(1) {
-		t.Fatalf("safe compatibility values=%#v", settings.Values)
+	for key, want := range map[string]string{"safe": "9007199254740991", "official": "1.0"} {
+		number, ok := settings.Values[key].(json.Number)
+		if !ok || number.String() != want {
+			t.Fatalf("%s=%#v want json.Number(%q)", key, settings.Values[key], want)
+		}
 	}
 }
 

@@ -20,39 +20,50 @@ func (s *ServerService) RecordMetrics(ctx context.Context, at time.Time, metrics
 	s.metricsMu.Lock()
 	defer s.metricsMu.Unlock()
 
-	latest, err := s.repository.LatestServerMetricObservation(ctx)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return fmt.Errorf("record observed server metrics: read durable baseline: %w", err)
-	}
-	if err == nil {
-		s.metrics = serverMetricBaseline{valid: true, at: latest.At, uptime: latest.Metrics.UptimeSeconds}
-		switch {
-		case at.Before(latest.At):
-			return fmt.Errorf("record observed server metrics: observation time %s is before durable baseline %s", at.Format(time.RFC3339Nano), latest.At.Format(time.RFC3339Nano))
-		case at.Equal(latest.At):
-			if latest.Metrics != metrics {
-				return fmt.Errorf("record observed server metrics: observation at %s does not match durable sample", at.Format(time.RFC3339Nano))
-			}
-			if replayErr := s.repository.RecordServerMetricObservation(ctx, store.ServerMetricObservation{At: at, Metrics: metrics, Event: latest.Event}); replayErr != nil {
-				return fmt.Errorf("record observed server metrics: prove durable replay: %w", replayErr)
-			}
-			return nil
+	for attempt := 0; attempt < 3; attempt++ {
+		latest, err := s.repository.LatestServerMetricObservation(ctx)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("record observed server metrics: read durable baseline: %w", err)
 		}
-	}
+		expected := &store.ServerMetricToken{}
+		if err == nil {
+			expected.Exists = true
+			expected.At = latest.At
+			expected.Metrics = latest.Metrics
+			s.metrics = serverMetricBaseline{valid: true, at: latest.At, uptime: latest.Metrics.UptimeSeconds}
+			switch {
+			case at.Before(latest.At):
+				return fmt.Errorf("record observed server metrics: observation time %s is before durable baseline %s", at.Format(time.RFC3339Nano), latest.At.Format(time.RFC3339Nano))
+			case at.Equal(latest.At):
+				if latest.Metrics != metrics {
+					return fmt.Errorf("record observed server metrics: observation at %s does not match durable sample", at.Format(time.RFC3339Nano))
+				}
+				replay := store.ServerMetricObservation{At: at, Metrics: metrics, Event: latest.Event, Expected: expected}
+				if replayErr := s.repository.RecordServerMetricObservation(ctx, replay); replayErr != nil {
+					return fmt.Errorf("record observed server metrics: prove durable replay: %w", replayErr)
+				}
+				return nil
+			}
+		}
 
-	write := store.ServerMetricObservation{At: at, Metrics: metrics}
-	if err == nil && metrics.UptimeSeconds < latest.Metrics.UptimeSeconds {
-		event, eventErr := s.newRestartEvent(at, metrics.UptimeSeconds, latest.Metrics.UptimeSeconds)
-		if eventErr != nil {
-			return eventErr
+		write := store.ServerMetricObservation{At: at, Metrics: metrics, Expected: expected}
+		if err == nil && metrics.UptimeSeconds < latest.Metrics.UptimeSeconds {
+			event, eventErr := s.newRestartEvent(at, metrics.UptimeSeconds, latest.Metrics.UptimeSeconds)
+			if eventErr != nil {
+				return eventErr
+			}
+			write.Event = &event
 		}
-		write.Event = &event
+		if writeErr := s.repository.RecordServerMetricObservation(ctx, write); writeErr != nil {
+			if errors.Is(writeErr, store.ErrObservationConflict) {
+				continue
+			}
+			return fmt.Errorf("record observed server metrics: %w", writeErr)
+		}
+		s.metrics = serverMetricBaseline{valid: true, at: at, uptime: metrics.UptimeSeconds}
+		return nil
 	}
-	if err := s.repository.RecordServerMetricObservation(ctx, write); err != nil {
-		return fmt.Errorf("record observed server metrics: %w", err)
-	}
-	s.metrics = serverMetricBaseline{valid: true, at: at, uptime: metrics.UptimeSeconds}
-	return nil
+	return fmt.Errorf("record observed server metrics: %w after 3 attempts", store.ErrObservationConflict)
 }
 
 func validateObservedServerMetrics(at time.Time, metrics domain.ServerMetrics) error {
