@@ -15,6 +15,7 @@ type LogItem =
   | { kind: 'event'; at: string; key: string; item: TimelineEvent }
   | { kind: 'trajectory'; at: string; key: string; item: PlayerTimelineResponse['trajectories'][number] }
   | { kind: 'private'; at: string; key: string; item: PlayerTimelineResponse['private_samples'][number] };
+type LogRow = { item: LogItem; separator: string };
 
 const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
 const EVIDENCE_GAP_MS = 15 * 60 * 1000;
@@ -45,6 +46,22 @@ function mergeTimeline(data: PlayerTimelineResponse): LogItem[] {
   data.trajectories.forEach((item, index) => merged.push({ kind: 'trajectory', at: item.observed_at, key: `trajectory:${item.segment_id}:${item.observed_at}:${index}`, item }));
   data.private_samples.forEach((item, index) => merged.push({ kind: 'private', at: item.observed_at, key: `private:${item.observed_at}:${item.source_ref}:${index}`, item }));
   return merged.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.key.localeCompare(b.key));
+}
+
+function annotateTrajectoryEvidence(items: LogItem[]): LogRow[] {
+  let previousTrajectory: PlayerTimelineResponse['trajectories'][number] | undefined;
+  return items.map((item) => {
+    let separator = '';
+    if (item.kind === 'trajectory') {
+      if (previousTrajectory && item.item.segment_id !== previousTrajectory.segment_id) {
+        separator = 'New observation segment — no path inferred';
+      } else if (previousTrajectory && Date.parse(item.item.observed_at) - Date.parse(previousTrajectory.observed_at) > EVIDENCE_GAP_MS) {
+        separator = 'Observation gap — no path inferred';
+      }
+      previousTrajectory = item.item;
+    }
+    return { item, separator };
+  });
 }
 
 export function PlayerTimeline({ players, refreshKey }: Props) {
@@ -87,6 +104,7 @@ export function PlayerTimeline({ players, refreshKey }: Props) {
   }, [selectedID, start, end, refreshKey, rangeError]);
 
   const items = useMemo(() => state.kind === 'ready' ? mergeTimeline(state.data) : [], [state]);
+  const rows = useMemo(() => annotateTrajectoryEvidence(items), [items]);
 
   return (
     <section className="timeline-recorder" aria-labelledby="timeline-heading">
@@ -122,22 +140,12 @@ export function PlayerTimeline({ players, refreshKey }: Props) {
           {state.kind === 'error' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> {state.message}</div> : null}
           {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="No observations recorded in this range." /> : null}
           {state.kind === 'ready' && items.length > 0 ? <ol className="timeline-spine" aria-label="Chronological observations">
-            {items.map((item, index) => {
-              const previous = items[index - 1];
-              const separator = previous ? separatorText(previous, item) : '';
-              return <TimelineEntry key={item.key} item={item} separator={separator} />;
-            })}
+            {rows.map(({ item, separator }) => <TimelineEntry key={item.key} item={item} separator={separator} />)}
           </ol> : null}
         </div>
       </div>
     </section>
   );
-}
-
-function separatorText(previous: LogItem, current: LogItem) {
-  if (current.kind === 'trajectory' && previous.kind === 'trajectory' && current.item.segment_id !== previous.item.segment_id) return 'New observation segment — no path inferred';
-  if (Date.parse(current.at) - Date.parse(previous.at) > EVIDENCE_GAP_MS) return 'Observation gap — no path inferred';
-  return '';
 }
 
 function TimelineEntry({ item, separator }: { item: LogItem; separator: string }) {
@@ -147,7 +155,7 @@ function TimelineEntry({ item, separator }: { item: LogItem; separator: string }
       <time dateTime={item.at}>{formatExactDateTime(item.at)}</time>
       {item.kind === 'event' ? <EventDetail event={item.item} /> : null}
       {item.kind === 'trajectory' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>Position observation</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>Coordinates · Admin private</dt><dd>{item.item.x}, {item.item.y}</dd></div><div><dt>Segment</dt><dd>{item.item.segment_id || 'Unassigned'}</dd></div><div><dt>Ping</dt><dd>{item.item.ping} ms</dd></div><div><dt>Level</dt><dd>{item.item.level}</dd></div></dl></div> : null}
-      {item.kind === 'private' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>Private player sample</strong><SourceBadge source="guard" /></div><dl className="telemetry"><div><dt>IP · Admin private</dt><dd>{item.item.ip || 'Unavailable'}</dd></div><div><dt>Ping</dt><dd>{item.item.ping} ms</dd></div><div><dt>Level</dt><dd>{item.item.level}</dd></div><div><dt>Buildings</dt><dd>{item.item.building_count}</dd></div></dl></div> : null}
+      {item.kind === 'private' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>Private player sample</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>IP · Admin private</dt><dd>{item.item.ip || 'Unavailable'}</dd></div><div><dt>Ping</dt><dd>{item.item.ping} ms</dd></div><div><dt>Level</dt><dd>{item.item.level}</dd></div><div><dt>Buildings</dt><dd>{item.item.building_count}</dd></div></dl></div> : null}
     </li>
   </>;
 }

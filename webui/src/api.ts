@@ -146,8 +146,8 @@ export type TimelineEvent = {
   event_type: string;
   occurred_at: string;
   observed_at: string;
-  source: string;
-  confidence: string;
+  source: 'palworld_rest' | 'guard' | 'save_snapshot';
+  confidence: 'observed' | 'snapshot_derived';
   summary: string;
   data?: Record<string, unknown>;
 };

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api';
 import type { Player, PlayerTimelineResponse } from '../api';
@@ -66,14 +66,14 @@ describe('PlayerTimeline', () => {
     const payload: PlayerTimelineResponse = {
       user_id: 'u/1',
       events: [
-        { id: 'future', event_type: 'future_event', occurred_at: '2026-07-13T10:00:00Z', observed_at: '2026-07-13T10:03:00Z', source: 'snapshot_diff', confidence: 'inferred', summary: 'unsupported event payload' },
+        { id: 'future', event_type: 'future_event', occurred_at: '2026-07-13T10:00:00Z', observed_at: '2026-07-13T10:03:00Z', source: 'save_snapshot', confidence: 'snapshot_derived', summary: 'unsupported event payload' },
         { id: 'joined', event_type: 'player_joined', occurred_at: '2026-07-13T08:00:00Z', observed_at: '2026-07-13T08:01:00Z', source: 'palworld_rest', confidence: 'observed', summary: 'Avery joined', data: { name: 'Avery' } },
       ],
       trajectories: [
         { user_id: 'u/1', segment_id: 's2', observed_at: '2026-07-13T09:00:00Z', x: 123.45, y: -9.5, ping: 20, level: 12, source_ref: 'poll-2' },
         { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T08:30:00Z', x: 10, y: 20, ping: 18, level: 12, source_ref: 'poll-1' },
       ],
-      private_samples: [{ user_id: 'u/1', observed_at: '2026-07-13T08:15:00Z', ip: '2001:db8::1:8211', ping: 17, level: 12, building_count: 3, source_ref: 'private-1' }],
+      private_samples: [{ user_id: 'u/1', observed_at: '2026-07-13T08:45:00Z', ip: '2001:db8::1:8211', ping: 17, level: 12, building_count: 3, source_ref: 'private-1' }],
     };
     const original = JSON.stringify(payload);
     vi.mocked(api.getPlayerTimeline).mockResolvedValue(payload);
@@ -82,16 +82,37 @@ describe('PlayerTimeline', () => {
 
     expect(await screen.findByText('Avery joined')).toBeInTheDocument();
     const items = screen.getAllByRole('listitem').map((node) => node.textContent);
-    expect(items.join('|')).toMatch(/Avery joined.*2001:db8::1:8211.*10.*20.*123.45.*-9.5.*Unsupported event/i);
+    expect(items.join('|')).toMatch(/Avery joined.*10.*20.*2001:db8::1:8211.*123.45.*-9.5.*Unsupported event/i);
     expect(screen.getByText(/IP · Admin private/i)).toBeInTheDocument();
     expect(screen.getAllByText(/Coordinates · Admin private/i)).toHaveLength(2);
     expect(screen.getAllByText(/REST/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Snapshot/i)).toBeInTheDocument();
+    expect(screen.getByText('Snapshot')).toBeInTheDocument();
     expect(screen.getAllByText(/Occurred/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Observed/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/New observation segment/i)).toBeInTheDocument();
+    const segment = screen.getByText(/New observation segment/i).closest('li');
+    expect(segment?.previousElementSibling).toHaveTextContent('2001:db8::1:8211');
+    expect(segment?.nextElementSibling).toHaveTextContent('123.45, -9.5');
+    const privateEntry = screen.getByText(/IP · Admin private/i).closest('li');
+    expect(privateEntry).not.toBeNull();
+    expect(within(privateEntry!).getByText('REST')).toBeInTheDocument();
+    expect(within(privateEntry!).queryByText('Guard')).not.toBeInTheDocument();
     expect(JSON.stringify(payload)).toBe(original);
     expect(screen.queryByText('future_event')).not.toBeInTheDocument();
+  });
+
+  it('places a trajectory evidence-gap marker before the next trajectory despite an intervening event', async () => {
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue({
+      ...empty,
+      events: [{ id: 'between', event_type: 'player_joined', occurred_at: '2026-07-13T08:59:00Z', observed_at: '2026-07-13T08:59:00Z', source: 'guard', confidence: 'observed', summary: 'joined' }],
+      trajectories: [
+        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T08:00:00Z', x: 1, y: 1, ping: 20, level: 1, source_ref: 'one' },
+        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T09:00:00Z', x: 2, y: 2, ping: 20, level: 1, source_ref: 'two' },
+      ],
+    });
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
+    const gap = await screen.findByText(/Observation gap/i);
+    expect(gap.closest('li')?.nextElementSibling).toHaveTextContent('2, 2');
   });
 
   it('shows loading, not-found, and request failure states', async () => {
