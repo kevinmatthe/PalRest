@@ -136,36 +136,7 @@ func validateTrajectorySample(sample TrajectorySample) error {
 }
 
 func (r *Repository) RecordServerMetrics(ctx context.Context, at time.Time, metrics domain.ServerMetrics) error {
-	if at.IsZero() {
-		return fmt.Errorf("record server metrics: observation time is zero")
-	}
-	if !finite(metrics.ServerFrameTime) {
-		return fmt.Errorf("record server metrics: server frame time must be finite")
-	}
-	return r.WithTx(ctx, func(tx *Tx) error {
-		var latest sql.NullString
-		if err := tx.tx.QueryRowContext(ctx, `SELECT MAX(observed_at) FROM server_metric_samples`).Scan(&latest); err != nil {
-			return fmt.Errorf("read latest server metric time: %w", err)
-		}
-		if latest.Valid {
-			latestAt, err := parseTime(latest.String)
-			if err != nil {
-				return fmt.Errorf("parse latest server metric time: %w", err)
-			}
-			if !at.After(latestAt) {
-				return fmt.Errorf("server metric time %s is not newer than latest sample %s", at.UTC().Format(time.RFC3339Nano), latestAt.Format(time.RFC3339Nano))
-			}
-		}
-		if _, err := tx.tx.ExecContext(ctx, `
-INSERT INTO server_metric_samples(
-    observed_at,server_fps,current_player_num,server_frame_time,max_player_num,
-    uptime_seconds,base_camp_num,game_days
-) VALUES(?,?,?,?,?,?,?,?)`, formatObservationTime(at), metrics.ServerFPS, metrics.CurrentPlayerNum,
-			metrics.ServerFrameTime, metrics.MaxPlayerNum, metrics.UptimeSeconds, metrics.BaseCampNum, metrics.Days); err != nil {
-			return fmt.Errorf("insert server metric sample: %w", err)
-		}
-		return nil
-	})
+	return r.RecordServerMetricObservation(ctx, ServerMetricObservation{At: at, Metrics: metrics})
 }
 
 func (r *Repository) RecordServerDocument(ctx context.Context, kind string, at time.Time, canonical []byte, hash string) (bool, error) {

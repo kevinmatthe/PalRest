@@ -183,7 +183,7 @@ CREATE TABLE server_metric_samples (
     uptime_seconds INTEGER NOT NULL,
     base_camp_num INTEGER NOT NULL,
     game_days INTEGER NOT NULL,
-    event_id TEXT REFERENCES activity_events(id)
+    event_id TEXT
 );
 
 CREATE TABLE server_documents (
@@ -198,7 +198,7 @@ CREATE TABLE server_document_observations (
     kind TEXT NOT NULL,
     observed_at TEXT NOT NULL,
     content_hash TEXT NOT NULL,
-    event_id TEXT REFERENCES activity_events(id),
+    event_id TEXT,
     PRIMARY KEY(kind, observed_at),
     FOREIGN KEY(kind, content_hash) REFERENCES server_documents(kind, content_hash)
 );

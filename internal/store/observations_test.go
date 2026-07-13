@@ -26,6 +26,228 @@ func observationTrajectory(userID string, observedAt time.Time) TrajectorySample
 	}
 }
 
+func serverObservationEvent(id, eventType string, occurredAt time.Time, payload string) ActivityEvent {
+	return ActivityEvent{
+		ID: id, EventType: eventType, SubjectType: "server", SubjectID: "server",
+		OccurredAt: occurredAt, ObservedAt: occurredAt, Source: "palworld_rest",
+		SourceRef: id + "-correlation", CorrelationID: id + "-correlation", Confidence: "observed",
+		SchemaVersion: 1, PayloadJSON: payload,
+	}
+}
+
+func serverMetrics(uptime int64) domain.ServerMetrics {
+	return domain.ServerMetrics{
+		ServerFPS: 60, CurrentPlayerNum: 2, ServerFrameTime: 16.5,
+		MaxPlayerNum: 32, UptimeSeconds: uptime, BaseCampNum: 4, Days: 8,
+	}
+}
+
+func TestServerMetricObservationIsAtomicAndIdempotent(t *testing.T) {
+	repo, _ := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	event := serverObservationEvent("restart-1", "server_restarted", at, `{"old_uptime_seconds":100,"new_uptime_seconds":1}`)
+	write := ServerMetricObservation{At: at, Metrics: serverMetrics(1), Event: &event}
+	if err := repo.RecordServerMetricObservation(t.Context(), write); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordServerMetricObservation(t.Context(), write); err != nil {
+		t.Fatalf("exact replay: %v", err)
+	}
+	for table, want := range map[string]int{"server_metric_samples": 1, "activity_events": 1} {
+		var count int
+		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != want {
+			t.Fatalf("%s count=%d want=%d", table, count, want)
+		}
+	}
+
+	mismatchedMetric := write
+	mismatchedMetric.Metrics.ServerFPS = 59
+	if err := repo.RecordServerMetricObservation(t.Context(), mismatchedMetric); err == nil {
+		t.Fatal("expected same-time metric mismatch to fail")
+	}
+	mismatchedEvent := event
+	mismatchedEvent.PayloadJSON = `{"old_uptime_seconds":99,"new_uptime_seconds":1}`
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at, Metrics: write.Metrics, Event: &mismatchedEvent}); err == nil {
+		t.Fatal("expected same-time event mismatch to fail")
+	}
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at, Metrics: write.Metrics}); err == nil {
+		t.Fatal("expected missing replay event to fail")
+	}
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at.Add(-time.Second), Metrics: write.Metrics}); err == nil {
+		t.Fatal("expected stale metric observation to fail")
+	}
+}
+
+func TestServerMetricObservationRollsBackEventAndMetricTogether(t *testing.T) {
+	repo, _ := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	conflict := serverObservationEvent("same-id", "other", at, `{}`)
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Events: []ActivityEvent{conflict}}); err != nil {
+		t.Fatal(err)
+	}
+	event := serverObservationEvent("same-id", "server_restarted", at, `{}`)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at, Metrics: serverMetrics(1), Event: &event}); err == nil {
+		t.Fatal("expected event ID conflict")
+	}
+	var metrics int
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM server_metric_samples`).Scan(&metrics); err != nil {
+		t.Fatal(err)
+	}
+	if metrics != 0 {
+		t.Fatalf("metric committed without event: count=%d", metrics)
+	}
+}
+
+func TestServerMetricObservationValidation(t *testing.T) {
+	valid := serverMetrics(1)
+	tests := map[string]func(*domain.ServerMetrics){
+		"negative fps":         func(m *domain.ServerMetrics) { m.ServerFPS = -1 },
+		"negative players":     func(m *domain.ServerMetrics) { m.CurrentPlayerNum = -1 },
+		"negative frame time":  func(m *domain.ServerMetrics) { m.ServerFrameTime = -1 },
+		"nan frame time":       func(m *domain.ServerMetrics) { m.ServerFrameTime = math.NaN() },
+		"infinite frame time":  func(m *domain.ServerMetrics) { m.ServerFrameTime = math.Inf(1) },
+		"negative max players": func(m *domain.ServerMetrics) { m.MaxPlayerNum = -1 },
+		"negative uptime":      func(m *domain.ServerMetrics) { m.UptimeSeconds = -1 },
+		"negative base camps":  func(m *domain.ServerMetrics) { m.BaseCampNum = -1 },
+		"negative days":        func(m *domain.ServerMetrics) { m.Days = -1 },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			repo, _ := openTemp(t)
+			metrics := valid
+			mutate(&metrics)
+			if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: time.Now(), Metrics: metrics}); err == nil {
+				t.Fatal("expected validation error")
+			}
+			if _, _, err := repo.LatestServerMetrics(t.Context()); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("invalid metric changed durable baseline: %v", err)
+			}
+		})
+	}
+}
+
+func TestLatestServerMetricsSurvivesReopen(t *testing.T) {
+	repo, path := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	metrics := serverMetrics(42)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at, Metrics: metrics}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	gotAt, got, err := reopened.LatestServerMetrics(t.Context())
+	if err != nil || gotAt != at || got != metrics {
+		t.Fatalf("at=%s metrics=%+v err=%v", gotAt, got, err)
+	}
+}
+
+func TestServerDocumentObservationRecordsRecurrentTransitions(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	a := ServerDocumentObservation{Kind: "settings", At: base, Canonical: []byte(`{"value":"A"}`), Hash: "hash-a"}
+	changed, err := repo.RecordServerDocumentObservation(t.Context(), a)
+	if err != nil || !changed {
+		t.Fatalf("first changed=%v err=%v", changed, err)
+	}
+	bEvent := serverObservationEvent("settings-b", "server_settings_changed", base.Add(time.Minute), `{"old_hash":"hash-a","new_hash":"hash-b","summary":"server settings changed"}`)
+	b := ServerDocumentObservation{Kind: "settings", At: base.Add(time.Minute), Canonical: []byte(`{"value":"B"}`), Hash: "hash-b", Event: &bEvent}
+	changed, err = repo.RecordServerDocumentObservation(t.Context(), b)
+	if err != nil || !changed {
+		t.Fatalf("B changed=%v err=%v", changed, err)
+	}
+	aEvent := serverObservationEvent("settings-a", "server_settings_changed", base.Add(2*time.Minute), `{"old_hash":"hash-b","new_hash":"hash-a","summary":"server settings changed"}`)
+	aAgain := ServerDocumentObservation{Kind: "settings", At: base.Add(2 * time.Minute), Canonical: []byte(`{"value":"A"}`), Hash: "hash-a", Event: &aEvent}
+	changed, err = repo.RecordServerDocumentObservation(t.Context(), aAgain)
+	if err != nil || !changed {
+		t.Fatalf("A again changed=%v err=%v", changed, err)
+	}
+	if changed, err = repo.RecordServerDocumentObservation(t.Context(), aAgain); err != nil || !changed {
+		t.Fatalf("exact replay changed=%v err=%v", changed, err)
+	}
+	unchanged := aAgain
+	unchanged.At = base.Add(3 * time.Minute)
+	unchanged.Event = nil
+	if changed, err = repo.RecordServerDocumentObservation(t.Context(), unchanged); err != nil || changed {
+		t.Fatalf("unchanged changed=%v err=%v", changed, err)
+	}
+	for table, want := range map[string]int{"server_documents": 2, "server_document_observations": 3, "activity_events": 2} {
+		var count int
+		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != want {
+			t.Fatalf("%s count=%d want=%d", table, count, want)
+		}
+	}
+	latest, err := repo.LatestServerDocument(t.Context(), "settings")
+	if err != nil || latest.At != aAgain.At || latest.Hash != "hash-a" || string(latest.Canonical) != `{"value":"A"}` {
+		t.Fatalf("latest=%+v err=%v", latest, err)
+	}
+}
+
+func TestServerDocumentObservationRejectsReplayMismatchAndStale(t *testing.T) {
+	repo, _ := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	event := serverObservationEvent("info-change", "server_version_changed", at, `{}`)
+	write := ServerDocumentObservation{Kind: "info", At: at, Canonical: []byte(`{"version":"B"}`), Hash: "hash-b", Event: &event}
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), write); err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]func(*ServerDocumentObservation){
+		"hash":          func(w *ServerDocumentObservation) { w.Hash = "other" },
+		"canonical":     func(w *ServerDocumentObservation) { w.Canonical = []byte(`{"version":"other"}`) },
+		"event":         func(w *ServerDocumentObservation) { w.Event.PayloadJSON = `{"changed":true}` },
+		"missing event": func(w *ServerDocumentObservation) { w.Event = nil },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			mismatch := write
+			eventCopy := event
+			mismatch.Event = &eventCopy
+			mutate(&mismatch)
+			if _, err := repo.RecordServerDocumentObservation(t.Context(), mismatch); err == nil {
+				t.Fatal("expected replay mismatch")
+			}
+		})
+	}
+	stale := write
+	stale.At = at.Add(-time.Second)
+	stale.Event = nil
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), stale); err == nil {
+		t.Fatal("expected stale observation error")
+	}
+}
+
+func TestLatestServerDocumentSurvivesReopen(t *testing.T) {
+	repo, path := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	write := ServerDocumentObservation{Kind: "info", At: at, Canonical: []byte(`{"version":"v1"}`), Hash: "hash-v1"}
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), write); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	latest, err := reopened.LatestServerDocument(t.Context(), "info")
+	if err != nil || latest.At != at || latest.Hash != write.Hash || string(latest.Canonical) != string(write.Canonical) {
+		t.Fatalf("latest=%+v err=%v", latest, err)
+	}
+}
+
 func TestObservationRecordIsAtomic(t *testing.T) {
 	repo, _ := openTemp(t)
 	now := time.Date(2026, 7, 13, 8, 0, 0, 123, time.UTC)
