@@ -688,6 +688,35 @@ func TestTrajectoryPingThresholdUsesLastSampledKnownValue(t *testing.T) {
 	}
 }
 
+func TestTinyPingThresholdNeverTreatsEqualValuesAsChanged(t *testing.T) {
+	recorder := &recorderFake{}
+	basePing := 20.0
+	nextPing := math.Nextafter(basePing, math.Inf(1))
+	threshold := nextPing - basePing
+	if threshold <= 0 || threshold > 1e-9 {
+		t.Fatalf("unexpected float threshold %.20g", threshold)
+	}
+	sequence := 0
+	svc := observation.New(recorder, 75*time.Second, 100, threshold, 5*time.Minute, 90*24*time.Hour, func() string {
+		sequence++
+		return fmt.Sprintf("tiny-%d", sequence)
+	})
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	for i, ping := range []float64{basePing, basePing, nextPing} {
+		p := player("u", 10, 10)
+		p.Ping = ping
+		if err := svc.Observe(t.Context(), base.Add(time.Duration(i)*time.Second), []domain.Player{p}, fmt.Sprintf("poll-%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(recorder.writes[1].Trajectories); got != 0 {
+		t.Fatalf("equal ping samples=%d", got)
+	}
+	if got := len(recorder.writes[2].Trajectories); got != 1 {
+		t.Fatalf("exact boundary samples=%d", got)
+	}
+}
+
 func TestTrajectoryPingThresholdHandlesFloatingBoundaryAndUnknownTransitions(t *testing.T) {
 	for name, values := range map[string][]float64{
 		"epsilon below threshold": {20, 29.999999},

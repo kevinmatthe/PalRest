@@ -348,10 +348,8 @@ func normalizedPing(ping float64) (float64, bool) {
 	return ping, true
 }
 
-const pingComparisonEpsilon = 1e-9
-
 func pingThresholdReached(previous, current, threshold float64) bool {
-	return math.Abs(current-previous)+pingComparisonEpsilon >= threshold
+	return math.Abs(current-previous) >= threshold
 }
 
 // PollFailed marks the interval since the last successful player observation
