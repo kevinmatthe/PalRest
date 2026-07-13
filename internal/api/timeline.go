@@ -198,6 +198,9 @@ func decodeDocumentCursor(encoded, kind string) (*store.ServerDocumentCursor, er
 	if err != nil {
 		return nil, err
 	}
+	if at.IsZero() {
+		return nil, errors.New("cursor time is zero")
+	}
 	return &store.ServerDocumentCursor{ObservedAt: at, ContentHash: envelope.ContentHash}, nil
 }
 

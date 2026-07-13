@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -79,6 +80,22 @@ func TestAdminDocumentsCursorRoundTripsAndRejectsMalformedValues(t *testing.T) {
 	}
 	if repo.calls != calls {
 		t.Fatalf("malformed cursors reached repository: calls=%d want=%d", repo.calls, calls)
+	}
+}
+
+func TestAdminDocumentsRejectZeroTimeCursorBeforeRepository(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	payload, err := json.Marshal(documentCursorEnvelope{Kind: "info", ObservedAt: time.Time{}.Format(time.RFC3339Nano), ContentHash: hash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := base64.RawURLEncoding.EncodeToString(payload)
+	repo := &observationQueriesFake{}
+	server := timelineServer(repo)
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, adminRequest(t, server, "/api/v1/admin/server/documents?kind=info&cursor="+cursor))
+	if res.Code != http.StatusBadRequest || repo.calls != 0 {
+		t.Fatalf("code=%d calls=%d body=%s", res.Code, repo.calls, res.Body.String())
 	}
 }
 

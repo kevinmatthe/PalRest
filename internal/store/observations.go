@@ -255,9 +255,13 @@ func (r *Repository) ReadSensitivePlayerTimeline(ctx context.Context, actor, use
 					outcome = "not_found"
 				}
 			}
+			if r.beforeSensitiveTimelineAudit != nil {
+				r.beforeSensitiveTimelineAudit()
+			}
 			if auditErr := insertTimelineAudit(ctx, tx, actor, userID, start, end, outcome); auditErr != nil {
 				_ = tx.Rollback()
-				return empty, fmt.Errorf("audit sensitive player timeline: %w", auditErr)
+				queryErr := fmt.Errorf("audit sensitive player timeline: %w", auditErr)
+				return empty, r.auditQueryError(ctx, actor, "read_player_timeline", "player", userID, &start, &end, queryErr)
 			}
 			if commitErr := tx.Commit(); commitErr != nil {
 				_ = tx.Rollback()

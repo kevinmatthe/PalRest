@@ -18,6 +18,9 @@ var ErrObservationConflict = errors.New("server observation baseline conflict")
 
 type Repository struct {
 	db *sql.DB
+	// beforeSensitiveTimelineAudit is a narrow deterministic test seam for
+	// failures between a completed sensitive read and its audit write.
+	beforeSensitiveTimelineAudit func()
 }
 
 type Tx struct {

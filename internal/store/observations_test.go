@@ -707,6 +707,26 @@ func TestCanceledAdminQueriesUseIndependentErrorAuditContext(t *testing.T) {
 	}
 }
 
+func TestTimelineAuditWriteFailureRollsBackAndCommitsDetachedErrorAudit(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error { return tx.UpsertPlayer(domain.Player{UserID: "known"}, base) }); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	repo.beforeSensitiveTimelineAudit = cancel
+	if _, err := repo.ReadSensitivePlayerTimeline(ctx, "root", "known", base, base.Add(time.Hour), 10); err == nil {
+		t.Fatal("expected canceled audit write")
+	}
+	var outcome string
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT outcome FROM sensitive_access_audit`).Scan(&outcome); err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "error" {
+		t.Fatalf("outcome=%q", outcome)
+	}
+}
+
 func TestEmptyServerReadsReturnNotFoundAndAuditOutcome(t *testing.T) {
 	repo, _ := openTemp(t)
 	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
