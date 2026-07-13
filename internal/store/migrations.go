@@ -136,3 +136,70 @@ SELECT 1, MAX(last_observed_at)
 FROM player_sessions
 HAVING COUNT(*) > 0;
 `
+
+const schemaV9 = `
+CREATE TABLE activity_events (
+    id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_ref TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX activity_events_subject_time
+ON activity_events(subject_type, subject_id, occurred_at, id);
+
+CREATE TABLE trajectory_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    segment_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    ping REAL NOT NULL,
+    level INTEGER NOT NULL,
+    source_ref TEXT NOT NULL,
+    UNIQUE(user_id, observed_at)
+);
+CREATE INDEX trajectory_user_time
+ON trajectory_samples(user_id, observed_at);
+
+CREATE TABLE server_metric_samples (
+    observed_at TEXT PRIMARY KEY,
+    server_fps INTEGER NOT NULL,
+    current_player_num INTEGER NOT NULL,
+    server_frame_time REAL NOT NULL,
+    max_player_num INTEGER NOT NULL,
+    uptime_seconds INTEGER NOT NULL,
+    base_camp_num INTEGER NOT NULL,
+    game_days INTEGER NOT NULL
+);
+
+CREATE TABLE server_documents (
+    kind TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    canonical_json TEXT NOT NULL,
+    PRIMARY KEY(kind, content_hash)
+);
+
+CREATE TABLE sensitive_access_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    range_start TEXT,
+    range_end TEXT,
+    outcome TEXT NOT NULL,
+    requested_at TEXT NOT NULL
+);
+CREATE INDEX sensitive_audit_actor_time
+ON sensitive_access_audit(actor, requested_at);
+`

@@ -54,11 +54,21 @@ func TestOpenMigratesAnalyticsSchema(t *testing.T) {
 	if err := repo.db.QueryRowContext(t.Context(), `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 8 {
+	if version != 9 {
 		t.Fatalf("migration version=%d", version)
 	}
 
-	for _, table := range []string{"player_sessions", "concurrency_buckets", "player_daily_stats", "analytics_observation_state"} {
+	for _, table := range []string{
+		"player_sessions",
+		"concurrency_buckets",
+		"player_daily_stats",
+		"analytics_observation_state",
+		"activity_events",
+		"trajectory_samples",
+		"server_metric_samples",
+		"server_documents",
+		"sensitive_access_audit",
+	} {
 		var count int
 		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -73,6 +83,15 @@ func TestOpenMigratesAnalyticsSchema(t *testing.T) {
 	}
 	if cleanupIndex != 1 {
 		t.Fatalf("player_sessions_ended_at count=%d", cleanupIndex)
+	}
+	for _, index := range []string{"activity_events_subject_time", "trajectory_user_time", "sensitive_audit_actor_time"} {
+		var count int
+		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("index %s count=%d", index, count)
+		}
 	}
 
 	now := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
@@ -96,6 +115,62 @@ INSERT INTO player_sessions(user_id, started_at, ended_at, last_observed_at, clo
 		"steam_1", formatTime(now.Add(time.Minute)), formatTime(now.Add(2*time.Minute)), formatTime(now.Add(2*time.Minute)), "offline"); err != nil {
 		t.Fatalf("insert closed session: %v", err)
 	}
+	if _, err := repo.db.ExecContext(t.Context(), `
+INSERT INTO trajectory_samples(user_id, segment_id, observed_at, x, y, ping, level, source_ref)
+VALUES('steam_1', 'segment_1', ?, 1, 2, 3, 4, 'sample_1'),
+      ('steam_1', 'segment_2', ?, 5, 6, 7, 8, 'sample_2')`, formatTime(now), formatTime(now)); err == nil {
+		t.Fatal("expected duplicate trajectory sample to fail")
+	}
+	if _, err := repo.db.ExecContext(t.Context(), `INSERT INTO activity_events(id) VALUES('event_1')`); err == nil {
+		t.Fatal("expected incomplete activity event to fail")
+	}
+}
+
+func TestOpenMigratesVersionEightToNineWithoutLosingData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "guard.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(schemaV1 + schemaV2 + schemaV3 + schemaV4 + schemaV5 + schemaV6 + schemaV7 + schemaV8 + `
+DELETE FROM schema_migrations;
+INSERT INTO schema_migrations(version,applied_at) VALUES
+(1,'2026-01-01T00:00:00Z'),(2,'2026-01-01T00:00:00Z'),(3,'2026-01-01T00:00:00Z'),
+(4,'2026-01-01T00:00:00Z'),(5,'2026-01-01T00:00:00Z'),(6,'2026-01-01T00:00:00Z'),
+(7,'2026-01-01T00:00:00Z'),(8,'2026-01-01T00:00:00Z');
+INSERT INTO players(user_id,name,first_seen,last_online)
+VALUES('u1','One','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+
+	var version, players int
+	if err := repo.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.QueryRow(`SELECT COUNT(*) FROM players WHERE user_id='u1' AND name='One'`).Scan(&players); err != nil {
+		t.Fatal(err)
+	}
+	if version != 9 || players != 1 {
+		t.Fatalf("version=%d players=%d", version, players)
+	}
+	for _, table := range []string{"activity_events", "trajectory_samples", "server_metric_samples", "server_documents", "sensitive_access_audit"} {
+		var count int
+		if err := repo.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("table %s count=%d", table, count)
+		}
+	}
 }
 
 func TestOpenMigratesVersionSevenToEightWithoutLosingAnalytics(t *testing.T) {
@@ -107,7 +182,14 @@ func TestOpenMigratesVersionSevenToEightWithoutLosingAnalytics(t *testing.T) {
 	if _, err := repo.db.Exec(`INSERT INTO player_sessions(user_id, started_at, last_observed_at) VALUES('u1', ?, ?)`, formatTime(at.Add(-time.Minute)), formatTime(at)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.db.Exec(`DROP TABLE analytics_observation_state; DELETE FROM schema_migrations WHERE version=8`); err != nil {
+	if _, err := repo.db.Exec(`
+DROP TABLE analytics_observation_state;
+DROP TABLE activity_events;
+DROP TABLE trajectory_samples;
+DROP TABLE server_metric_samples;
+DROP TABLE server_documents;
+DROP TABLE sensitive_access_audit;
+DELETE FROM schema_migrations WHERE version>=8`); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.Close(); err != nil {
@@ -126,7 +208,7 @@ func TestOpenMigratesVersionSevenToEightWithoutLosingAnalytics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 8 || len(players) != 1 || players[0].UserID != "u1" || !watermark.Equal(at) {
+	if version != 9 || len(players) != 1 || players[0].UserID != "u1" || !watermark.Equal(at) {
 		t.Fatalf("version=%d players=%+v watermark=%v", version, players, watermark)
 	}
 }
@@ -140,7 +222,14 @@ func TestOpenMigratesVersionSevenClosedSessionWatermark(t *testing.T) {
 	if _, err := repo.db.Exec(`INSERT INTO player_sessions(user_id, started_at, ended_at, last_observed_at) VALUES('u1', ?, ?, ?)`, formatTime(at.Add(-time.Minute)), formatTime(at), formatTime(at)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.db.Exec(`DROP TABLE analytics_observation_state; DELETE FROM schema_migrations WHERE version=8`); err != nil {
+	if _, err := repo.db.Exec(`
+DROP TABLE analytics_observation_state;
+DROP TABLE activity_events;
+DROP TABLE trajectory_samples;
+DROP TABLE server_metric_samples;
+DROP TABLE server_documents;
+DROP TABLE sensitive_access_audit;
+DELETE FROM schema_migrations WHERE version>=8`); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.Close(); err != nil {
@@ -184,7 +273,7 @@ INSERT INTO player_sessions(user_id,started_at,ended_at,last_observed_at) VALUES
 			t.Fatal(err)
 		}
 	}
-	if version != 8 || indexes != 1 || players != 1 || sessions != 1 {
+	if version != 9 || indexes != 1 || players != 1 || sessions != 1 {
 		t.Fatalf("version=%d index=%d players=%d sessions=%d", version, indexes, players, sessions)
 	}
 }
