@@ -182,8 +182,8 @@ CREATE TABLE server_metric_samples (
     max_player_num INTEGER NOT NULL,
     uptime_seconds INTEGER NOT NULL,
     base_camp_num INTEGER NOT NULL,
-    game_days INTEGER NOT NULL,
-    event_id TEXT
+	game_days INTEGER NOT NULL,
+	event_id TEXT REFERENCES activity_events(id)
 );
 CREATE INDEX server_metric_samples_event
 ON server_metric_samples(event_id);
@@ -200,14 +200,40 @@ CREATE TABLE server_document_observations (
     kind TEXT NOT NULL,
     observed_at TEXT NOT NULL,
     content_hash TEXT NOT NULL,
-    event_id TEXT,
-    PRIMARY KEY(kind, observed_at),
-    FOREIGN KEY(kind, content_hash) REFERENCES server_documents(kind, content_hash)
+	event_id TEXT,
+	PRIMARY KEY(kind, observed_at),
+	FOREIGN KEY(kind, content_hash) REFERENCES server_documents(kind, content_hash),
+	FOREIGN KEY(event_id) REFERENCES activity_events(id)
 );
 CREATE INDEX server_document_observations_kind_time
 ON server_document_observations(kind, observed_at);
 CREATE INDEX server_document_observations_event
 ON server_document_observations(event_id);
+
+CREATE TABLE server_observation_state (
+	kind TEXT NOT NULL PRIMARY KEY CHECK(kind IN ('metrics','info','settings')),
+	observed_at TEXT NOT NULL,
+	server_fps INTEGER,
+	current_player_num INTEGER,
+	server_frame_time REAL,
+	max_player_num INTEGER,
+	uptime_seconds INTEGER,
+	base_camp_num INTEGER,
+	game_days INTEGER,
+	content_hash TEXT,
+	CHECK(
+		(kind='metrics' AND content_hash IS NULL
+		 AND server_fps IS NOT NULL AND current_player_num IS NOT NULL
+		 AND server_frame_time IS NOT NULL AND max_player_num IS NOT NULL
+		 AND uptime_seconds IS NOT NULL AND base_camp_num IS NOT NULL AND game_days IS NOT NULL)
+		OR
+		(kind IN ('info','settings') AND content_hash IS NOT NULL
+		 AND server_fps IS NULL AND current_player_num IS NULL
+		 AND server_frame_time IS NULL AND max_player_num IS NULL
+		 AND uptime_seconds IS NULL AND base_camp_num IS NULL AND game_days IS NULL)
+	),
+	FOREIGN KEY(kind, content_hash) REFERENCES server_documents(kind, content_hash)
+);
 
 CREATE TABLE sensitive_access_audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

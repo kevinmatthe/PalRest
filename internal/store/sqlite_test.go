@@ -69,6 +69,7 @@ func TestOpenMigrationCreatesAnalyticsSchema(t *testing.T) {
 		"server_metric_samples",
 		"server_documents",
 		"server_document_observations",
+		"server_observation_state",
 		"sensitive_access_audit",
 	} {
 		var count int
@@ -86,7 +87,7 @@ func TestOpenMigrationCreatesAnalyticsSchema(t *testing.T) {
 	if cleanupIndex != 1 {
 		t.Fatalf("player_sessions_ended_at count=%d", cleanupIndex)
 	}
-	for _, index := range []string{"activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "server_document_observations_kind_time", "sensitive_audit_actor_time"} {
+	for _, index := range []string{"activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "server_metric_samples_event", "server_document_observations_kind_time", "server_document_observations_event", "sensitive_audit_actor_time"} {
 		var count int
 		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -101,6 +102,15 @@ func TestOpenMigrationCreatesAnalyticsSchema(t *testing.T) {
 	}
 	if metricEventColumn != 1 {
 		t.Fatalf("server_metric_samples.event_id count=%d", metricEventColumn)
+	}
+	for table, want := range map[string]int{"server_metric_samples": 1, "server_document_observations": 3} {
+		var got int
+		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM pragma_foreign_key_list(?)`, table).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s foreign keys=%d want=%d", table, got, want)
+		}
 	}
 
 	now := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
@@ -171,7 +181,7 @@ VALUES('u1','One','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`); err != nil 
 	if version != 9 || players != 1 {
 		t.Fatalf("version=%d players=%d", version, players)
 	}
-	for _, table := range []string{"activity_events", "trajectory_samples", "server_metric_samples", "server_documents", "server_document_observations", "sensitive_access_audit"} {
+	for _, table := range []string{"activity_events", "trajectory_samples", "server_metric_samples", "server_documents", "server_document_observations", "server_observation_state", "sensitive_access_audit"} {
 		var count int
 		if err := repo.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -180,7 +190,7 @@ VALUES('u1','One','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`); err != nil 
 			t.Fatalf("table %s count=%d", table, count)
 		}
 	}
-	for _, index := range []string{"activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "server_document_observations_kind_time", "sensitive_audit_actor_time"} {
+	for _, index := range []string{"activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "server_metric_samples_event", "server_document_observations_kind_time", "server_document_observations_event", "sensitive_audit_actor_time"} {
 		var count int
 		if err := repo.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&count); err != nil {
 			t.Fatal(err)
