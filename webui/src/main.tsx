@@ -202,7 +202,7 @@ export function App() {
       {view !== 'policy' ? <nav className="view-tabs" aria-label="Console views">
         <button type="button" aria-current={view === 'dashboard' ? 'page' : undefined} onClick={() => setView('dashboard')}>Overview</button>
         <button type="button" aria-current={view === 'analytics' ? 'page' : undefined} onClick={() => setView('analytics')}>Analytics</button>
-        <button type="button" aria-current={view === 'timeline' ? 'page' : undefined} onClick={() => setView('timeline')}>Timeline</button>
+        <button type="button" aria-current={view === 'timeline' ? 'page' : undefined} onClick={() => setView('timeline')}>时间轴</button>
       </nav> : null}
 
       {view === 'policy' && data?.admin.authenticated ? (

@@ -110,7 +110,7 @@ describe('App analytics navigation and refresh ownership', () => {
 describe('public timeline navigation', () => {
   it('exposes Timeline publicly and enables private mode only for an authenticated administrator', async () => {
     const { unmount } = render(<App />);
-    const timeline = await screen.findByRole('button', { name: 'Timeline' });
+    const timeline = await screen.findByRole('button', { name: '时间轴' });
     expect(screen.queryByText(/Player timeline token/)).not.toBeInTheDocument();
     fireEvent.click(timeline);
     expect(timeline).toHaveAttribute('aria-current', 'page');
@@ -119,24 +119,24 @@ describe('public timeline navigation', () => {
 
     vi.mocked(api.getAdminSession).mockResolvedValueOnce({ ...admin, authenticated: false });
     render(<App />);
-    const publicTimeline = await screen.findByRole('button', { name: 'Timeline' });
+    const publicTimeline = await screen.findByRole('button', { name: '时间轴' });
     fireEvent.click(publicTimeline);
     expect(screen.getByText(/Player timeline token/)).toHaveTextContent('private false');
   });
 
   it('keeps public Timeline open if a refreshed session loses authentication', async () => {
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Timeline' }));
+    fireEvent.click(await screen.findByRole('button', { name: '时间轴' }));
     expect(screen.getByText(/Player timeline token/)).toBeInTheDocument();
     vi.mocked(api.getAdminSession).mockResolvedValueOnce({ ...admin, authenticated: false });
     fireEvent.click(screen.getByTitle('Refresh now'));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Timeline' })).toHaveAttribute('aria-current', 'page'));
+    await waitFor(() => expect(screen.getByRole('button', { name: '时间轴' })).toHaveAttribute('aria-current', 'page'));
     expect(screen.getByText(/Player timeline token/)).toHaveTextContent('private false');
   });
 
   it('keeps the existing private timeline visible until session refresh resolves', async () => {
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Timeline' }));
+    fireEvent.click(await screen.findByRole('button', { name: '时间轴' }));
     const current = screen.getByText(/Player timeline token/).textContent;
     const session = deferred<api.AdminSession>();
     vi.mocked(api.getAdminSession).mockReturnValueOnce(session.promise);
@@ -148,13 +148,13 @@ describe('public timeline navigation', () => {
 
   it('downgrades to public timeline when auth is lost even if another common request fails', async () => {
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Timeline' }));
+    fireEvent.click(await screen.findByRole('button', { name: '时间轴' }));
     expect(screen.getByText(/Player timeline token/)).toBeInTheDocument();
     vi.mocked(api.getAdminSession).mockResolvedValueOnce({ ...admin, authenticated: false });
     vi.mocked(api.getHealth).mockRejectedValueOnce(new Error('health offline'));
     fireEvent.click(screen.getByTitle('Refresh now'));
     await waitFor(() => expect(screen.getByText(/Player timeline token/)).toHaveTextContent('private false'));
-    expect(screen.getByRole('button', { name: 'Timeline' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '时间轴' })).toBeInTheDocument();
     expect(screen.getByText('health offline')).toBeInTheDocument();
   });
 });

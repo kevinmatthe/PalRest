@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Compass, Crosshair, Map as MapIcon, Radio, Route, Search, ShieldAlert } from 'lucide-react';
 import { ApiError, getPlayerTimeline, type Player, type PlayerTimelineResponse, type TimelineEvent } from '../api';
-import { formatExactDateTime, titleCase } from '../utils';
 
 type Props = { includePrivate?: boolean; players: Player[]; refreshKey: number };
 type TimelineState =
@@ -19,13 +18,39 @@ type LogRow = { item: LogItem; separator: string };
 type TrajectorySample = PlayerTimelineResponse['trajectories'][number];
 type MapPoint = { key: string; sample: TrajectorySample; x: number; y: number };
 type MapBounds = { minX: number; maxX: number; minY: number; maxY: number };
+type MapRegion = { id: string; name: string; x: number; y: number; rx: number; ry: number; tone: string };
 
 const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
+const PALWORLD_BOUNDS: MapBounds = { minX: -500000, maxX: 500000, minY: -500000, maxY: 500000 };
+const PALWORLD_REGIONS: MapRegion[] = [
+  { id: 'astral', name: '雪山地带', x: 34, y: 14, rx: 16, ry: 11, tone: 'snow' },
+  { id: 'desert', name: '沙漠地带', x: 71, y: 22, rx: 15, ry: 12, tone: 'sand' },
+  { id: 'sakrajima', name: '樱岛', x: 82, y: 49, rx: 10, ry: 8, tone: 'bloom' },
+  { id: 'forest', name: '森林与竹林', x: 49, y: 42, rx: 21, ry: 16, tone: 'forest' },
+  { id: 'start', name: '初始台地', x: 41, y: 66, rx: 18, ry: 14, tone: 'grass' },
+  { id: 'archipelago', name: '海风群岛', x: 66, y: 69, rx: 14, ry: 11, tone: 'coast' },
+  { id: 'volcano', name: '火山地带', x: 24, y: 75, rx: 17, ry: 13, tone: 'lava' },
+];
 const KNOWN_EVENTS = new Set([
   'player_joined', 'player_left', 'player_attribute_changed',
   'guard_warning_attempted', 'guard_warning_delivered', 'guard_warning_failed',
   'enforcement_attempted', 'enforcement_succeeded', 'enforcement_failed',
 ]);
+const EVENT_LABELS: Record<string, string> = {
+  player_joined: '玩家加入',
+  player_left: '玩家离开',
+  player_attribute_changed: '玩家属性变更',
+  guard_warning_attempted: '尝试发送提醒',
+  guard_warning_delivered: '提醒已送达',
+  guard_warning_failed: '提醒发送失败',
+  enforcement_attempted: '尝试执行限制',
+  enforcement_succeeded: '限制执行成功',
+  enforcement_failed: '限制执行失败',
+};
+const CONFIDENCE_LABELS: Record<string, string> = {
+  observed: '实测',
+  snapshot_derived: '存档推导',
+};
 const LOCAL_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
 
 function localInputValue(date: Date) {
@@ -40,18 +65,18 @@ function defaultRange() {
 
 export function parseLocalDateTime(value: string): { date?: Date; error?: string } {
   const match = LOCAL_DATE_TIME.exec(value);
-  if (!match) return { error: 'Enter a valid local date and time.' };
+  if (!match) return { error: '请输入有效的本地日期和时间。' };
   const [, yearText, monthText, dayText, hourText, minuteText] = match;
   const parts = [yearText, monthText, dayText, hourText, minuteText].map(Number);
   const [year, month, day, hour, minute] = parts;
-  if (year < 1000 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) return { error: 'Enter a valid local date and time.' };
+  if (year < 1000 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) return { error: '请输入有效的本地日期和时间。' };
   const date = new Date(year, month - 1, day, hour, minute, 0, 0);
   const matchesWallTime = (candidate: Date) => candidate.getFullYear() === year && candidate.getMonth() === month - 1 && candidate.getDate() === day && candidate.getHours() === hour && candidate.getMinutes() === minute;
-  if (!matchesWallTime(date)) return { error: 'This local time does not exist because the clock changes then.' };
+  if (!matchesWallTime(date)) return { error: '该本地时间因时钟切换不存在。' };
   for (let offsetMinutes = -180; offsetMinutes <= 180; offsetMinutes += 1) {
     if (offsetMinutes === 0) continue;
     const candidate = new Date(date.getTime() + offsetMinutes * 60_000);
-    if (matchesWallTime(candidate)) return { error: 'This local time is ambiguous because the clock repeats it. Choose another time.' };
+    if (matchesWallTime(candidate)) return { error: '该本地时间因时钟回拨存在歧义，请选择其他时间。' };
   }
   return { date };
 }
@@ -59,21 +84,25 @@ export function parseLocalDateTime(value: string): { date?: Date; error?: string
 function validateRange(start: string, end: string) {
   const parsedStart = parseLocalDateTime(start);
   const parsedEnd = parseLocalDateTime(end);
-  if (parsedStart.error) return `Start: ${parsedStart.error}`;
-  if (parsedEnd.error) return `End: ${parsedEnd.error}`;
+  if (parsedStart.error) return `开始时间：${parsedStart.error}`;
+  if (parsedEnd.error) return `结束时间：${parsedEnd.error}`;
   const startMS = parsedStart.date!.getTime();
   const endMS = parsedEnd.date!.getTime();
-  if (endMS <= startMS) return 'End must be after start.';
-  if (endMS - startMS > MAX_RANGE_MS) return 'The selected range cannot exceed 31 days.';
+  if (endMS <= startMS) return '结束时间必须晚于开始时间。';
+  if (endMS - startMS > MAX_RANGE_MS) return '选择的时间范围不能超过 31 天。';
   return '';
 }
 
 function mergeTimeline(data: PlayerTimelineResponse, includePrivate: boolean): LogItem[] {
   const merged: LogItem[] = [];
   data.events.forEach((item) => merged.push({ kind: 'event', at: item.occurred_at, key: `event:${item.id}`, item }));
-  data.trajectories.forEach((item) => merged.push({ kind: 'trajectory', at: item.observed_at, key: `trajectory:${item.user_id}:${item.segment_id}:${item.observed_at}:${item.source_ref}`, item }));
+  data.trajectories.forEach((item) => merged.push({ kind: 'trajectory', at: item.observed_at, key: `trajectory:${trajectoryKey(item)}`, item }));
   if (includePrivate) data.private_samples.forEach((item) => merged.push({ kind: 'private', at: item.observed_at, key: `private:${item.user_id}:${item.observed_at}:${item.source_ref}`, item }));
   return merged.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.key.localeCompare(b.key));
+}
+
+function trajectoryKey(sample: TrajectorySample) {
+  return `${sample.user_id}:${sample.segment_id}:${sample.observed_at}:${sample.source_ref}`;
 }
 
 function annotateTrajectoryEvidence(items: LogItem[]): LogRow[] {
@@ -82,7 +111,7 @@ function annotateTrajectoryEvidence(items: LogItem[]): LogRow[] {
     let separator = '';
     if (item.kind === 'trajectory') {
       if (previousTrajectory && item.item.segment_id !== previousTrajectory.segment_id) {
-        separator = 'New observation segment — no path inferred';
+        separator = '新轨迹段：中间路径未推断';
       }
       previousTrajectory = item.item;
     }
@@ -125,6 +154,10 @@ function projectSample(sample: TrajectorySample, bounds: MapBounds): { x: number
   return { x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) };
 }
 
+function projectWorldSample(sample: TrajectorySample): { x: number; y: number } {
+  return projectSample(sample, PALWORLD_BOUNDS);
+}
+
 function splitRouteSegments(points: MapPoint[]) {
   return points.reduce<MapPoint[][]>((segments, point) => {
     const current = segments.at(-1);
@@ -147,6 +180,72 @@ function timelinePercent(at: string, startMS: number, endMS: number) {
   return Math.min(100, Math.max(0, ((current - startMS) / (endMS - startMS)) * 100));
 }
 
+function formatTimelineDateTime(value: string | undefined): string {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(date);
+}
+
+function eventLabel(eventType: string, known = KNOWN_EVENTS.has(eventType)) {
+  return known ? EVENT_LABELS[eventType] ?? eventType : '未知事件';
+}
+
+function confidenceLabel(value: string) {
+  return CONFIDENCE_LABELS[value] ?? value;
+}
+
+function segmentLabels(items: LogItem[]) {
+  const labels = new Map<string, string>();
+  trajectorySamples(items).forEach((sample) => {
+    const key = sample.segment_id || '';
+    if (key && !labels.has(key)) labels.set(key, `第 ${labels.size + 1} 段`);
+  });
+  return labels;
+}
+
+function trajectoryLocationLabels(items: LogItem[]) {
+  const samples = trajectorySamples(items);
+  const labels = new Map<string, string>();
+  samples.forEach((sample) => labels.set(trajectoryKey(sample), mapLocationLabel(sample)));
+  return labels;
+}
+
+function mapLocationLabel(sample: TrajectorySample) {
+  const landmark = knownMapLocation(sample);
+  const area = nearestMapRegion(sample);
+  return landmark ? `${landmark} · ${area}` : area;
+}
+
+function knownMapLocation(_sample: TrajectorySample): string {
+  // This hook is intentionally centralized so licensed map assets or a location
+  // translation table can replace coordinate-only labels without touching UI code.
+  return '';
+}
+
+function nearestMapRegion(sample: TrajectorySample) {
+  const point = projectWorldSample(sample);
+  let best = PALWORLD_REGIONS[0];
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const region of PALWORLD_REGIONS) {
+    const dx = (point.x - region.x) / region.rx;
+    const dy = (point.y - region.y) / region.ry;
+    const score = dx * dx + dy * dy;
+    if (score < bestScore) {
+      best = region;
+      bestScore = score;
+    }
+  }
+  return bestScore <= 1.35 ? best.name : `${best.name}附近`;
+}
+
 export function PlayerTimeline({ includePrivate = false, players, refreshKey }: Props) {
   const range = useMemo(defaultRange, []);
   const [selectedID, setSelectedID] = useState('');
@@ -156,6 +255,7 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   const [state, setState] = useState<TimelineState>({ kind: 'idle' });
   const [cursorIndex, setCursorIndex] = useState(0);
   const requestID = useRef(0);
+  const lastRefreshKey = useRef(refreshKey);
   const rangeError = validateRange(start, end);
   const visiblePlayers = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -164,6 +264,14 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   }, [players, search, selectedID]);
 
   useEffect(() => {
+    if (lastRefreshKey.current !== refreshKey) {
+      lastRefreshKey.current = refreshKey;
+      const nextEnd = localInputValue(new Date());
+      if (nextEnd !== end) {
+        setEnd(nextEnd);
+        return;
+      }
+    }
     const id = ++requestID.current;
     if (!selectedID) {
       setState({ kind: 'idle' });
@@ -191,39 +299,41 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
 
   const items = useMemo(() => state.kind === 'ready' ? mergeTimeline(state.data, includePrivate) : [], [includePrivate, state]);
   const rows = useMemo(() => annotateTrajectoryEvidence(items), [items]);
+  const segmentNames = useMemo(() => segmentLabels(items), [items]);
+  const locationNames = useMemo(() => trajectoryLocationLabels(items), [items]);
   const activeIndex = items.length ? Math.min(cursorIndex, items.length - 1) : 0;
   const mayBeTruncated = state.kind === 'ready' && [state.data.events, state.data.trajectories, includePrivate ? state.data.private_samples : []].some((source) => source.length >= 500);
 
   useEffect(() => {
     setCursorIndex(0);
-  }, [selectedID, start, end, refreshKey, items.length]);
+  }, [selectedID, start, end, refreshKey]);
 
   return (
     <section className="timeline-recorder" aria-labelledby="timeline-heading">
       <header className="timeline-heading">
         <div>
-          <p className="eyebrow">{includePrivate ? 'Administrator field recorder' : 'Public field recorder'}</p>
-          <h2 id="timeline-heading">Player observation timeline</h2>
-          <p>Recorded evidence only. Gaps are never interpolated.</p>
+          <p className="eyebrow">{includePrivate ? '管理员观察记录' : '公开观察记录'}</p>
+          <h2 id="timeline-heading">玩家观察时间轴</h2>
+          <p>仅展示已记录的证据，不自动补全缺口。</p>
         </div>
-        {includePrivate ? <span className="timeline-private"><ShieldAlert size={16} /> Private console</span> : null}
+        {includePrivate ? <span className="timeline-private"><ShieldAlert size={16} /> 管理员私有视图</span> : null}
       </header>
       <div className="timeline-layout">
-        <aside className="timeline-filters" aria-label="Timeline filters">
+        <aside className="timeline-filters" aria-label="时间轴筛选">
           <label className="timeline-field">
-            <span>Search known players</span>
-            <span className="timeline-input-with-icon"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, account, or ID" /></span>
+            <span>搜索已知玩家</span>
+            <span className="timeline-input-with-icon"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="名称、账号或 ID" /></span>
           </label>
           <label className="timeline-field">
-            <span>Player</span>
+            <span>玩家</span>
             <select value={selectedID} onChange={(event) => setSelectedID(event.target.value)}>
-              <option value="">Select a player…</option>
+              <option value="">请选择玩家…</option>
               {visiblePlayers.map((player) => <option value={player.user_id} key={player.user_id}>{player.name || player.account_name || player.user_id} · {player.account_name || player.user_id}</option>)}
             </select>
           </label>
-          <label className="timeline-field"><span>Start</span><input type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} /></label>
-          <label className="timeline-field"><span>End</span><input type="datetime-local" value={end} onChange={(event) => setEnd(event.target.value)} /></label>
-          <p className="timeline-range-note">Local time · maximum 31 days · up to 500 records per source</p>
+          <label className="timeline-field"><span>开始</span><input type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} /></label>
+          <label className="timeline-field"><span>结束</span><input type="datetime-local" value={end} onChange={(event) => setEnd(event.target.value)} /></label>
+          <p className="timeline-range-note">本地时间 · 最长 31 天 · 每类最多 500 条</p>
         </aside>
         <div className="timeline-log">
           <TimelineMap
@@ -233,14 +343,14 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             onCursorChange={setCursorIndex}
             selected={Boolean(selectedID)}
           />
-          {!selectedID ? <EmptyState icon={<Compass size={28} />} text="Select a player to open their expedition log." /> : null}
-          {state.kind === 'loading' ? <div className="timeline-skeleton" role="status" aria-label="Loading timeline"><span /><span /><span /></div> : null}
-          {state.kind === 'not-found' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> This player is no longer known to the observation store.</div> : null}
+          {!selectedID ? <EmptyState icon={<Compass size={28} />} text="选择玩家后查看轨迹和事件。" /> : null}
+          {state.kind === 'loading' ? <div className="timeline-skeleton" role="status" aria-label="正在加载时间轴"><span /><span /><span /></div> : null}
+          {state.kind === 'not-found' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> 该玩家已不在观察记录中。</div> : null}
           {state.kind === 'error' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> {state.message}</div> : null}
-          {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="No observations recorded in this range." /> : null}
-          {mayBeTruncated ? <div className="timeline-alert timeline-alert--info" role="status"><AlertTriangle size={18} /> Evidence may be truncated because a source reached the 500-record response limit.</div> : null}
-          {state.kind === 'ready' && items.length > 0 ? <ol className="timeline-spine" aria-label="Chronological observations">
-            {rows.map(({ item, separator }, index) => <TimelineEntry active={index === activeIndex} key={item.key} item={item} onSelect={() => setCursorIndex(index)} separator={separator} />)}
+          {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="当前时间范围没有观察记录。" /> : null}
+          {mayBeTruncated ? <div className="timeline-alert timeline-alert--info" role="status"><AlertTriangle size={18} /> 某类数据达到 500 条响应上限，结果可能已截断。</div> : null}
+          {state.kind === 'ready' && items.length > 0 ? <ol className="timeline-spine" aria-label="按时间排序的观察记录">
+            {rows.map(({ item, separator }, index) => <TimelineEntry active={index === activeIndex} index={index} key={item.key} item={item} locationLabel={item.kind === 'trajectory' ? locationNames.get(trajectoryKey(item.item)) : undefined} onSelect={setCursorIndex} segmentLabel={item.kind === 'trajectory' ? segmentNames.get(item.item.segment_id) : undefined} separator={separator} />)}
           </ol> : null}
         </div>
       </div>
@@ -250,71 +360,79 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
 
 function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: { activeIndex: number; items: LogItem[]; loading: boolean; onCursorChange: (index: number) => void; selected: boolean }) {
   const samples = useMemo(() => trajectorySamples(items), [items]);
-  const bounds = useMemo(() => trajectoryBounds(samples), [samples]);
   const points = useMemo<MapPoint[]>(() => {
-    if (!bounds) return [];
     return samples.map((sample) => {
-      const position = projectSample(sample, bounds);
+      const position = projectWorldSample(sample);
       return { ...position, key: `${sample.segment_id}:${sample.observed_at}:${sample.source_ref}`, sample };
     });
-  }, [bounds, samples]);
+  }, [samples]);
   const segments = useMemo(() => splitRouteSegments(points), [points]);
   const activeItem = items[activeIndex];
   const activeSample = latestPointAt(samples, activeItem?.at);
-  const activePoint = activeSample && bounds ? projectSample(activeSample, bounds) : undefined;
+  const activePoint = activeSample ? projectWorldSample(activeSample) : undefined;
   const startMS = items.length ? Math.min(...items.map((item) => Date.parse(item.at))) : 0;
   const endMS = items.length ? Math.max(...items.map((item) => Date.parse(item.at))) : 1;
   const cursorLeft = activeItem ? timelinePercent(activeItem.at, startMS, endMS) : 0;
-  const activeLabel = activeItem ? activeItem.kind === 'event' ? `Cursor: ${titleCase(activeItem.item.event_type)}` : activeItem.kind === 'trajectory' ? 'Cursor: position observation' : 'Cursor: private player sample' : selected ? 'Waiting for observations' : 'No player selected';
+  const activeLabel = activeItem ? activeItem.kind === 'event' ? `光标：${eventLabel(activeItem.item.event_type)}` : activeItem.kind === 'trajectory' ? '光标：位置采样' : '光标：私有玩家采样' : selected ? '等待观察记录' : '未选择玩家';
 
-  return <section className="timeline-map-panel" aria-label="Map replay">
+  return <section className="timeline-map-panel" aria-label="地图回放">
     <div className="timeline-map-header">
       <div>
-        <p className="eyebrow">Map replay</p>
+        <p className="eyebrow">地图回放</p>
         <h3>{activeLabel}</h3>
       </div>
-      <span className="timeline-map-count"><Route size={15} /> {samples.length} positions</span>
+      <span className="timeline-map-count"><Route size={15} /> {samples.length} 个坐标</span>
     </div>
-    <div className={`timeline-map-surface ${!points.length ? 'is-empty' : ''}`}>
-      {points.length ? <svg aria-label="Trajectory map" data-testid="timeline-map" preserveAspectRatio="none" role="img" viewBox="0 0 100 64">
+    <div className="timeline-map-surface">
+      <svg aria-label="完整地图" className="timeline-world-map" data-testid="timeline-map" preserveAspectRatio="xMidYMid meet" role="img" viewBox="0 0 100 100">
         <defs>
-          <pattern height="8" id="timeline-grid" patternUnits="userSpaceOnUse" width="8">
+          <pattern height="5" id="timeline-grid" patternUnits="userSpaceOnUse" width="5">
             <path d="M 8 0 L 0 0 0 8" fill="none" stroke="currentColor" strokeWidth="0.18" />
           </pattern>
+          <radialGradient id="timeline-sea" cx="48%" cy="44%" r="65%">
+            <stop offset="0%" stopColor="#c9e7ee" />
+            <stop offset="100%" stopColor="#76aebb" />
+          </radialGradient>
         </defs>
-        <rect className="timeline-map-grid" height="64" width="100" />
-        <path className="timeline-map-landmark" d="M0 42 C18 37 25 44 40 38 S72 29 100 35 L100 64 L0 64 Z" />
+        <rect className="timeline-map-sea" height="100" width="100" />
+        <rect className="timeline-map-grid" height="100" width="100" />
+        {PALWORLD_REGIONS.map((region) => <g className={`timeline-map-region timeline-map-region--${region.tone}`} key={region.id}>
+          <ellipse cx={region.x} cy={region.y} rx={region.rx} ry={region.ry} />
+          <text x={region.x} y={region.y}>{region.name}</text>
+        </g>)}
+        <path className="timeline-map-shore" d="M20 13 C31 4 49 8 59 18 C69 15 82 19 86 33 C98 41 94 59 82 63 C79 79 64 89 48 84 C35 94 17 86 15 70 C4 61 5 45 16 39 C11 29 13 19 20 13 Z" />
         {segments.map((segment) => <polyline className="timeline-map-route" data-testid="timeline-map-route" key={segment[0].key} points={segment.map((point) => `${point.x},${point.y}`).join(' ')} />)}
         {points.map((point) => <circle className="timeline-map-point" cx={point.x} cy={point.y} key={point.key} r="1.35" />)}
         {activePoint ? <g className="timeline-map-active" data-testid="timeline-map-active">
           <circle cx={activePoint.x} cy={activePoint.y} r="3.2" />
           <circle cx={activePoint.x} cy={activePoint.y} r="1.2" />
         </g> : null}
-      </svg> : <div className="timeline-map-empty">{loading ? 'Loading trajectory evidence.' : selected ? 'No position samples in this range.' : 'Choose a player to load the replay map.'}</div>}
+      </svg>
+      {!points.length ? <div className="timeline-map-empty">{loading ? '正在加载轨迹证据。' : selected ? '当前时间范围没有位置样本，已显示完整地图。' : '选择玩家后叠加轨迹。'}</div> : null}
     </div>
     <div className="timeline-cursor">
       <div className="timeline-cursor-track" aria-hidden="true">
         {items.map((item, index) => <span className={`timeline-cursor-tick timeline-cursor-tick--${item.kind}`} key={item.key} style={{ left: `${timelinePercent(item.at, startMS, endMS)}%` }} data-active={index === activeIndex ? 'true' : undefined} />)}
         <span className="timeline-cursor-now" style={{ left: `${cursorLeft}%` }} />
       </div>
-      <input aria-label="Timeline cursor" disabled={items.length < 2} max={Math.max(items.length - 1, 0)} min={0} onChange={(event) => onCursorChange(Number(event.target.value))} type="range" value={activeIndex} />
+      <input aria-label="时间轴光标" disabled={items.length < 2} max={Math.max(items.length - 1, 0)} min={0} onChange={(event) => onCursorChange(Number(event.target.value))} type="range" value={activeIndex} />
       <div className="timeline-map-meta">
-        <span><MapIcon size={15} /> {activeSample ? `${activeSample.x}, ${activeSample.y}` : 'No coordinates'}</span>
-        <span>{activeItem ? formatExactDateTime(activeItem.at) : 'No cursor time'}</span>
+        <span><MapIcon size={15} /> {activeSample ? mapLocationLabel(activeSample) : '无地图位置'}</span>
+        <span>{activeItem ? formatTimelineDateTime(activeItem.at) : '无光标时间'}</span>
       </div>
     </div>
   </section>;
 }
 
-function TimelineEntry({ active, item, onSelect, separator }: { active: boolean; item: LogItem; onSelect: () => void; separator: string }) {
+function TimelineEntry({ active, index, item, locationLabel, onSelect, segmentLabel, separator }: { active: boolean; index: number; item: LogItem; locationLabel?: string; onSelect: (index: number) => void; segmentLabel?: string; separator: string }) {
   return <>
     {separator ? <li className="timeline-separator" role="separator"><span>{separator}</span></li> : null}
     <li className={`timeline-entry timeline-entry--${item.kind} ${active ? 'is-active' : ''}`}>
-      <time dateTime={item.at}>{formatExactDateTime(item.at)}</time>
+      <time dateTime={item.at}>{formatTimelineDateTime(item.at)}</time>
       {item.kind === 'event' ? <EventDetail event={item.item} /> : null}
-      {item.kind === 'trajectory' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>Position observation</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>Coordinates</dt><dd>{item.item.x}, {item.item.y}</dd></div><div><dt>Segment</dt><dd>{item.item.segment_id || 'Unassigned'}</dd></div><div><dt>Ping</dt><dd>{item.item.ping} ms</dd></div><div><dt>Level</dt><dd>{item.item.level}</dd></div></dl></div> : null}
-      {item.kind === 'private' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>Private player sample</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>IP · Admin private</dt><dd>{item.item.ip || 'Unavailable'}</dd></div><div><dt>Ping</dt><dd>{item.item.ping} ms</dd></div><div><dt>Level</dt><dd>{item.item.level}</dd></div></dl></div> : null}
-      <button className="timeline-focus" title="Move replay cursor here" type="button" onClick={onSelect}><Crosshair size={16} /></button>
+      {item.kind === 'trajectory' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>位置采样</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>地图位置</dt><dd>{locationLabel ?? '未匹配地名 · 坐标位置'}</dd></div><div><dt>坐标</dt><dd>{item.item.x}, {item.item.y}</dd></div><div><dt>轨迹段</dt><dd>{segmentLabel ?? '未分段'}</dd></div><div><dt>延迟</dt><dd>{item.item.ping} ms</dd></div><div><dt>等级</dt><dd>{item.item.level}</dd></div></dl></div> : null}
+      {item.kind === 'private' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>私有玩家采样</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>IP · 管理员私有</dt><dd>{item.item.ip || '不可用'}</dd></div><div><dt>延迟</dt><dd>{item.item.ping} ms</dd></div><div><dt>等级</dt><dd>{item.item.level}</dd></div></dl></div> : null}
+      <button aria-label={`将回放光标移动到第 ${index + 1} 条记录`} className="timeline-focus" title="将回放光标移动到这里" type="button" onClick={() => onSelect(index)}><Crosshair size={16} /></button>
     </li>
   </>;
 }
@@ -323,15 +441,16 @@ function EventDetail({ event }: { event: TimelineEvent }) {
   const known = KNOWN_EVENTS.has(event.event_type) && event.summary !== 'unsupported event payload';
   const occurredDiffers = event.observed_at !== event.occurred_at;
   return <div className="timeline-detail">
-    <div className="timeline-title-row"><strong>{known ? titleCase(event.event_type) : 'Unsupported event'}</strong><SourceBadge source={event.source} /><span className="confidence-badge">{titleCase(event.confidence)}</span></div>
-    {occurredDiffers ? <dl className="telemetry timeline-times"><div><dt>Occurred</dt><dd>{formatExactDateTime(event.occurred_at)}</dd></div><div><dt>Observed</dt><dd>{formatExactDateTime(event.observed_at)}</dd></div></dl> : null}
+    <div className="timeline-title-row"><strong>{eventLabel(event.event_type, known)}</strong><SourceBadge source={event.source} /><span className="confidence-badge">{confidenceLabel(event.confidence)}</span></div>
+    {occurredDiffers ? <dl className="telemetry timeline-times"><div><dt>发生时间</dt><dd>{formatTimelineDateTime(event.occurred_at)}</dd></div><div><dt>观测时间</dt><dd>{formatTimelineDateTime(event.observed_at)}</dd></div></dl> : null}
   </div>;
 }
 
 function SourceBadge({ source }: { source: string }) {
   const normalized = source.toLowerCase();
-  const label = normalized.includes('snapshot') ? 'Snapshot' : normalized.includes('rest') ? 'REST' : 'Guard';
-  return <span className={`source-badge source-badge--${label.toLowerCase()}`}>{label}</span>;
+  const kind = normalized.includes('snapshot') ? 'snapshot' : normalized.includes('rest') ? 'rest' : 'guard';
+  const label = kind === 'snapshot' ? '存档' : kind === 'rest' ? 'REST' : '守护器';
+  return <span className={`source-badge source-badge--${kind}`}>{label}</span>;
 }
 
 function EmptyState({ icon, text }: { icon: React.ReactNode; text: string }) {

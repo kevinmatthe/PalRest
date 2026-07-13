@@ -22,28 +22,38 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function localInputValueForTest(date: Date) {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getPlayerTimeline).mockResolvedValue(empty);
 });
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  vi.clearAllMocks();
+});
 
 describe('PlayerTimeline', () => {
   it('starts intentionally empty and offers accessible player and range controls', () => {
     render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
-    expect(screen.getByText(/select a player to open/i)).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: /player/i })).toHaveValue('');
-    expect(screen.getByLabelText(/start/i)).toHaveAttribute('type', 'datetime-local');
-    expect(screen.getByLabelText(/end/i)).toHaveAttribute('type', 'datetime-local');
+    expect(screen.getByText(/选择玩家后查看轨迹和事件/)).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /玩家/i })).toHaveValue('');
+    expect(screen.getByLabelText(/开始/i)).toHaveAttribute('type', 'datetime-local');
+    expect(screen.getByLabelText(/结束/i)).toHaveAttribute('type', 'datetime-local');
     expect(api.getPlayerTimeline).not.toHaveBeenCalled();
   });
 
   it('selects a known player and requests its RFC3339 timeline', async () => {
     render(<PlayerTimeline players={players} refreshKey={0} />);
-    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
     await waitFor(() => expect(api.getPlayerTimeline).toHaveBeenCalledTimes(1));
     expect(api.getPlayerTimeline).toHaveBeenCalledWith('u/1', expect.stringMatching(/T.*(?:Z|[+-]\d\d:\d\d)$/), expect.stringMatching(/T.*(?:Z|[+-]\d\d:\d\d)$/), 500, expect.any(AbortSignal), false);
-    expect(await screen.findByText(/no observations recorded/i)).toBeInTheDocument();
+    expect(await screen.findByText(/当前时间范围没有观察记录/)).toBeInTheDocument();
   });
 
   it('aborts replaced work and ignores stale responses', async () => {
@@ -51,13 +61,13 @@ describe('PlayerTimeline', () => {
     const second = deferred<PlayerTimelineResponse>();
     vi.mocked(api.getPlayerTimeline).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     render(<PlayerTimeline players={players} refreshKey={0} />);
-    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
     await waitFor(() => expect(api.getPlayerTimeline).toHaveBeenCalledTimes(1));
     const firstSignal = vi.mocked(api.getPlayerTimeline).mock.calls[0]?.[4];
-    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u2' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u2' } });
     expect(firstSignal?.aborted).toBe(true);
     second.resolve({ ...empty, user_id: 'u2' });
-    await screen.findByText(/no observations recorded/i);
+    await screen.findByText(/当前时间范围没有观察记录/);
     first.resolve({ ...empty, events: [{ id: 'late', event_type: 'player_joined', occurred_at: '2026-07-13T08:00:00Z', observed_at: '2026-07-13T08:00:00Z', source: 'guard', confidence: 'observed', summary: 'joined' }] });
     expect(screen.queryByText('joined')).not.toBeInTheDocument();
   });
@@ -78,24 +88,24 @@ describe('PlayerTimeline', () => {
     const original = JSON.stringify(payload);
     vi.mocked(api.getPlayerTimeline).mockResolvedValue(payload);
     render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
-    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
 
-    expect(await screen.findByText('Player Joined')).toBeInTheDocument();
+    expect(await screen.findByText('玩家加入')).toBeInTheDocument();
     const items = screen.getAllByRole('listitem').map((node) => node.textContent);
-    expect(items.join('|')).toMatch(/Player Joined.*10.*20.*2001:db8::1:8211.*123.45.*-9.5.*Unsupported event/i);
-    expect(screen.getByText(/IP · Admin private/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/^Coordinates$/i)).toHaveLength(2);
+    expect(items.join('|')).toMatch(/玩家加入.*10.*20.*2001:db8::1:8211.*123.45.*-9.5.*未知事件/i);
+    expect(screen.getByText(/IP · 管理员私有/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/^坐标$/i)).toHaveLength(2);
     expect(screen.getAllByText(/REST/i).length).toBeGreaterThan(0);
-    expect(screen.getByText('Snapshot')).toBeInTheDocument();
-    expect(screen.getAllByText(/Occurred/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Observed/i).length).toBeGreaterThan(0);
-    const segment = screen.getByText(/New observation segment/i).closest('li');
+    expect(screen.getByText('存档')).toBeInTheDocument();
+    expect(screen.getAllByText(/发生时间/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/观测时间/i).length).toBeGreaterThan(0);
+    const segment = screen.getByText(/新轨迹段/i).closest('li');
     expect(segment?.previousElementSibling).toHaveTextContent('2001:db8::1:8211');
     expect(segment?.nextElementSibling).toHaveTextContent('123.45, -9.5');
-    const privateEntry = screen.getByText(/IP · Admin private/i).closest('li');
+    const privateEntry = screen.getByText(/IP · 管理员私有/i).closest('li');
     expect(privateEntry).not.toBeNull();
     expect(within(privateEntry!).getByText('REST')).toBeInTheDocument();
-    expect(within(privateEntry!).queryByText('Guard')).not.toBeInTheDocument();
+    expect(within(privateEntry!).queryByText('守护器')).not.toBeInTheDocument();
     expect(JSON.stringify(payload)).toBe(original);
     expect(screen.queryByText('future_event')).not.toBeInTheDocument();
   });
@@ -106,10 +116,10 @@ describe('PlayerTimeline', () => {
       private_samples: [{ user_id: 'u/1', observed_at: '2026-07-13T08:00:00Z', ip: '192.0.2.1:8211', ping: 10, level: 2, source_ref: 'private' }],
     });
     render(<PlayerTimeline players={players} refreshKey={0} />);
-    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
-    expect(await screen.findByText(/no observations recorded/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    expect(await screen.findByText(/当前时间范围没有观察记录/)).toBeInTheDocument();
     expect(screen.queryByText('192.0.2.1:8211')).not.toBeInTheDocument();
-    expect(screen.queryByText(/Private console/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/管理员私有视图/i)).not.toBeInTheDocument();
   });
 
   it('labels unified guard result and player attribute events', async () => {
@@ -122,10 +132,10 @@ describe('PlayerTimeline', () => {
 	  ],
 	});
 	render(<PlayerTimeline players={players} refreshKey={0} />);
-	fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
-	expect(await screen.findByText('Guard Warning Failed')).toBeInTheDocument();
-	expect(screen.getByText('Enforcement Succeeded')).toBeInTheDocument();
-	expect(screen.getByText('Player Attribute Changed')).toBeInTheDocument();
+	fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+	expect(await screen.findByText('提醒发送失败')).toBeInTheDocument();
+	expect(screen.getByText('限制执行成功')).toBeInTheDocument();
+	expect(screen.getByText('玩家属性变更')).toBeInTheDocument();
   });
 
   it('does not infer a gap from elapsed time when the authoritative segment is unchanged', async () => {
@@ -138,8 +148,8 @@ describe('PlayerTimeline', () => {
       ],
     });
     render(<PlayerTimeline players={players} refreshKey={0} />);
-    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
-    await screen.findByText('Player Joined');
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await screen.findByText('玩家加入');
     expect(screen.queryByText(/Observation gap/i)).not.toBeInTheDocument();
   });
 
@@ -153,17 +163,27 @@ describe('PlayerTimeline', () => {
       ],
     });
     render(<PlayerTimeline players={players} refreshKey={0} />);
-    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
 
-    expect(await screen.findByTestId('timeline-map')).toBeInTheDocument();
-    const mapReplay = screen.getByLabelText(/map replay/i);
-    expect(screen.getByText('2 positions')).toBeInTheDocument();
+    const map = await screen.findByTestId('timeline-map');
+    expect(map).toBeInTheDocument();
+    expect(map).toHaveAttribute('viewBox', '0 0 100 100');
+    const mapReplay = screen.getByLabelText(/地图回放/i);
+    expect(screen.getByText('2 个坐标')).toBeInTheDocument();
+    expect(within(mapReplay).getAllByText('森林与竹林').length).toBeGreaterThan(0);
     expect(screen.getAllByTestId('timeline-map-route')).toHaveLength(1);
-    expect(screen.getByLabelText(/timeline cursor/i)).toHaveValue('0');
-    expect(within(mapReplay).getByText('100, 200')).toBeInTheDocument();
-    fireEvent.click(screen.getAllByTitle(/move replay cursor here/i).at(-1)!);
-    expect(screen.getByLabelText(/timeline cursor/i)).toHaveValue('2');
-    expect(within(mapReplay).getByText('180, 260')).toBeInTheDocument();
+    expect(screen.getByLabelText(/时间轴光标/i)).toHaveValue('0');
+    expect(screen.getByText('100, 200')).toBeInTheDocument();
+    expect(screen.getByText('180, 260')).toBeInTheDocument();
+  });
+
+  it('syncs the end time to now when refreshKey changes', async () => {
+    const { rerender } = render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByLabelText(/结束/i), { target: { value: '2026-07-01T00:00' } });
+    expect(screen.getByLabelText(/结束/i)).toHaveValue('2026-07-01T00:00');
+    rerender(<PlayerTimeline players={players} refreshKey={1} />);
+
+    await waitFor(() => expect(screen.getByLabelText(/结束/i)).toHaveValue(localInputValueForTest(new Date())));
   });
 
   it('shows a segment boundary when the same raw identity belongs to another runtime epoch', async () => {
@@ -175,20 +195,20 @@ describe('PlayerTimeline', () => {
       ],
     });
     render(<PlayerTimeline players={players} refreshKey={0} />);
-    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
-    expect(await screen.findByText(/New observation segment/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    expect(await screen.findByText(/新轨迹段/i)).toBeInTheDocument();
   });
 
   it('retains the selected player and private context when search excludes that player', async () => {
     vi.mocked(api.getPlayerTimeline).mockResolvedValue({ ...empty, private_samples: [{ user_id: 'u/1', observed_at: '2026-07-13T08:00:00Z', ip: '192.0.2.1:8211', ping: 10, level: 2, source_ref: 'private' }] });
     render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
-    const select = screen.getByRole('combobox', { name: /player/i });
+    const select = screen.getByRole('combobox', { name: /玩家/i });
     fireEvent.change(select, { target: { value: 'u/1' } });
     await screen.findByText('192.0.2.1:8211');
-    fireEvent.change(screen.getByRole('textbox', { name: /search known players/i }), { target: { value: 'Morgan' } });
+    fireEvent.change(screen.getByRole('textbox', { name: /搜索已知玩家/i }), { target: { value: 'Morgan' } });
     expect(select).toHaveValue('u/1');
     expect(within(select).getByRole('option', { name: /Avery/ })).toBeInTheDocument();
-    expect(screen.getByText(/IP · Admin private/i)).toBeInTheDocument();
+    expect(screen.getByText(/IP · 管理员私有/i)).toBeInTheDocument();
   });
 
   it('warns when any evidence source reaches the response limit', async () => {
@@ -197,18 +217,18 @@ describe('PlayerTimeline', () => {
       private_samples: Array.from({ length: 500 }, (_, index) => ({ user_id: 'u/1', observed_at: new Date(Date.UTC(2026, 6, 13, 8, 0, index)).toISOString(), ip: `192.0.2.${index}`, ping: 10, level: 2, source_ref: `private-${index}` })),
     });
     render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
-    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
-    expect(await screen.findByText(/Evidence may be truncated/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    expect(await screen.findByText(/结果可能已截断/i)).toBeInTheDocument();
   });
 
   it('shows loading, not-found, and request failure states', async () => {
     const request = deferred<PlayerTimelineResponse>();
     vi.mocked(api.getPlayerTimeline).mockReturnValueOnce(request.promise);
     const { rerender } = render(<PlayerTimeline players={players} refreshKey={0} />);
-    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
-    expect(await screen.findByRole('status', { name: /loading timeline/i })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    expect(await screen.findByRole('status', { name: /正在加载时间轴/i })).toBeInTheDocument();
     request.reject(new api.ApiError('player not found', 404));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/player is no longer known/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/该玩家已不在观察记录中/i);
     vi.mocked(api.getPlayerTimeline).mockRejectedValueOnce(new Error('database offline'));
     rerender(<PlayerTimeline players={players} refreshKey={1} />);
     expect(await screen.findByRole('alert')).toHaveTextContent('database offline');
@@ -216,13 +236,13 @@ describe('PlayerTimeline', () => {
 
   it('blocks inverted and over-31-day ranges before any request', async () => {
     render(<PlayerTimeline players={players} refreshKey={0} />);
-    fireEvent.change(screen.getByLabelText(/start/i), { target: { value: '2026-05-01T00:00' } });
-    fireEvent.change(screen.getByLabelText(/end/i), { target: { value: '2026-07-13T00:00' } });
-    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
-    expect(await screen.findByRole('alert')).toHaveTextContent(/31 days/i);
+    fireEvent.change(screen.getByLabelText(/开始/i), { target: { value: '2026-05-01T00:00' } });
+    fireEvent.change(screen.getByLabelText(/结束/i), { target: { value: '2026-07-13T00:00' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    expect(await screen.findByRole('alert')).toHaveTextContent(/31 天/i);
     expect(api.getPlayerTimeline).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText(/start/i), { target: { value: '2026-07-14T00:00' } });
-    expect(await screen.findByRole('alert')).toHaveTextContent(/after start/i);
+    fireEvent.change(screen.getByLabelText(/开始/i), { target: { value: '2026-07-14T00:00' } });
+    expect(await screen.findByRole('alert')).toHaveTextContent(/晚于开始时间/i);
     expect(api.getPlayerTimeline).not.toHaveBeenCalled();
   });
 });

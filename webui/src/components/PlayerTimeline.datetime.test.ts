@@ -11,11 +11,11 @@ afterAll(() => {
 
 describe('parseLocalDateTime in a DST timezone', () => {
   it('rejects a nonexistent spring-forward wall time', () => {
-    expect(parseLocalDateTime('2026-03-08T02:30')).toMatchObject({ error: expect.stringMatching(/does not exist/i) });
+    expect(parseLocalDateTime('2026-03-08T02:30')).toMatchObject({ error: expect.stringMatching(/不存在/) });
   });
 
   it('rejects an ambiguous fall-back wall time', () => {
-    expect(parseLocalDateTime('2026-11-01T01:30')).toMatchObject({ error: expect.stringMatching(/ambiguous/i) });
+    expect(parseLocalDateTime('2026-11-01T01:30')).toMatchObject({ error: expect.stringMatching(/歧义/) });
   });
 
   it('accepts an unambiguous local wall time', () => {
