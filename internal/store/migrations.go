@@ -139,7 +139,7 @@ HAVING COUNT(*) > 0;
 
 const schemaV9 = `
 CREATE TABLE activity_events (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL PRIMARY KEY,
     event_type TEXT NOT NULL,
     subject_type TEXT NOT NULL,
     subject_id TEXT NOT NULL,
@@ -171,7 +171,7 @@ CREATE INDEX trajectory_user_time
 ON trajectory_samples(user_id, observed_at);
 
 CREATE TABLE server_metric_samples (
-    observed_at TEXT PRIMARY KEY,
+    observed_at TEXT NOT NULL PRIMARY KEY,
     server_fps INTEGER NOT NULL,
     current_player_num INTEGER NOT NULL,
     server_frame_time REAL NOT NULL,

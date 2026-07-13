@@ -47,7 +47,7 @@ func TestOpenEnablesSQLiteSafetyPragmas(t *testing.T) {
 	}
 }
 
-func TestOpenMigratesAnalyticsSchema(t *testing.T) {
+func TestOpenMigrationCreatesAnalyticsSchema(t *testing.T) {
 	repo, _ := openTemp(t)
 
 	var version int
@@ -126,7 +126,7 @@ VALUES('steam_1', 'segment_1', ?, 1, 2, 3, 4, 'sample_1'),
 	}
 }
 
-func TestOpenMigratesVersionEightToNineWithoutLosingData(t *testing.T) {
+func TestOpenMigrationUpgradesVersionEightToNineWithoutLosingData(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "guard.db")
 	db, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
@@ -200,6 +200,14 @@ INSERT INTO activity_events(
 	if _, err := repo.db.Exec(`INSERT INTO activity_events(id) VALUES('event_2')`); err == nil {
 		t.Fatal("expected activity event NOT NULL constraint to fail")
 	}
+	if _, err := repo.db.Exec(`
+INSERT INTO activity_events(
+    id, event_type, subject_type, subject_id, occurred_at, observed_at,
+    source, source_ref, correlation_id, confidence, schema_version, payload_json
+) VALUES(NULL, 'joined', 'player', 'u1', '2026-01-01T02:00:00Z', '2026-01-01T02:00:01Z',
+         'rest', 'status_3', 'correlation_3', 'observed', 1, '{}')`); err == nil {
+		t.Error("expected NULL activity event id to fail")
+	}
 
 	if _, err := repo.db.Exec(`
 INSERT INTO trajectory_samples(user_id, segment_id, observed_at, x, y, ping, level, source_ref)
@@ -226,6 +234,13 @@ VALUES('settings', 'hash_1', '2026-01-01T01:00:00Z', '{"changed":true}')`); err 
 INSERT INTO server_documents(kind, content_hash, observed_at)
 VALUES('settings', 'hash_2', '2026-01-01T01:00:00Z')`); err == nil {
 		t.Fatal("expected server document NOT NULL constraint to fail")
+	}
+	if _, err := repo.db.Exec(`
+INSERT INTO server_metric_samples(
+    observed_at, server_fps, current_player_num, server_frame_time,
+    max_player_num, uptime_seconds, base_camp_num, game_days
+) VALUES(NULL, 60, 1, 16.67, 32, 3600, 2, 10)`); err == nil {
+		t.Error("expected NULL server metric observed_at to fail")
 	}
 
 	if _, err := repo.db.Exec(`
