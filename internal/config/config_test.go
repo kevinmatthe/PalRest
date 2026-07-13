@@ -189,6 +189,7 @@ func TestParseUsesObservationDefaultsWhenOmitted(t *testing.T) {
 	}
 	if cfg.Observation.ServerDocumentInterval.Duration != 5*time.Minute ||
 		cfg.Observation.TrajectoryMinDistance != 100 ||
+		cfg.Observation.TrajectoryPingChangeThreshold != 10 ||
 		cfg.Observation.TrajectoryMaxInterval.Duration != 5*time.Minute ||
 		cfg.Observation.RawRetention.Duration != 90*24*time.Hour {
 		t.Fatalf("observation defaults=%+v", cfg.Observation)
@@ -199,6 +200,7 @@ func TestParseAcceptsExplicitObservationSettings(t *testing.T) {
 	input := validConfig + `observation:
   server_document_interval: 7m
   trajectory_min_distance: 42.5
+  trajectory_ping_change_threshold: 12.5
   trajectory_max_interval: 3m
   raw_retention: 30d
 `
@@ -208,6 +210,7 @@ func TestParseAcceptsExplicitObservationSettings(t *testing.T) {
 	}
 	if cfg.Observation.ServerDocumentInterval.Duration != 7*time.Minute ||
 		cfg.Observation.TrajectoryMinDistance != 42.5 ||
+		cfg.Observation.TrajectoryPingChangeThreshold != 12.5 ||
 		cfg.Observation.TrajectoryMaxInterval.Duration != 3*time.Minute ||
 		cfg.Observation.RawRetention.Duration != 30*24*time.Hour {
 		t.Fatalf("observation=%+v", cfg.Observation)
@@ -223,6 +226,10 @@ func TestParseRejectsInvalidObservationSettings(t *testing.T) {
 		"negative trajectory distance":  "trajectory_min_distance: -1",
 		"nan trajectory distance":       "trajectory_min_distance: .nan",
 		"infinite trajectory distance":  "trajectory_min_distance: .inf",
+		"zero ping threshold":           "trajectory_ping_change_threshold: 0",
+		"negative ping threshold":       "trajectory_ping_change_threshold: -1",
+		"nan ping threshold":            "trajectory_ping_change_threshold: .nan",
+		"infinite ping threshold":       "trajectory_ping_change_threshold: .inf",
 	}
 	for name, setting := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -287,7 +294,7 @@ func TestExampleConfigIsValidAndDisabled(t *testing.T) {
 		t.Fatal("sample policy must default to disabled")
 	}
 	if cfg.Observation.ServerDocumentInterval.Duration != 5*time.Minute || cfg.Observation.TrajectoryMinDistance != 100 ||
-		cfg.Observation.TrajectoryMaxInterval.Duration != 5*time.Minute || cfg.Observation.RawRetention.Duration != 90*24*time.Hour {
+		cfg.Observation.TrajectoryPingChangeThreshold != 10 || cfg.Observation.TrajectoryMaxInterval.Duration != 5*time.Minute || cfg.Observation.RawRetention.Duration != 90*24*time.Hour {
 		t.Fatalf("sample observation=%+v", cfg.Observation)
 	}
 }

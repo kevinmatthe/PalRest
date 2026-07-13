@@ -34,20 +34,21 @@ type runtimeRecorder interface {
 }
 
 type Service struct {
-	mu                sync.Mutex
-	recorder          Recorder
-	maxGap            time.Duration
-	movementThreshold float64
-	maxSampleInterval time.Duration
-	rawRetention      time.Duration
-	idGenerator       func() string
-	asOf              time.Time
-	online            map[string]playerState
-	lastCleanup       time.Time
-	continuityValid   bool
-	pending           *pendingObservation
-	runtime           store.ServerRuntimeState
-	runtimeKnown      bool
+	mu                  sync.Mutex
+	recorder            Recorder
+	maxGap              time.Duration
+	movementThreshold   float64
+	pingChangeThreshold float64
+	maxSampleInterval   time.Duration
+	rawRetention        time.Duration
+	idGenerator         func() string
+	asOf                time.Time
+	online              map[string]playerState
+	lastCleanup         time.Time
+	continuityValid     bool
+	pending             *pendingObservation
+	runtime             store.ServerRuntimeState
+	runtimeKnown        bool
 }
 
 type pendingObservation struct {
@@ -60,13 +61,15 @@ type pendingObservation struct {
 }
 
 type playerState struct {
-	player        domain.Player
-	lastAt        time.Time
-	segmentID     string
-	lastSampleAt  time.Time
-	lastX         float64
-	lastY         float64
-	lastPrivateAt time.Time
+	player              domain.Player
+	lastAt              time.Time
+	segmentID           string
+	lastSampleAt        time.Time
+	lastX               float64
+	lastY               float64
+	lastSamplePing      float64
+	lastSamplePingKnown bool
+	lastPrivateAt       time.Time
 }
 
 type eventPayload struct {
@@ -86,7 +89,7 @@ type attributeChangedPayload struct {
 	Changes map[string]attributeChange `json:"changes"`
 }
 
-func New(recorder Recorder, maxGap time.Duration, movementThreshold float64, maxSampleInterval, rawRetention time.Duration, idGenerator func() string) *Service {
+func New(recorder Recorder, maxGap time.Duration, movementThreshold, pingChangeThreshold float64, maxSampleInterval, rawRetention time.Duration, idGenerator func() string) *Service {
 	if recorder == nil {
 		panic("observation: nil recorder")
 	}
@@ -95,6 +98,9 @@ func New(recorder Recorder, maxGap time.Duration, movementThreshold float64, max
 	}
 	if movementThreshold < 0 || math.IsNaN(movementThreshold) || math.IsInf(movementThreshold, 0) {
 		panic("observation: movement threshold must be nonnegative and finite")
+	}
+	if pingChangeThreshold <= 0 || math.IsNaN(pingChangeThreshold) || math.IsInf(pingChangeThreshold, 0) {
+		panic("observation: ping change threshold must be positive and finite")
 	}
 	if maxSampleInterval <= 0 {
 		panic("observation: max sample interval must be positive")
@@ -106,7 +112,7 @@ func New(recorder Recorder, maxGap time.Duration, movementThreshold float64, max
 		panic("observation: nil ID generator")
 	}
 	return &Service{
-		recorder: recorder, maxGap: maxGap, movementThreshold: movementThreshold,
+		recorder: recorder, maxGap: maxGap, movementThreshold: movementThreshold, pingChangeThreshold: pingChangeThreshold,
 		maxSampleInterval: maxSampleInterval, rawRetention: rawRetention,
 		idGenerator: idGenerator, online: make(map[string]playerState),
 	}
@@ -178,6 +184,8 @@ func (s *Service) observeNormalized(ctx context.Context, at time.Time, current m
 			state.lastSampleAt = time.Time{}
 			state.lastX = 0
 			state.lastY = 0
+			state.lastSamplePing = 0
+			state.lastSamplePingKnown = false
 			s.online[userID] = state
 		}
 		s.runtime = runtime
@@ -202,6 +210,8 @@ func (s *Service) observeNormalized(ctx context.Context, at time.Time, current m
 		} else if !s.continuityValid || at.Sub(previous.lastAt) > s.maxGap {
 			state.segmentID = ""
 			state.lastSampleAt = time.Time{}
+			state.lastSamplePing = 0
+			state.lastSamplePingKnown = false
 			state.lastPrivateAt = time.Time{}
 		}
 		if continuous {
@@ -219,10 +229,7 @@ func (s *Service) observeNormalized(ctx context.Context, at time.Time, current m
 			player.IP != previous.player.IP || player.Level != previous.player.Level ||
 			player.BuildingCount != previous.player.BuildingCount || at.Sub(state.lastPrivateAt) >= s.maxSampleInterval
 		if player.IP != "" && shouldPrivateSample {
-			ping := player.Ping
-			if math.IsNaN(ping) || math.IsInf(ping, 0) || ping < 0 {
-				ping = 0
-			}
+			ping, _ := normalizedPing(player.Ping)
 			write.PrivateSamples = append(write.PrivateSamples, store.PlayerPrivateSample{
 				UserID: player.UserID, ObservedAt: at, IP: player.IP, Ping: ping,
 				Level: player.Level, BuildingCount: player.BuildingCount, SourceRef: correlationID,
@@ -235,7 +242,9 @@ func (s *Service) observeNormalized(ctx context.Context, at time.Time, current m
 			if !shouldSample {
 				distance := math.Hypot(player.LocationX-state.lastX, player.LocationY-state.lastY)
 				levelChanged := knownLevel(previous.player.Level) && knownLevel(player.Level) && previous.player.Level != player.Level
-				pingChanged := knownPing(previous.player.Ping) && knownPing(player.Ping) && previous.player.Ping != player.Ping
+				currentPing, currentPingKnown := normalizedPing(player.Ping)
+				pingChanged := knownPing(previous.player.Ping) && currentPingKnown && state.lastSamplePingKnown &&
+					pingThresholdReached(state.lastSamplePing, currentPing, s.pingChangeThreshold)
 				shouldSample = distance > s.movementThreshold || at.Sub(state.lastSampleAt) >= s.maxSampleInterval || levelChanged || pingChanged
 			}
 			if shouldSample {
@@ -247,10 +256,7 @@ func (s *Service) observeNormalized(ctx context.Context, at time.Time, current m
 					}
 					state.segmentID = segmentID
 				}
-				ping := player.Ping
-				if math.IsNaN(ping) || math.IsInf(ping, 0) {
-					ping = 0
-				}
+				ping, pingKnown := normalizedPing(player.Ping)
 				write.Trajectories = append(write.Trajectories, store.TrajectorySample{
 					UserID: player.UserID, SegmentID: state.segmentID, ObservedAt: at,
 					X: player.LocationX, Y: player.LocationY, Ping: ping, Level: player.Level,
@@ -259,10 +265,16 @@ func (s *Service) observeNormalized(ctx context.Context, at time.Time, current m
 				state.lastSampleAt = at
 				state.lastX = player.LocationX
 				state.lastY = player.LocationY
+				if pingKnown {
+					state.lastSamplePing = ping
+					state.lastSamplePingKnown = true
+				}
 			}
 		} else {
 			state.segmentID = ""
 			state.lastSampleAt = time.Time{}
+			state.lastSamplePing = 0
+			state.lastSamplePingKnown = false
 		}
 		next[player.UserID] = state
 	}
@@ -329,6 +341,19 @@ func knownPing(ping float64) bool {
 	return !math.IsNaN(ping) && !math.IsInf(ping, 0) && ping >= 0
 }
 
+func normalizedPing(ping float64) (float64, bool) {
+	if !knownPing(ping) {
+		return 0, false
+	}
+	return ping, true
+}
+
+const pingComparisonEpsilon = 1e-9
+
+func pingThresholdReached(previous, current, threshold float64) bool {
+	return math.Abs(current-previous)+pingComparisonEpsilon >= threshold
+}
+
 // PollFailed marks the interval since the last successful player observation
 // unknown without inventing leave/join events or discarding the last known
 // player values. The next success starts fresh trajectory evidence.
@@ -361,7 +386,7 @@ func (s *Service) playerAttributeChangedEvent(previous, current domain.Player, a
 	if previous.Name != "" && current.Name != "" && previous.Name != current.Name {
 		changes["name"] = attributeChange{Old: previous.Name, New: current.Name}
 	}
-	if previous.Level != current.Level {
+	if knownLevel(previous.Level) && knownLevel(current.Level) && previous.Level != current.Level {
 		changes["level"] = attributeChange{Old: previous.Level, New: current.Level}
 	}
 	if previous.BuildingCount != current.BuildingCount {

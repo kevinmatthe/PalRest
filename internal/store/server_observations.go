@@ -186,6 +186,10 @@ func validateServerMetricTransition(latestExists bool, oldUptime int64, write Se
 	if write.Event.EventType != "server_restarted" {
 		return fmt.Errorf("record server metric observation: uptime decrease event must be server_restarted")
 	}
+	if write.Event.SubjectType != "server" || write.Event.SubjectID != "server" || write.Event.Source != "palworld_rest" ||
+		write.Event.Confidence != "observed" || write.Event.SchemaVersion != 1 || write.Event.SourceRef != write.Event.CorrelationID {
+		return fmt.Errorf("record server metric observation: server_restarted envelope does not match service contract")
+	}
 	var payload struct {
 		Old *int64 `json:"old_uptime_seconds"`
 		New *int64 `json:"new_uptime_seconds"`

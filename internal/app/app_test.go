@@ -424,7 +424,7 @@ func TestReloadRejectsObservationSettingsWithoutChangingPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed := string(data) + "\nobservation:\n  trajectory_min_distance: 25\n"
+	changed := string(data) + "\nobservation:\n  trajectory_ping_change_threshold: 25\n"
 	if err := os.WriteFile(path, []byte(changed), 0o600); err != nil {
 		t.Fatal(err)
 	}

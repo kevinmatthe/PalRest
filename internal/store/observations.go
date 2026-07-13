@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,7 +42,7 @@ type TrajectorySample struct {
 	Ping         float64   `json:"ping"`
 	Level        int       `json:"level"`
 	SourceRef    string    `json:"source_ref"`
-	RuntimeEpoch int64     `json:"-"`
+	RuntimeEpoch int64     `json:"runtime_epoch"`
 }
 
 type PlayerPrivateSample struct {
@@ -344,8 +345,8 @@ func validateTrajectorySample(sample TrajectorySample) error {
 	if sample.RuntimeEpoch < 0 {
 		return fmt.Errorf("runtime epoch must be nonnegative")
 	}
-	if !finite(sample.X) || !finite(sample.Y) || !finite(sample.Ping) {
-		return fmt.Errorf("coordinates and ping must be finite")
+	if !finite(sample.X) || !finite(sample.Y) || !finite(sample.Ping) || sample.Ping < 0 {
+		return fmt.Errorf("coordinates must be finite and ping must be finite and nonnegative")
 	}
 	return nil
 }
@@ -529,9 +530,7 @@ ORDER BY occurred_at,id LIMIT ?`, userID, formatObservationTime(start), formatOb
 
 func queryTimelineSamples(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time, limit int) ([]TrajectorySample, error) {
 	rows, err := tx.QueryContext(ctx, `
-SELECT user_id,
-       CASE WHEN runtime_epoch=0 THEN segment_id ELSE printf('runtime-%d:%s',runtime_epoch,segment_id) END,
-       observed_at,x,y,ping,level,source_ref,runtime_epoch
+SELECT user_id,segment_id,observed_at,x,y,ping,level,source_ref,runtime_epoch
 FROM trajectory_samples
 WHERE user_id=? AND observed_at>=? AND observed_at<?
 ORDER BY observed_at,id LIMIT ?`, userID, formatObservationTime(start), formatObservationTime(end), limit)
@@ -552,12 +551,17 @@ ORDER BY observed_at,id LIMIT ?`, userID, formatObservationTime(start), formatOb
 		if err != nil {
 			return nil, fmt.Errorf("parse trajectory sample observed time: %w", err)
 		}
+		sample.SegmentID = encodeRuntimeSegmentID(sample.RuntimeEpoch, sample.SegmentID)
 		samples = append(samples, sample)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate trajectory samples: %w", err)
 	}
 	return samples, nil
+}
+
+func encodeRuntimeSegmentID(epoch int64, segmentID string) string {
+	return fmt.Sprintf("runtime:%d:%s", epoch, base64.RawURLEncoding.EncodeToString([]byte(segmentID)))
 }
 
 func insertTimelineAudit(ctx context.Context, tx *sql.Tx, actor, userID string, start, end time.Time, outcome string) error {

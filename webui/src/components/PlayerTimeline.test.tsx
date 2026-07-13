@@ -70,8 +70,8 @@ describe('PlayerTimeline', () => {
         { id: 'joined', event_type: 'player_joined', occurred_at: '2026-07-13T08:00:00Z', observed_at: '2026-07-13T08:01:00Z', source: 'palworld_rest', confidence: 'observed', summary: 'Avery joined', data: { name: 'Avery' } },
       ],
       trajectories: [
-        { user_id: 'u/1', segment_id: 's2', observed_at: '2026-07-13T09:00:00Z', x: 123.45, y: -9.5, ping: 20, level: 12, source_ref: 'poll-2' },
-        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T08:30:00Z', x: 10, y: 20, ping: 18, level: 12, source_ref: 'poll-1' },
+        { user_id: 'u/1', segment_id: 's2', observed_at: '2026-07-13T09:00:00Z', x: 123.45, y: -9.5, ping: 20, level: 12, source_ref: 'poll-2', runtime_epoch: 1 },
+        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T08:30:00Z', x: 10, y: 20, ping: 18, level: 12, source_ref: 'poll-1', runtime_epoch: 0 },
       ],
       private_samples: [{ user_id: 'u/1', observed_at: '2026-07-13T08:45:00Z', ip: '2001:db8::1:8211', ping: 17, level: 12, building_count: 3, source_ref: 'private-1' }],
     };
@@ -121,14 +121,27 @@ describe('PlayerTimeline', () => {
       ...empty,
       events: [{ id: 'between', event_type: 'player_joined', occurred_at: '2026-07-13T08:59:00Z', observed_at: '2026-07-13T08:59:00Z', source: 'guard', confidence: 'observed', summary: 'joined' }],
       trajectories: [
-        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T08:00:00Z', x: 1, y: 1, ping: 20, level: 1, source_ref: 'one' },
-        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T09:00:00Z', x: 2, y: 2, ping: 20, level: 1, source_ref: 'two' },
+        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T08:00:00Z', x: 1, y: 1, ping: 20, level: 1, source_ref: 'one', runtime_epoch: 0 },
+        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T09:00:00Z', x: 2, y: 2, ping: 20, level: 1, source_ref: 'two', runtime_epoch: 0 },
       ],
     });
     render(<PlayerTimeline players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
     await screen.findByText('Player Joined');
     expect(screen.queryByText(/Observation gap/i)).not.toBeInTheDocument();
+  });
+
+  it('shows a segment boundary when the same raw identity belongs to another runtime epoch', async () => {
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue({
+      ...empty,
+      trajectories: [
+        { user_id: 'u/1', segment_id: 'runtime:0:YWJj', observed_at: '2026-07-13T08:00:00Z', x: 1, y: 1, ping: 20, level: 1, source_ref: 'one', runtime_epoch: 0 },
+        { user_id: 'u/1', segment_id: 'runtime:1:YWJj', observed_at: '2026-07-13T08:01:00Z', x: 2, y: 2, ping: 20, level: 1, source_ref: 'two', runtime_epoch: 1 },
+      ],
+    });
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
+    expect(await screen.findByText(/New observation segment/i)).toBeInTheDocument();
   });
 
   it('retains the selected player and private context when search excludes that player', async () => {

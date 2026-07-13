@@ -150,7 +150,7 @@ func (r *recorderFake) CleanupRawObservations(_ context.Context, cutoff time.Tim
 
 func newService(recorder *recorderFake) *observation.Service {
 	sequence := 0
-	return observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, func() string {
+	return observation.New(recorder, 75*time.Second, 100, 10, 5*time.Minute, 90*24*time.Hour, func() string {
 		sequence++
 		return fmt.Sprintf("id-%d", sequence)
 	})
@@ -329,7 +329,7 @@ func TestAttributeChangeEventIDIsStableAcrossReplay(t *testing.T) {
 	derive := func(prefix string) store.ActivityEvent {
 		recorder := &recorderFake{}
 		sequence := 0
-		svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, func() string {
+		svc := observation.New(recorder, 75*time.Second, 100, 10, 5*time.Minute, 90*24*time.Hour, func() string {
 			sequence++
 			return fmt.Sprintf("%s-%d", prefix, sequence)
 		})
@@ -360,7 +360,7 @@ func TestAmbiguousCommitReplaysExactWriteBeforeAdvancingBaseline(t *testing.T) {
 	defer repo.Close()
 	recorder := &commitThenErrorRecorder{delegate: repo, failOnce: true}
 	sequence := 0
-	svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, func() string {
+	svc := observation.New(recorder, 75*time.Second, 100, 10, 5*time.Minute, 90*24*time.Hour, func() string {
 		sequence++
 		return fmt.Sprintf("generated-%d", sequence)
 	})
@@ -402,7 +402,7 @@ func TestAmbiguousCommitAfterPollFailedBreaksContinuityOnReplay(t *testing.T) {
 	defer repo.Close()
 	recorder := &commitThenErrorRecorder{delegate: repo, failOnce: true}
 	sequence := 0
-	svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, func() string {
+	svc := observation.New(recorder, 75*time.Second, 100, 10, 5*time.Minute, 90*24*time.Hour, func() string {
 		sequence++
 		return fmt.Sprintf("generated-%d", sequence)
 	})
@@ -444,7 +444,7 @@ func TestAmbiguousPlayerCommitReplaysAfterLateRestartWithoutDuplicateOrCrossSegm
 		t.Fatal(err)
 	}
 	recorder := &restartAfterCommitRecorder{delegate: repo, server: server, restartAt: base, trigger: true}
-	svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, newID)
+	svc := observation.New(recorder, 75*time.Second, 100, 10, 5*time.Minute, 90*24*time.Hour, newID)
 	before := player("u", 10, 10)
 	if err := svc.Observe(t.Context(), base, []domain.Player{before}, "players-1"); err == nil {
 		t.Fatal("expected ambiguous commit")
@@ -477,7 +477,7 @@ func TestUncommittedAmbiguousPlayerWriteRebasesAfterRuntimeConflict(t *testing.T
 		t.Fatal(err)
 	}
 	recorder := &noCommitThenErrorRecorder{delegate: repo, failOnce: true}
-	svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, newID)
+	svc := observation.New(recorder, 75*time.Second, 100, 10, 5*time.Minute, 90*24*time.Hour, newID)
 	before := player("u", 10, 10)
 	if err := svc.Observe(t.Context(), base, []domain.Player{before}, "players-1"); err == nil {
 		t.Fatal("expected ambiguous result")
@@ -494,7 +494,7 @@ func TestUncommittedAmbiguousPlayerWriteRebasesAfterRuntimeConflict(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(timeline.Trajectories) != 1 || timeline.Trajectories[0].ObservedAt != base.Add(time.Minute) || !strings.HasPrefix(timeline.Trajectories[0].SegmentID, "runtime-1:") {
+	if len(timeline.Trajectories) != 1 || timeline.Trajectories[0].ObservedAt != base.Add(time.Minute) || !strings.HasPrefix(timeline.Trajectories[0].SegmentID, "runtime:1:") {
 		t.Fatalf("trajectories=%+v", timeline.Trajectories)
 	}
 }
@@ -513,7 +513,7 @@ func TestPlayerObservationReloadsAndRederivesWhenRuntimeChangesBeforeCommit(t *t
 		t.Fatal(err)
 	}
 	recorder := &restartBeforeWriteRecorder{delegate: repo, server: server, at: base, trigger: true}
-	svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, newID)
+	svc := observation.New(recorder, 75*time.Second, 100, 10, 5*time.Minute, 90*24*time.Hour, newID)
 	if err := svc.Observe(t.Context(), base, []domain.Player{player("u", 10, 10)}, "players-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -521,7 +521,7 @@ func TestPlayerObservationReloadsAndRederivesWhenRuntimeChangesBeforeCommit(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(timeline.Trajectories) != 1 || !strings.HasPrefix(timeline.Trajectories[0].SegmentID, "runtime-1:") {
+	if len(timeline.Trajectories) != 1 || !strings.HasPrefix(timeline.Trajectories[0].SegmentID, "runtime:1:") {
 		t.Fatalf("trajectories=%+v", timeline.Trajectories)
 	}
 }
@@ -536,7 +536,7 @@ func TestAmbiguousCommitSameTimeReplayAndMismatchSemantics(t *testing.T) {
 		t.Cleanup(func() { _ = repo.Close() })
 		recorder := &commitThenErrorRecorder{delegate: repo, failOnce: true}
 		seq := 0
-		svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, func() string { seq++; return fmt.Sprintf("id-%d", seq) })
+		svc := observation.New(recorder, 75*time.Second, 100, 10, 5*time.Minute, 90*24*time.Hour, func() string { seq++; return fmt.Sprintf("id-%d", seq) })
 		at := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
 		value := player("u", 10, 10)
 		if err := svc.Observe(t.Context(), at, []domain.Player{value}, "poll-1"); err == nil {
@@ -648,7 +648,7 @@ func TestHeartbeatSamplesAtMaximumInterval(t *testing.T) {
 func TestTrajectorySamplesImmediatelyOnKnownLevelOrPingChange(t *testing.T) {
 	for name, mutate := range map[string]func(*domain.Player){
 		"level only": func(p *domain.Player) { p.Level++ },
-		"ping only":  func(p *domain.Player) { p.Ping++ },
+		"ping only":  func(p *domain.Player) { p.Ping += 10 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := &recorderFake{}
@@ -665,6 +665,130 @@ func TestTrajectorySamplesImmediatelyOnKnownLevelOrPingChange(t *testing.T) {
 			}
 			if got := recorder.writes[1].Trajectories; len(got) != 1 || got[0].SegmentID != recorder.writes[0].Trajectories[0].SegmentID {
 				t.Fatalf("samples=%+v", got)
+			}
+		})
+	}
+}
+
+func TestTrajectoryPingThresholdUsesLastSampledKnownValue(t *testing.T) {
+	recorder := &recorderFake{}
+	svc := newService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	values := []float64{20, 24, 27, 29.999, 30, 30.0000000001}
+	wants := []int{1, 0, 0, 0, 1, 0}
+	for i, ping := range values {
+		p := player("u", 10, 10)
+		p.Ping = ping
+		if err := svc.Observe(t.Context(), base.Add(time.Duration(i)*time.Second), []domain.Player{p}, fmt.Sprintf("ping-%d", i)); err != nil {
+			t.Fatal(err)
+		}
+		if got := len(recorder.writes[i].Trajectories); got != wants[i] {
+			t.Fatalf("ping[%d]=%.12f samples=%d want=%d", i, ping, got, wants[i])
+		}
+	}
+}
+
+func TestTrajectoryPingThresholdHandlesFloatingBoundaryAndUnknownTransitions(t *testing.T) {
+	for name, values := range map[string][]float64{
+		"epsilon below threshold": {20, 29.999999},
+		"exact threshold":         {20, 30},
+		"nan round trip":          {20, math.NaN(), 40},
+		"infinite round trip":     {20, math.Inf(1), 40},
+		"negative round trip":     {20, -1, 40},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := &recorderFake{}
+			svc := newService(recorder)
+			base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+			for i, ping := range values {
+				p := player("u", 10, 10)
+				p.Ping = ping
+				if err := svc.Observe(t.Context(), base.Add(time.Duration(i)*time.Second), []domain.Player{p}, fmt.Sprintf("poll-%d", i)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wantSecond := 0
+			if name == "exact threshold" {
+				wantSecond = 1
+			}
+			if got := len(recorder.writes[1].Trajectories); got != wantSecond {
+				t.Fatalf("second samples=%d want=%d", got, wantSecond)
+			}
+			if len(values) == 3 && len(recorder.writes[2].Trajectories) != 0 {
+				t.Fatalf("unknown-to-known forced sample=%+v", recorder.writes[2].Trajectories)
+			}
+			if len(values) == 3 {
+				if got := recorder.writes[1].PrivateSamples; len(got) != 0 {
+					t.Fatalf("unknown ping private churn=%+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestUnknownPingSampleDoesNotEraseLastSampledKnownBaseline(t *testing.T) {
+	recorder := &recorderFake{}
+	svc := newService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	values := []struct {
+		ping  float64
+		level int
+		want  int
+	}{{20, 10, 1}, {math.NaN(), 11, 1}, {31, 11, 0}, {31, 11, 1}}
+	for i, value := range values {
+		p := player("u", 10, 10)
+		p.Ping, p.Level = value.ping, value.level
+		if err := svc.Observe(t.Context(), base.Add(time.Duration(i)*time.Second), []domain.Player{p}, fmt.Sprintf("poll-%d", i)); err != nil {
+			t.Fatal(err)
+		}
+		if got := len(recorder.writes[i].Trajectories); got != value.want {
+			t.Fatalf("observation %d samples=%d want=%d", i, got, value.want)
+		}
+	}
+}
+
+func TestUnknownPingIsNormalizedInFirstTrajectoryAndPrivateSample(t *testing.T) {
+	for name, ping := range map[string]float64{"nan": math.NaN(), "positive infinity": math.Inf(1), "negative infinity": math.Inf(-1), "negative": -1} {
+		t.Run(name, func(t *testing.T) {
+			recorder := &recorderFake{}
+			svc := newService(recorder)
+			p := player("u", 10, 10)
+			p.Ping = ping
+			if err := svc.Observe(t.Context(), time.Now(), []domain.Player{p}, "poll"); err != nil {
+				t.Fatal(err)
+			}
+			write := recorder.writes[0]
+			if len(write.Trajectories) != 1 || write.Trajectories[0].Ping != 0 || len(write.PrivateSamples) != 1 || write.PrivateSamples[0].Ping != 0 {
+				t.Fatalf("write=%+v", write)
+			}
+		})
+	}
+}
+
+func TestLevelAttributeEventRequiresKnownValues(t *testing.T) {
+	for name, levels := range map[string][]int{
+		"unknown to known": {0, 10},
+		"known to unknown": {10, 0},
+		"known change":     {10, 11},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := &recorderFake{}
+			svc := newService(recorder)
+			base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+			for i, level := range levels {
+				p := player("u", 10, 10)
+				p.Level = level
+				if err := svc.Observe(t.Context(), base.Add(time.Duration(i)*time.Second), []domain.Player{p}, fmt.Sprintf("poll-%d", i)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			events := recorder.writes[1].Events
+			if name == "known change" {
+				if len(events) != 1 || !strings.Contains(events[0].PayloadJSON, `"level"`) {
+					t.Fatalf("events=%+v", events)
+				}
+			} else if len(events) != 0 {
+				t.Fatalf("events=%+v", events)
 			}
 		})
 	}
@@ -889,12 +1013,14 @@ func TestNewRejectsInvalidDependenciesAndThresholds(t *testing.T) {
 	recorder := &recorderFake{}
 	id := func() string { return "id" }
 	tests := map[string]func(){
-		"nil recorder":        func() { observation.New(nil, time.Second, 1, time.Second, time.Hour, id) },
-		"bad max gap":         func() { observation.New(recorder, 0, 1, time.Second, time.Hour, id) },
-		"bad movement":        func() { observation.New(recorder, time.Second, -1, time.Second, time.Hour, id) },
-		"bad sample interval": func() { observation.New(recorder, time.Second, 1, 0, time.Hour, id) },
-		"bad retention":       func() { observation.New(recorder, time.Second, 1, time.Second, 0, id) },
-		"nil ID generator":    func() { observation.New(recorder, time.Second, 1, time.Second, time.Hour, nil) },
+		"nil recorder":        func() { observation.New(nil, time.Second, 1, 10, time.Second, time.Hour, id) },
+		"bad max gap":         func() { observation.New(recorder, 0, 1, 10, time.Second, time.Hour, id) },
+		"bad movement":        func() { observation.New(recorder, time.Second, -1, 10, time.Second, time.Hour, id) },
+		"zero ping threshold": func() { observation.New(recorder, time.Second, 1, 0, time.Second, time.Hour, id) },
+		"nan ping threshold":  func() { observation.New(recorder, time.Second, 1, math.NaN(), time.Second, time.Hour, id) },
+		"bad sample interval": func() { observation.New(recorder, time.Second, 1, 10, 0, time.Hour, id) },
+		"bad retention":       func() { observation.New(recorder, time.Second, 1, 10, time.Second, 0, id) },
+		"nil ID generator":    func() { observation.New(recorder, time.Second, 1, 10, time.Second, time.Hour, nil) },
 	}
 	for name, fn := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -910,7 +1036,7 @@ func TestNewRejectsInvalidDependenciesAndThresholds(t *testing.T) {
 
 func TestZeroMovementThresholdSamplesEveryChangedPosition(t *testing.T) {
 	recorder := &recorderFake{}
-	svc := observation.New(recorder, time.Minute, 0, time.Hour, time.Hour, func() string { return "id" })
+	svc := observation.New(recorder, time.Minute, 0, 10, time.Hour, time.Hour, func() string { return "id" })
 	at := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
 	if err := svc.Observe(t.Context(), at, []domain.Player{player("u", 1, 1)}, "poll-1"); err != nil {
 		t.Fatal(err)

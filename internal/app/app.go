@@ -91,7 +91,7 @@ func New(configPath string) (*App, error) {
 	guardService := guard.New(repo, policies, cfg.Server.MaxObservationGap.Duration, cfg.Enforcement.KickRetryInitial.Duration, cfg.Enforcement.KickRetryMax.Duration)
 	client := palworld.New(cfg.Server.BaseURL, cfg.Password(), cfg.Server.RequestTimeout.Duration)
 	playerObservations := observation.New(repo, cfg.Server.MaxObservationGap.Duration, cfg.Observation.TrajectoryMinDistance,
-		cfg.Observation.TrajectoryMaxInterval.Duration, cfg.Observation.RawRetention.Duration, observation.NewID)
+		cfg.Observation.TrajectoryPingChangeThreshold, cfg.Observation.TrajectoryMaxInterval.Duration, cfg.Observation.RawRetention.Duration, observation.NewID)
 	serverObservations := observation.NewServer(repo, observation.NewID)
 	if err := serverObservations.Restore(context.Background()); err != nil {
 		_ = repo.Close()

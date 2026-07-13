@@ -55,7 +55,7 @@ func TestServerRestartBreaksTrajectoryForEitherAsyncCommitOrder(t *testing.T) {
 			defer repo.Close()
 			ids := 0
 			newID := func() string { ids++; return fmt.Sprintf("id-%d", ids) }
-			players := observation.New(repo, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, newID)
+			players := observation.New(repo, 75*time.Second, 100, 10, 5*time.Minute, 90*24*time.Hour, newID)
 			server := observation.NewServer(repo, newID)
 			base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
 			boundary := base.Add(time.Minute)

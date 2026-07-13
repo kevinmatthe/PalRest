@@ -221,10 +221,11 @@ type Storage struct {
 }
 
 type Observation struct {
-	ServerDocumentInterval Duration `yaml:"server_document_interval" json:"server_document_interval"`
-	TrajectoryMinDistance  float64  `yaml:"trajectory_min_distance" json:"trajectory_min_distance"`
-	TrajectoryMaxInterval  Duration `yaml:"trajectory_max_interval" json:"trajectory_max_interval"`
-	RawRetention           Duration `yaml:"raw_retention" json:"raw_retention"`
+	ServerDocumentInterval        Duration `yaml:"server_document_interval" json:"server_document_interval"`
+	TrajectoryMinDistance         float64  `yaml:"trajectory_min_distance" json:"trajectory_min_distance"`
+	TrajectoryPingChangeThreshold float64  `yaml:"trajectory_ping_change_threshold" json:"trajectory_ping_change_threshold"`
+	TrajectoryMaxInterval         Duration `yaml:"trajectory_max_interval" json:"trajectory_max_interval"`
+	RawRetention                  Duration `yaml:"raw_retention" json:"raw_retention"`
 }
 
 func (c Config) Password() string { return c.password }
@@ -295,10 +296,11 @@ func defaults() Config {
 		HTTP:    HTTP{Listen: "0.0.0.0:8080"},
 		Storage: Storage{Path: "/data/guard.db"},
 		Observation: Observation{
-			ServerDocumentInterval: Duration{5 * time.Minute},
-			TrajectoryMinDistance:  100,
-			TrajectoryMaxInterval:  Duration{5 * time.Minute},
-			RawRetention:           Duration{90 * 24 * time.Hour},
+			ServerDocumentInterval:        Duration{5 * time.Minute},
+			TrajectoryMinDistance:         100,
+			TrajectoryPingChangeThreshold: 10,
+			TrajectoryMaxInterval:         Duration{5 * time.Minute},
+			RawRetention:                  Duration{90 * 24 * time.Hour},
 		},
 	}
 }
@@ -376,6 +378,9 @@ func (c *Config) validate(lookup func(string) (string, bool)) error {
 	}
 	if c.Observation.TrajectoryMinDistance < 0 || math.IsNaN(c.Observation.TrajectoryMinDistance) || math.IsInf(c.Observation.TrajectoryMinDistance, 0) {
 		return fmt.Errorf("observation.trajectory_min_distance must be nonnegative and finite")
+	}
+	if c.Observation.TrajectoryPingChangeThreshold <= 0 || math.IsNaN(c.Observation.TrajectoryPingChangeThreshold) || math.IsInf(c.Observation.TrajectoryPingChangeThreshold, 0) {
+		return fmt.Errorf("observation.trajectory_ping_change_threshold must be positive and finite")
 	}
 	if c.HTTP.AdminUsernameEnv != "" || c.HTTP.AdminPasswordEnv != "" {
 		if c.HTTP.AdminUsernameEnv == "" || c.HTTP.AdminPasswordEnv == "" {
