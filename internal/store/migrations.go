@@ -182,7 +182,8 @@ CREATE TABLE server_metric_samples (
     max_player_num INTEGER NOT NULL,
     uptime_seconds INTEGER NOT NULL,
     base_camp_num INTEGER NOT NULL,
-    game_days INTEGER NOT NULL
+    game_days INTEGER NOT NULL,
+    event_id TEXT REFERENCES activity_events(id)
 );
 
 CREATE TABLE server_documents (
@@ -192,6 +193,17 @@ CREATE TABLE server_documents (
     canonical_json TEXT NOT NULL,
     PRIMARY KEY(kind, content_hash)
 );
+
+CREATE TABLE server_document_observations (
+    kind TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    event_id TEXT REFERENCES activity_events(id),
+    PRIMARY KEY(kind, observed_at),
+    FOREIGN KEY(kind, content_hash) REFERENCES server_documents(kind, content_hash)
+);
+CREATE INDEX server_document_observations_kind_time
+ON server_document_observations(kind, observed_at);
 
 CREATE TABLE sensitive_access_audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
