@@ -1,11 +1,13 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"time"
 	"unicode"
@@ -90,34 +92,114 @@ func (r *Repository) RecordPlayerObservation(ctx context.Context, write PlayerOb
 	}
 	return r.WithTx(ctx, func(tx *Tx) error {
 		for _, event := range write.Events {
-			if _, err := tx.tx.ExecContext(ctx, `
+			result, err := tx.tx.ExecContext(ctx, `
 INSERT INTO activity_events(
     id,event_type,subject_type,subject_id,occurred_at,observed_at,source,source_ref,
     correlation_id,confidence,schema_version,payload_json
-) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, event.ID, event.EventType, event.SubjectType, event.SubjectID,
+) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, event.ID, event.EventType, event.SubjectType, event.SubjectID,
 				formatObservationTime(event.OccurredAt), formatObservationTime(event.ObservedAt), event.Source, event.SourceRef,
-				event.CorrelationID, event.Confidence, event.SchemaVersion, event.PayloadJSON); err != nil {
+				event.CorrelationID, event.Confidence, event.SchemaVersion, event.PayloadJSON)
+			if err != nil {
 				return fmt.Errorf("insert activity event %q: %w", event.ID, err)
+			}
+			inserted, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("read activity event insert result: %w", err)
+			}
+			if inserted == 0 {
+				stored, err := readStoredEvent(ctx, tx.tx, event.ID)
+				if err != nil {
+					return err
+				}
+				if !activityEventsEqual(*stored, event) {
+					return fmt.Errorf("activity event ID %q conflicts with different content", event.ID)
+				}
 			}
 		}
 		for _, sample := range write.Trajectories {
-			if _, err := tx.tx.ExecContext(ctx, `
+			result, err := tx.tx.ExecContext(ctx, `
 INSERT INTO trajectory_samples(user_id,segment_id,observed_at,x,y,ping,level,source_ref)
-VALUES(?,?,?,?,?,?,?,?)`, sample.UserID, sample.SegmentID, formatObservationTime(sample.ObservedAt),
-				sample.X, sample.Y, sample.Ping, sample.Level, sample.SourceRef); err != nil {
+VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,observed_at) DO NOTHING`, sample.UserID, sample.SegmentID, formatObservationTime(sample.ObservedAt),
+				sample.X, sample.Y, sample.Ping, sample.Level, sample.SourceRef)
+			if err != nil {
 				return fmt.Errorf("insert trajectory sample for %q at %s: %w", sample.UserID, formatObservationTime(sample.ObservedAt), err)
+			}
+			inserted, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("read trajectory insert result: %w", err)
+			}
+			if inserted == 0 {
+				var stored TrajectorySample
+				var observed string
+				err := tx.tx.QueryRowContext(ctx, `SELECT user_id,segment_id,observed_at,x,y,ping,level,source_ref FROM trajectory_samples WHERE user_id=? AND observed_at=?`, sample.UserID, formatObservationTime(sample.ObservedAt)).Scan(&stored.UserID, &stored.SegmentID, &observed, &stored.X, &stored.Y, &stored.Ping, &stored.Level, &stored.SourceRef)
+				if err != nil {
+					return fmt.Errorf("read replayed trajectory: %w", err)
+				}
+				stored.ObservedAt, err = parseTime(observed)
+				if err != nil {
+					return err
+				}
+				if !trajectorySamplesEqual(stored, sample) {
+					return fmt.Errorf("trajectory for %q at %s conflicts with different content", sample.UserID, formatObservationTime(sample.ObservedAt))
+				}
 			}
 		}
 		for _, sample := range write.PrivateSamples {
-			if _, err := tx.tx.ExecContext(ctx, `
+			result, err := tx.tx.ExecContext(ctx, `
 INSERT INTO player_private_samples(user_id,observed_at,ip,ping,level,building_count,source_ref)
-VALUES(?,?,?,?,?,?,?)`, sample.UserID, formatObservationTime(sample.ObservedAt), sample.IP,
-				sample.Ping, sample.Level, sample.BuildingCount, sample.SourceRef); err != nil {
+VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id,observed_at) DO NOTHING`, sample.UserID, formatObservationTime(sample.ObservedAt), sample.IP,
+				sample.Ping, sample.Level, sample.BuildingCount, sample.SourceRef)
+			if err != nil {
 				return fmt.Errorf("insert private player sample for %q at %s: %w", sample.UserID, formatObservationTime(sample.ObservedAt), err)
+			}
+			inserted, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("read private sample insert result: %w", err)
+			}
+			if inserted == 0 {
+				var stored PlayerPrivateSample
+				var observed string
+				err := tx.tx.QueryRowContext(ctx, `SELECT user_id,observed_at,ip,ping,level,building_count,source_ref FROM player_private_samples WHERE user_id=? AND observed_at=?`, sample.UserID, formatObservationTime(sample.ObservedAt)).Scan(&stored.UserID, &observed, &stored.IP, &stored.Ping, &stored.Level, &stored.BuildingCount, &stored.SourceRef)
+				if err != nil {
+					return fmt.Errorf("read replayed private sample: %w", err)
+				}
+				stored.ObservedAt, err = parseTime(observed)
+				if err != nil {
+					return err
+				}
+				if !privateSamplesEqual(stored, sample) {
+					return fmt.Errorf("private sample for %q at %s conflicts with different content", sample.UserID, formatObservationTime(sample.ObservedAt))
+				}
 			}
 		}
 		return nil
 	})
+}
+
+func activityEventsEqual(a, b ActivityEvent) bool {
+	return a.ID == b.ID && a.EventType == b.EventType && a.SubjectType == b.SubjectType && a.SubjectID == b.SubjectID &&
+		a.OccurredAt.Equal(b.OccurredAt) && a.ObservedAt.Equal(b.ObservedAt) && a.Source == b.Source && a.SourceRef == b.SourceRef &&
+		a.CorrelationID == b.CorrelationID && a.Confidence == b.Confidence && a.SchemaVersion == b.SchemaVersion && jsonSemanticallyEqual(a.PayloadJSON, b.PayloadJSON)
+}
+
+func jsonSemanticallyEqual(a, b string) bool {
+	var left, right any
+	leftDecoder := json.NewDecoder(bytes.NewBufferString(a))
+	leftDecoder.UseNumber()
+	rightDecoder := json.NewDecoder(bytes.NewBufferString(b))
+	rightDecoder.UseNumber()
+	if leftDecoder.Decode(&left) != nil || rightDecoder.Decode(&right) != nil {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func trajectorySamplesEqual(a, b TrajectorySample) bool {
+	return a.UserID == b.UserID && a.SegmentID == b.SegmentID && a.ObservedAt.Equal(b.ObservedAt) && a.X == b.X && a.Y == b.Y && a.Ping == b.Ping && a.Level == b.Level && a.SourceRef == b.SourceRef
+}
+
+func privateSamplesEqual(a, b PlayerPrivateSample) bool {
+	return a.UserID == b.UserID && a.ObservedAt.Equal(b.ObservedAt) && a.IP == b.IP && a.Ping == b.Ping && a.Level == b.Level && a.BuildingCount == b.BuildingCount && a.SourceRef == b.SourceRef
 }
 
 func validatePlayerPrivateSample(sample PlayerPrivateSample) error {

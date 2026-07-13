@@ -202,6 +202,29 @@ func TestAttributeChangesRequireContinuousKnownPriorObservation(t *testing.T) {
 	}
 }
 
+func TestExplicitPollFailureBreaksAttributeAndTrajectoryContinuityWithinMaxGap(t *testing.T) {
+	recorder := &recorderFake{}
+	svc := newService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	before := player("u", 10, 10)
+	if err := svc.Observe(t.Context(), base, []domain.Player{before}, "poll-1"); err != nil {
+		t.Fatal(err)
+	}
+	svc.PollFailed()
+	after := before
+	after.Level++
+	after.LocationX = 11
+	if err := svc.Observe(t.Context(), base.Add(time.Minute), []domain.Player{after}, "poll-3"); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorder.writes[1].Events; len(got) != 0 {
+		t.Fatalf("events across failed poll=%+v", got)
+	}
+	if got := recorder.writes[1].Trajectories; len(got) != 1 || got[0].SegmentID == recorder.writes[0].Trajectories[0].SegmentID {
+		t.Fatalf("trajectory continuity was not broken: %+v", got)
+	}
+}
+
 func TestAttributeChangeEventIDIsStableAcrossReplay(t *testing.T) {
 	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
 	derive := func(prefix string) store.ActivityEvent {

@@ -436,7 +436,17 @@ INSERT INTO activity_events(
 	if err != nil {
 		return false, fmt.Errorf("read activity event insert result: %w", err)
 	}
-	return rows == 1, nil
+	if rows == 1 {
+		return true, nil
+	}
+	stored, err := readStoredEvent(context.Background(), tx.tx, event.ID)
+	if err != nil {
+		return false, err
+	}
+	if !activityEventsEqual(*stored, event) {
+		return false, fmt.Errorf("activity event ID %q conflicts with different content", event.ID)
+	}
+	return false, nil
 }
 
 func (tx *Tx) EnforcementRetry(userID, periodKey, policyRevision string) (EnforcementRetry, error) {

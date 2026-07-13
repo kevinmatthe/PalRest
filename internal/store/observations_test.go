@@ -97,6 +97,38 @@ func TestServerMetricObservationIsAtomicAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestPlayerObservationExactReplayIsIdempotentAndCollisionFails(t *testing.T) {
+	repo, _ := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	write := PlayerObservationWrite{
+		Events:         []ActivityEvent{observationEvent("stable", "player_attribute_changed", "u", at)},
+		Trajectories:   []TrajectorySample{observationTrajectory("segment", at)},
+		PrivateSamples: []PlayerPrivateSample{{UserID: "u", ObservedAt: at, IP: "192.0.2.1", Ping: 20, Level: 4, BuildingCount: 2, SourceRef: "poll"}},
+	}
+	write.Events[0].PayloadJSON = `{"old":1,"new":2}`
+	if err := repo.RecordPlayerObservation(t.Context(), write); err != nil {
+		t.Fatal(err)
+	}
+	replay := write
+	replay.Events = append([]ActivityEvent(nil), write.Events...)
+	replay.Events[0].PayloadJSON = `{ "new": 2, "old": 1 }`
+	if err := repo.RecordPlayerObservation(t.Context(), replay); err != nil {
+		t.Fatalf("exact replay: %v", err)
+	}
+	for table := range map[string]struct{}{"activity_events": {}, "trajectory_samples": {}, "player_private_samples": {}} {
+		var count int
+		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("%s count=%d err=%v", table, count, err)
+		}
+	}
+	collision := write
+	collision.Events = append([]ActivityEvent(nil), write.Events...)
+	collision.Events[0].PayloadJSON = `{"different":true}`
+	if err := repo.RecordPlayerObservation(t.Context(), collision); err == nil {
+		t.Fatal("same event ID with different content must fail")
+	}
+}
+
 func TestServerMetricObservationRollsBackEventAndMetricTogether(t *testing.T) {
 	repo, _ := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)

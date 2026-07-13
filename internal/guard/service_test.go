@@ -2,6 +2,7 @@ package guard
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -52,11 +53,13 @@ type harness struct {
 	policy  *policy.Service
 	service *Service
 	start   time.Time
+	dbPath  string
 }
 
 func newHarness(t *testing.T, limit, maxGap time.Duration) *harness {
 	t.Helper()
-	repo, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "guard.db"))
+	dbPath := filepath.Join(t.TempDir(), "guard.db")
+	repo, err := store.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +89,7 @@ func newHarness(t *testing.T, limit, maxGap time.Duration) *harness {
 		policy:  policyService,
 		service: New(repo, policyService, maxGap, 15*time.Second, 5*time.Minute),
 		start:   start,
+		dbPath:  dbPath,
 	}
 }
 
@@ -565,20 +569,13 @@ func TestGuardUnifiedEventsAreIdempotentAndRollbackWithLegacyResult(t *testing.T
 	h.observe(h.start, player())
 	warningAt := h.start.Add(91 * time.Minute)
 	warning := h.observe(warningAt, player()).Warnings[0]
-	if err := h.service.RecordWarningResult(t.Context(), warning, nil, time.Time{}); err == nil {
-		t.Fatal("zero-time unified event should reject the whole result transaction")
+	if err := h.service.RecordWarningResult(t.Context(), warning, nil, warningAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.RecordWarningResult(t.Context(), warning, nil, warningAt); err != nil {
+		t.Fatal(err)
 	}
 	warnings, err := h.repo.WarningEvents(t.Context(), warning.UserID, warning.Period.Key)
-	if err != nil || len(warnings) != 1 || warnings[0].Status != "pending" || warnings[0].Attempts != 0 {
-		t.Fatalf("warning rollback=%+v err=%v", warnings, err)
-	}
-	if err := h.service.RecordWarningResult(t.Context(), warning, nil, warningAt); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.service.RecordWarningResult(t.Context(), warning, nil, warningAt); err != nil {
-		t.Fatal(err)
-	}
-	warnings, err = h.repo.WarningEvents(t.Context(), warning.UserID, warning.Period.Key)
 	if err != nil || warnings[0].Attempts != 1 {
 		t.Fatalf("warning replay=%+v err=%v", warnings, err)
 	}
@@ -593,26 +590,74 @@ func TestKickUnifiedEventsAreIdempotentAndRollbackWithLegacyResult(t *testing.T)
 	h.observe(h.start, player())
 	kickAt := h.start.Add(time.Minute)
 	kick := h.observe(kickAt, player()).Kicks[0]
-	if err := h.service.RecordKickResult(t.Context(), kick, nil, time.Time{}); err == nil {
-		t.Fatal("zero-time unified event should reject the whole kick result transaction")
+	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err != nil {
+		t.Fatal(err)
 	}
 	legacy, err := h.repo.EnforcementEventsForPolicy(t.Context(), kick.UserID, kick.Period.Key, kick.PolicyRevision)
-	if err != nil || len(legacy) != 0 {
-		t.Fatalf("kick rollback=%+v err=%v", legacy, err)
-	}
-	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err != nil {
-		t.Fatal(err)
-	}
-	legacy, err = h.repo.EnforcementEventsForPolicy(t.Context(), kick.UserID, kick.Period.Key, kick.PolicyRevision)
 	if err != nil || len(legacy) != 1 {
 		t.Fatalf("kick replay=%+v err=%v", legacy, err)
 	}
 	timeline, err := h.repo.ReadSensitivePlayerTimeline(t.Context(), "test-admin", kick.UserID, h.start, kickAt.Add(time.Second), 100)
 	if err != nil || len(timeline.Events) != 2 {
 		t.Fatalf("timeline=%+v err=%v", timeline.Events, err)
+	}
+}
+
+func TestWarningResultEventInsertFailureRollsBackAttemptAndLegacyUpdate(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 3*time.Hour)
+	h.observe(h.start, player())
+	warningAt := h.start.Add(91 * time.Minute)
+	warning := h.observe(warningAt, player()).Warnings[0]
+	db := installFailingActivityTrigger(t, h.dbPath, "guard_warning_delivered")
+	defer db.Close()
+	if err := h.service.RecordWarningResult(t.Context(), warning, nil, warningAt); err == nil {
+		t.Fatal("expected injected result event failure")
+	}
+	warnings, err := h.repo.WarningEvents(t.Context(), warning.UserID, warning.Period.Key)
+	if err != nil || len(warnings) != 1 || warnings[0].Status != "pending" || warnings[0].Attempts != 0 {
+		t.Fatalf("warning legacy write was not rolled back: %+v err=%v", warnings, err)
+	}
+	assertActivityEventCount(t, db, 0)
+}
+
+func TestKickResultEventInsertFailureRollsBackAttemptAndLegacyAppend(t *testing.T) {
+	h := newHarness(t, time.Minute, 3*time.Hour)
+	h.observe(h.start, player())
+	kickAt := h.start.Add(time.Minute)
+	kick := h.observe(kickAt, player()).Kicks[0]
+	db := installFailingActivityTrigger(t, h.dbPath, "enforcement_succeeded")
+	defer db.Close()
+	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err == nil {
+		t.Fatal("expected injected result event failure")
+	}
+	legacy, err := h.repo.EnforcementEventsForPolicy(t.Context(), kick.UserID, kick.Period.Key, kick.PolicyRevision)
+	if err != nil || len(legacy) != 0 {
+		t.Fatalf("kick legacy append was not rolled back: %+v err=%v", legacy, err)
+	}
+	assertActivityEventCount(t, db, 0)
+}
+
+func installFailingActivityTrigger(t *testing.T, path, eventType string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER fail_guard_result BEFORE INSERT ON activity_events WHEN NEW.event_type='` + eventType + `' BEGIN SELECT RAISE(ABORT, 'injected result failure'); END`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	return db
+}
+
+func assertActivityEventCount(t *testing.T, db *sql.DB, want int) {
+	t.Helper()
+	var got int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM activity_events`).Scan(&got); err != nil || got != want {
+		t.Fatalf("activity events=%d want=%d err=%v", got, want, err)
 	}
 }
 

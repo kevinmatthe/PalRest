@@ -39,6 +39,7 @@ type Service struct {
 	asOf              time.Time
 	online            map[string]playerState
 	lastCleanup       time.Time
+	continuityValid   bool
 }
 
 type playerState struct {
@@ -117,7 +118,7 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 	write := store.PlayerObservationWrite{}
 	for _, player := range ordered {
 		previous, existed := s.online[player.UserID]
-		continuous := existed && at.Sub(previous.lastAt) <= s.maxGap
+		continuous := existed && s.continuityValid && at.Sub(previous.lastAt) <= s.maxGap
 		state := previous
 		state.player = player
 		state.lastAt = at
@@ -129,7 +130,7 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 			}
 			write.Events = append(write.Events, event)
 			state = playerState{player: player, lastAt: at}
-		} else if at.Sub(previous.lastAt) > s.maxGap {
+		} else if !s.continuityValid || at.Sub(previous.lastAt) > s.maxGap {
 			state.segmentID = ""
 			state.lastSampleAt = time.Time{}
 			state.lastPrivateAt = time.Time{}
@@ -219,6 +220,7 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 	}
 	s.online = next
 	s.asOf = at
+	s.continuityValid = true
 	doCleanup := s.lastCleanup.IsZero() || at.Sub(s.lastCleanup) >= 24*time.Hour
 	if doCleanup {
 		s.lastCleanup = at
@@ -232,6 +234,15 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		}
 	}
 	return nil
+}
+
+// PollFailed marks the interval since the last successful player observation
+// unknown without inventing leave/join events or discarding the last known
+// player values. The next success starts fresh trajectory evidence.
+func (s *Service) PollFailed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.continuityValid = false
 }
 
 func (s *Service) playerAttributeChangedEvent(previous, current domain.Player, at time.Time, correlationID string) (store.ActivityEvent, bool, error) {

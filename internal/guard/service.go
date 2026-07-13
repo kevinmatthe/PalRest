@@ -262,7 +262,7 @@ func (s *Service) RecordWarningResult(ctx context.Context, decision WarningDecis
 		}
 		ref := guardEventRef("warning", decision.UserID, decision.Period.Key, fmt.Sprintf("%d", decision.Threshold.Milliseconds()), now)
 		attempted, err := appendGuardActivity(tx, ref, "01", "guard_warning_attempted", decision.UserID, now, map[string]any{
-			"action": "warning", "attempt": event.Attempts + 1, "player_name": decision.PlayerName,
+			"action": "warning", "player_name": decision.PlayerName,
 			"threshold_ms": decision.Threshold.Milliseconds(),
 		})
 		if err != nil || !attempted {
@@ -273,7 +273,7 @@ func (s *Service) RecordWarningResult(ctx context.Context, decision WarningDecis
 		}
 		resultType := "guard_warning_delivered"
 		payload := map[string]any{
-			"action": "warning", "attempt": event.Attempts + 1, "outcome": status,
+			"action": "warning", "outcome": status,
 			"player_name": decision.PlayerName, "threshold_ms": decision.Threshold.Milliseconds(),
 		}
 		if resultErr != nil {
