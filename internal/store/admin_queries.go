@@ -23,13 +23,23 @@ type ServerDocumentOccurrence struct {
 	Canonical   []byte    `json:"-"`
 }
 
+type ServerDocumentCursor struct {
+	ObservedAt  time.Time
+	ContentHash string
+}
+
+type ServerDocumentPage struct {
+	Documents []ServerDocumentOccurrence
+	Next      *ServerDocumentCursor
+}
+
 func (r *Repository) ReadServerMetrics(ctx context.Context, actor string, start, end time.Time, limit int) ([]ServerMetricSample, error) {
 	if err := validateAdminRead(actor, start, end, limit); err != nil {
 		return nil, fmt.Errorf("read server metrics: %w", err)
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, r.auditQueryError(ctx, actor, "read_server_metrics", "server", "metrics", &start, &end, err)
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT observed_at,server_fps,current_player_num,server_frame_time,max_player_num,uptime_seconds,base_camp_num,game_days
 FROM server_metric_samples WHERE observed_at>=? AND observed_at<? ORDER BY observed_at LIMIT ?`, formatObservationTime(start), formatObservationTime(end), limit)
@@ -61,6 +71,9 @@ FROM server_metric_samples WHERE observed_at>=? AND observed_at<? ORDER BY obser
 	}
 	if err == nil {
 		err = tx.Commit()
+		if err != nil {
+			_ = tx.Rollback()
+		}
 	} else {
 		_ = tx.Rollback()
 	}
@@ -73,23 +86,36 @@ FROM server_metric_samples WHERE observed_at>=? AND observed_at<? ORDER BY obser
 	return result, nil
 }
 
-func (r *Repository) ReadServerDocuments(ctx context.Context, actor, kind string, limit int) ([]ServerDocumentOccurrence, error) {
+func (r *Repository) ReadServerDocuments(ctx context.Context, actor, kind string, limit int, cursor *ServerDocumentCursor) (ServerDocumentPage, error) {
+	var empty ServerDocumentPage
 	if strings.TrimSpace(actor) == "" {
-		return nil, fmt.Errorf("read server documents: actor is empty")
+		return empty, fmt.Errorf("read server documents: actor is empty")
 	}
 	if kind != "info" && kind != "settings" {
-		return nil, fmt.Errorf("read server documents: unknown kind %q", kind)
+		return empty, fmt.Errorf("read server documents: unknown kind %q", kind)
 	}
 	if limit < 1 || limit > 2000 {
-		return nil, fmt.Errorf("read server documents: limit must be between 1 and 2000")
+		return empty, fmt.Errorf("read server documents: limit must be between 1 and 2000")
+	}
+	if cursor != nil && (cursor.ObservedAt.IsZero() || strings.TrimSpace(cursor.ContentHash) == "") {
+		return empty, fmt.Errorf("read server documents: invalid cursor")
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return empty, r.auditQueryError(ctx, actor, "read_server_documents", "server", kind, nil, nil, err)
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT o.kind,o.observed_at,o.content_hash,d.canonical_json
+	query := `SELECT o.kind,o.observed_at,o.content_hash,d.canonical_json
 FROM server_document_observations o JOIN server_documents d ON d.kind=o.kind AND d.content_hash=o.content_hash
-WHERE o.kind=? ORDER BY o.observed_at,o.content_hash LIMIT ?`, kind, limit)
+WHERE o.kind=?`
+	args := []any{kind}
+	if cursor != nil {
+		query += ` AND (o.observed_at>? OR (o.observed_at=? AND o.content_hash>?))`
+		formatted := formatObservationTime(cursor.ObservedAt)
+		args = append(args, formatted, formatted, cursor.ContentHash)
+	}
+	query += ` ORDER BY o.observed_at,o.content_hash LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	result := make([]ServerDocumentOccurrence, 0)
 	outcome := "success"
 	if err == nil {
@@ -111,23 +137,32 @@ WHERE o.kind=? ORDER BY o.observed_at,o.content_hash LIMIT ?`, kind, limit)
 		}
 	}
 	if err == nil {
-		if len(result) == 0 {
+		if len(result) == 0 && cursor == nil {
 			outcome = "not_found"
 		}
 		err = insertAdminAudit(ctx, tx, actor, "read_server_documents", "server", kind, nil, nil, outcome)
 	}
 	if err == nil {
 		err = tx.Commit()
+		if err != nil {
+			_ = tx.Rollback()
+		}
 	} else {
 		_ = tx.Rollback()
 	}
 	if err != nil {
-		return nil, r.auditQueryError(ctx, actor, "read_server_documents", "server", kind, nil, nil, err)
+		return empty, r.auditQueryError(ctx, actor, "read_server_documents", "server", kind, nil, nil, err)
 	}
 	if outcome == "not_found" {
-		return nil, ErrNotFound
+		return empty, ErrNotFound
 	}
-	return result, nil
+	page := ServerDocumentPage{Documents: result}
+	if len(result) > limit {
+		page.Documents = result[:limit]
+		last := page.Documents[len(page.Documents)-1]
+		page.Next = &ServerDocumentCursor{ObservedAt: last.ObservedAt, ContentHash: last.ContentHash}
+	}
+	return page, nil
 }
 
 func validateAdminRead(actor string, start, end time.Time, limit int) error {
@@ -156,8 +191,10 @@ func insertAdminAudit(ctx context.Context, tx *sql.Tx, actor, action, subjectTyp
 }
 
 func (r *Repository) auditQueryError(ctx context.Context, actor, action, subjectType, subjectID string, start, end *time.Time, queryErr error) error {
-	auditErr := r.WithTx(ctx, func(tx *Tx) error {
-		return insertAdminAudit(ctx, tx.tx, actor, action, subjectType, subjectID, start, end, "error")
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	auditErr := r.WithTx(auditCtx, func(tx *Tx) error {
+		return insertAdminAudit(auditCtx, tx.tx, actor, action, subjectType, subjectID, start, end, "error")
 	})
 	if auditErr != nil {
 		return errors.Join(queryErr, auditErr)

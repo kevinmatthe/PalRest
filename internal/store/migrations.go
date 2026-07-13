@@ -267,3 +267,8 @@ ON player_private_samples(user_id, observed_at);
 CREATE INDEX player_private_samples_retention
 ON player_private_samples(observed_at, id);
 `
+
+const schemaV11 = `
+CREATE INDEX player_sessions_user_last_observed
+ON player_sessions(user_id, last_observed_at);
+`

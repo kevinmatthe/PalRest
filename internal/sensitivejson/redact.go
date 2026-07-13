@@ -57,7 +57,13 @@ func secretKey(key string) bool {
 		}
 		return -1
 	}, key)
-	for _, marker := range []string{"password", "secret", "token", "apikey", "credential"} {
+	// This denylist is defense-in-depth for an evolving upstream settings object;
+	// unknown ordinary keys are intentionally retained.
+	for _, marker := range []string{
+		"password", "secret", "token", "apikey", "credential", "authorization",
+		"cookie", "session", "privatekey", "accesskey", "bearer", "jwt",
+		"passphrase", "clientsecret", "signingkey",
+	} {
 		if strings.Contains(normalized, marker) {
 			return true
 		}

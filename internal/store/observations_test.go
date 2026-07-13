@@ -1,9 +1,11 @@
 package store
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -556,6 +558,7 @@ func TestPrivatePlayerSamplesAreAtomicValidatedAndReturned(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*PlayerPrivateSample){
 		"empty IP":                func(s *PlayerPrivateSample) { s.IP = "" },
+		"C1 control IP":           func(s *PlayerPrivateSample) { s.IP = "bad\u0085address" },
 		"long IP":                 func(s *PlayerPrivateSample) { s.IP = strings.Repeat("x", 257) },
 		"negative ping":           func(s *PlayerPrivateSample) { s.Ping = -1 },
 		"nonfinite ping":          func(s *PlayerPrivateSample) { s.Ping = math.NaN() },
@@ -603,9 +606,9 @@ func TestAuditedServerMetricAndDocumentReads(t *testing.T) {
 	if err != nil || len(metrics) != 1 || !metrics[0].ObservedAt.Equal(base) {
 		t.Fatalf("metrics=%+v err=%v", metrics, err)
 	}
-	docs, err := repo.ReadServerDocuments(t.Context(), "root", "info", 10)
-	if err != nil || len(docs) != 1 || string(docs[0].Canonical) != string(canonical) {
-		t.Fatalf("docs=%+v err=%v", docs, err)
+	docPage, err := repo.ReadServerDocuments(t.Context(), "root", "info", 10, nil)
+	if err != nil || len(docPage.Documents) != 1 || string(docPage.Documents[0].Canonical) != string(canonical) {
+		t.Fatalf("docs=%+v err=%v", docPage, err)
 	}
 	rows, err := repo.db.QueryContext(t.Context(), `SELECT action,outcome FROM sensitive_access_audit ORDER BY id`)
 	if err != nil {
@@ -625,6 +628,38 @@ func TestAuditedServerMetricAndDocumentReads(t *testing.T) {
 	}
 }
 
+func TestServerDocumentsKeysetPaginationReachesLaterRows(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	for i, value := range []string{"A", "B", "C"} {
+		canonical := []byte(fmt.Sprintf(`{"value":%q}`, value))
+		if _, err := repo.RecordServerDocumentObservation(t.Context(), ServerDocumentObservation{Kind: "settings", At: base.Add(time.Duration(i) * time.Minute), Canonical: canonical, Hash: testDocumentHash(canonical)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := repo.ReadServerDocuments(t.Context(), "root", "settings", 2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Documents) != 2 || first.Next == nil {
+		t.Fatalf("first=%+v", first)
+	}
+	second, err := repo.ReadServerDocuments(t.Context(), "root", "settings", 2, first.Next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Documents) != 1 || second.Next != nil {
+		t.Fatalf("second=%+v", second)
+	}
+	if first.Documents[1].ContentHash == second.Documents[0].ContentHash {
+		t.Fatalf("duplicate boundary row: first=%+v second=%+v", first, second)
+	}
+	after, err := repo.ReadServerDocuments(t.Context(), "root", "settings", 2, &ServerDocumentCursor{ObservedAt: second.Documents[0].ObservedAt, ContentHash: second.Documents[0].ContentHash})
+	if err != nil || len(after.Documents) != 0 {
+		t.Fatalf("after=%+v err=%v", after, err)
+	}
+}
+
 func TestServerReadQueryErrorsAreAudited(t *testing.T) {
 	repo, _ := openTemp(t)
 	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
@@ -640,13 +675,45 @@ func TestServerReadQueryErrorsAreAudited(t *testing.T) {
 	}
 }
 
+func TestCanceledAdminQueriesUseIndependentErrorAuditContext(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := repo.ReadSensitivePlayerTimeline(ctx, "root", "u", base, base.Add(time.Hour), 10); err == nil {
+		t.Fatal("expected timeline cancellation")
+	}
+	if _, err := repo.ReadServerMetrics(ctx, "root", base, base.Add(time.Hour), 10); err == nil {
+		t.Fatal("expected metrics cancellation")
+	}
+	if _, err := repo.ReadServerDocuments(ctx, "root", "info", 10, nil); err == nil {
+		t.Fatal("expected documents cancellation")
+	}
+	rows, err := repo.db.QueryContext(t.Context(), `SELECT action,outcome FROM sensitive_access_audit ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var action, outcome string
+		if err := rows.Scan(&action, &outcome); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, action+":"+outcome)
+	}
+	if strings.Join(got, ",") != "read_player_timeline:error,read_server_metrics:error,read_server_documents:error" {
+		t.Fatalf("audits=%v", got)
+	}
+}
+
 func TestEmptyServerReadsReturnNotFoundAndAuditOutcome(t *testing.T) {
 	repo, _ := openTemp(t)
 	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
 	if _, err := repo.ReadServerMetrics(t.Context(), "root", base, base.Add(time.Hour), 10); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("metrics err=%v", err)
 	}
-	if _, err := repo.ReadServerDocuments(t.Context(), "root", "settings", 10); !errors.Is(err, ErrNotFound) {
+	if _, err := repo.ReadServerDocuments(t.Context(), "root", "settings", 10, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("documents err=%v", err)
 	}
 	rows, err := repo.db.QueryContext(t.Context(), `SELECT action,outcome FROM sensitive_access_audit ORDER BY id`)

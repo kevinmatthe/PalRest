@@ -87,7 +87,7 @@ func TestNewWiresUnifiedPlayerAndServerObservations(t *testing.T) {
 		requests <- r.URL.Path
 		switch r.URL.Path {
 		case "/v1/api/players":
-			_, _ = w.Write([]byte(`{"players":[{"name":"One","playerId":"pal-1","userId":"u1","ip":"192.0.2.1:8211","location_x":10,"location_y":20,"level":3}]}`))
+			_, _ = w.Write([]byte(`{"players":[{"name":"One","playerId":"pal-1","userId":"u1","location_x":10,"location_y":20,"level":3}]}`))
 		case "/v1/api/metrics":
 			_, _ = w.Write([]byte(`{"serverfps":60,"currentplayernum":1,"serverframetime":1,"maxplayernum":32,"uptime":100,"basecampnum":1,"days":2}`))
 		case "/v1/api/info":
@@ -155,7 +155,7 @@ func TestNewWiresUnifiedPlayerAndServerObservations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(timeline.Events) != 1 || timeline.Events[0].EventType != "player_joined" || len(timeline.Trajectories) != 1 {
+	if len(timeline.Events) != 1 || timeline.Events[0].EventType != "player_joined" || len(timeline.Trajectories) != 1 || len(timeline.PrivateSamples) != 0 {
 		t.Fatalf("events=%+v samples=%+v", timeline.Events, timeline.Trajectories)
 	}
 	if err := application.repo.RecordServerMetrics(t.Context(), time.Unix(1, 0), domain.ServerMetrics{ServerFrameTime: 1}); err == nil {

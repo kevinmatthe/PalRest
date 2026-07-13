@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -14,12 +15,14 @@ import (
 )
 
 type observationQueriesFake struct {
-	timeline  store.SensitivePlayerTimeline
-	metrics   []store.ServerMetricSample
-	documents []store.ServerDocumentOccurrence
-	err       error
-	actor     string
-	calls     int
+	timeline       store.SensitivePlayerTimeline
+	metrics        []store.ServerMetricSample
+	documents      []store.ServerDocumentOccurrence
+	documentPage   store.ServerDocumentPage
+	documentCursor *store.ServerDocumentCursor
+	err            error
+	actor          string
+	calls          int
 }
 
 func (f *observationQueriesFake) ResetPlayerPolicyState(context.Context, string) error { return nil }
@@ -33,10 +36,50 @@ func (f *observationQueriesFake) ReadServerMetrics(_ context.Context, actor stri
 	f.actor = actor
 	return f.metrics, f.err
 }
-func (f *observationQueriesFake) ReadServerDocuments(_ context.Context, actor, _ string, _ int) ([]store.ServerDocumentOccurrence, error) {
+func (f *observationQueriesFake) ReadServerDocuments(_ context.Context, actor, _ string, _ int, cursor *store.ServerDocumentCursor) (store.ServerDocumentPage, error) {
 	f.calls++
 	f.actor = actor
-	return f.documents, f.err
+	f.documentCursor = cursor
+	if f.documentPage.Documents != nil || f.documentPage.Next != nil {
+		return f.documentPage, f.err
+	}
+	return store.ServerDocumentPage{Documents: f.documents}, f.err
+}
+
+func TestAdminDocumentsCursorRoundTripsAndRejectsMalformedValues(t *testing.T) {
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	hash := strings.Repeat("a", 64)
+	next := &store.ServerDocumentCursor{ObservedAt: at, ContentHash: hash}
+	repo := &observationQueriesFake{documentPage: store.ServerDocumentPage{Documents: []store.ServerDocumentOccurrence{{Kind: "settings", ObservedAt: at, ContentHash: hash, Canonical: []byte(`{"value":"A"}`)}}, Next: next}}
+	server := timelineServer(repo)
+	first := httptest.NewRecorder()
+	server.Handler().ServeHTTP(first, adminRequest(t, server, "/api/v1/admin/server/documents?kind=settings&limit=1"))
+	if first.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", first.Code, first.Body.String())
+	}
+	var response struct {
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &response); err != nil || response.NextCursor == "" {
+		t.Fatalf("response=%+v err=%v body=%s", response, err, first.Body.String())
+	}
+	repo.documentPage = store.ServerDocumentPage{Documents: []store.ServerDocumentOccurrence{}}
+	second := httptest.NewRecorder()
+	server.Handler().ServeHTTP(second, adminRequest(t, server, "/api/v1/admin/server/documents?kind=settings&limit=1&cursor="+response.NextCursor))
+	if second.Code != http.StatusOK || repo.documentCursor == nil || !repo.documentCursor.ObservedAt.Equal(at) || repo.documentCursor.ContentHash != hash {
+		t.Fatalf("code=%d cursor=%+v body=%s", second.Code, repo.documentCursor, second.Body.String())
+	}
+	calls := repo.calls
+	for _, cursor := range []string{"", "not-base64", response.NextCursor + "x"} {
+		res := httptest.NewRecorder()
+		server.Handler().ServeHTTP(res, adminRequest(t, server, "/api/v1/admin/server/documents?kind=info&cursor="+cursor))
+		if res.Code != http.StatusBadRequest {
+			t.Errorf("cursor=%q code=%d body=%s", cursor, res.Code, res.Body.String())
+		}
+	}
+	if repo.calls != calls {
+		t.Fatalf("malformed cursors reached repository: calls=%d want=%d", repo.calls, calls)
+	}
 }
 
 func TestAdminMetricsAndDocumentsValidateAndReturnTypedJSON(t *testing.T) {
@@ -138,6 +181,21 @@ func TestAdminTimelineRequiresAuthAndReturnsOnlySafeDecodedEvents(t *testing.T) 
 	}
 	if !strings.Contains(body, `"summary":"unsupported event payload"`) || strings.Contains(body, "must-not-leak") {
 		t.Fatalf("future event was not safely summarized: %s", body)
+	}
+}
+
+func TestAdminServerObservationRoutesRequireAuthentication(t *testing.T) {
+	repo := &observationQueriesFake{}
+	server := timelineServer(repo)
+	for _, path := range []string{"/api/v1/admin/server/metrics?start=2026-07-13T08:00:00Z&end=2026-07-13T09:00:00Z", "/api/v1/admin/server/documents?kind=info"} {
+		res := httptest.NewRecorder()
+		server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+		if res.Code != http.StatusUnauthorized {
+			t.Errorf("path=%s code=%d body=%s", path, res.Code, res.Body.String())
+		}
+	}
+	if repo.calls != 0 {
+		t.Fatalf("unauthenticated requests reached repository: %d", repo.calls)
 	}
 }
 

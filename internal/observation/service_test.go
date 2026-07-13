@@ -132,6 +132,36 @@ func TestPrivateSamplesTrackSensitiveChangesWithoutPingChurn(t *testing.T) {
 	}
 }
 
+func TestMissingIPSkipsPrivateSampleWithoutBlockingObservationOrBaseline(t *testing.T) {
+	recorder := &recorderFake{}
+	svc := newService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	missing := player("u", 10, 10)
+	missing.IP = ""
+	if err := svc.Observe(t.Context(), base, []domain.Player{missing}, "poll-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.writes) != 1 || len(recorder.writes[0].Events) != 1 || len(recorder.writes[0].Trajectories) != 1 || len(recorder.writes[0].PrivateSamples) != 0 {
+		t.Fatalf("write=%+v", recorder.writes)
+	}
+	available := missing
+	available.IP = "192.0.2.99:8211"
+	if err := svc.Observe(t.Context(), base.Add(time.Minute), []domain.Player{available}, "poll-2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorder.writes[1].PrivateSamples; len(got) != 1 || got[0].IP != available.IP {
+		t.Fatalf("private=%+v", got)
+	}
+	disappeared := available
+	disappeared.IP = ""
+	if err := svc.Observe(t.Context(), base.Add(2*time.Minute), []domain.Player{disappeared}, "poll-3"); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorder.writes[2].PrivateSamples; len(got) != 0 {
+		t.Fatalf("missing IP erased history: %+v", got)
+	}
+}
+
 func TestMovementThresholdBoundary(t *testing.T) {
 	recorder := &recorderFake{}
 	svc := newService(recorder)

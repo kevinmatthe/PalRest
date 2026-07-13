@@ -126,7 +126,7 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		shouldPrivateSample := state.lastPrivateAt.IsZero() ||
 			player.IP != previous.player.IP || player.Level != previous.player.Level ||
 			player.BuildingCount != previous.player.BuildingCount || at.Sub(state.lastPrivateAt) >= s.maxSampleInterval
-		if shouldPrivateSample {
+		if player.IP != "" && shouldPrivateSample {
 			ping := player.Ping
 			if math.IsNaN(ping) || math.IsInf(ping, 0) || ping < 0 {
 				ping = 0

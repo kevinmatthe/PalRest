@@ -24,3 +24,17 @@ func TestRedactRecursesWithoutMutatingInput(t *testing.T) {
 		t.Fatalf("ordinary value changed=%#v", redacted)
 	}
 }
+
+func TestRedactCoversCredentialDenylistVariants(t *testing.T) {
+	keys := []string{"authorization", "Cookie", "session_id", "private_key", "privateKey", "access_key", "accessKey", "bearer", "jwt", "passphrase", "client_secret", "signing_key", "AdminPassword", "apiKey", "credential", "token"}
+	input := make(map[string]any, len(keys))
+	for _, key := range keys {
+		input[key] = "must-redact"
+	}
+	redacted := Redact(input).(map[string]any)
+	for _, key := range keys {
+		if redacted[key] != Redacted {
+			t.Errorf("key %q was not redacted: %#v", key, redacted[key])
+		}
+	}
+}

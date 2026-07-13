@@ -60,7 +60,7 @@ type AdminStore interface {
 type ObservationQueries interface {
 	ReadSensitivePlayerTimeline(context.Context, string, string, time.Time, time.Time, int) (store.SensitivePlayerTimeline, error)
 	ReadServerMetrics(context.Context, string, time.Time, time.Time, int) ([]store.ServerMetricSample, error)
-	ReadServerDocuments(context.Context, string, string, int) ([]store.ServerDocumentOccurrence, error)
+	ReadServerDocuments(context.Context, string, string, int, *store.ServerDocumentCursor) (store.ServerDocumentPage, error)
 }
 
 type Server struct {

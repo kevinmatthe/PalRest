@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
 )
@@ -127,7 +127,7 @@ func validatePlayerPrivateSample(sample PlayerPrivateSample) error {
 	if sample.ObservedAt.IsZero() {
 		return fmt.Errorf("observed time is zero")
 	}
-	if sample.IP == "" || len(sample.IP) > 256 || strings.IndexFunc(sample.IP, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+	if sample.IP == "" || len(sample.IP) > 256 || strings.IndexFunc(sample.IP, unicode.IsControl) >= 0 {
 		return fmt.Errorf("IP must be nonempty safe text of at most 256 bytes")
 	}
 	if !finite(sample.Ping) || sample.Ping < 0 || sample.Level < 0 || sample.BuildingCount < 0 {
@@ -231,7 +231,8 @@ func (r *Repository) ReadSensitivePlayerTimeline(ctx context.Context, actor, use
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return empty, fmt.Errorf("begin sensitive timeline transaction: %w", err)
+		queryErr := fmt.Errorf("begin sensitive timeline transaction: %w", err)
+		return empty, r.auditQueryError(ctx, actor, "read_player_timeline", "player", userID, &start, &end, queryErr)
 	}
 	events, err := queryTimelineEvents(ctx, tx, userID, start, end, limit)
 	if err == nil {
@@ -259,7 +260,9 @@ func (r *Repository) ReadSensitivePlayerTimeline(ctx context.Context, actor, use
 				return empty, fmt.Errorf("audit sensitive player timeline: %w", auditErr)
 			}
 			if commitErr := tx.Commit(); commitErr != nil {
-				return empty, fmt.Errorf("commit sensitive player timeline: %w", commitErr)
+				_ = tx.Rollback()
+				queryErr := fmt.Errorf("commit sensitive player timeline: %w", commitErr)
+				return empty, r.auditQueryError(ctx, actor, "read_player_timeline", "player", userID, &start, &end, queryErr)
 			}
 			if outcome == "not_found" {
 				return empty, ErrNotFound
@@ -276,10 +279,7 @@ queryFailed:
 	// successful reads never do.
 	_ = tx.Rollback()
 	queryErr := err
-	if auditErr := r.recordTimelineErrorAudit(ctx, actor, userID, start, end); auditErr != nil {
-		return empty, errors.Join(fmt.Errorf("query sensitive player timeline: %w", queryErr), auditErr)
-	}
-	return empty, fmt.Errorf("query sensitive player timeline: %w", queryErr)
+	return empty, r.auditQueryError(ctx, actor, "read_player_timeline", "player", userID, &start, &end, fmt.Errorf("query sensitive player timeline: %w", queryErr))
 }
 
 func queryTimelinePrivateSamples(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time, limit int) ([]PlayerPrivateSample, error) {
@@ -392,15 +392,6 @@ INSERT INTO sensitive_access_audit(
 ) VALUES(?,?,?,?,?,?,?,?)`, actor, "read_player_timeline", "player", userID,
 		formatObservationTime(start), formatObservationTime(end), outcome, formatObservationTime(time.Now()))
 	return err
-}
-
-func (r *Repository) recordTimelineErrorAudit(ctx context.Context, actor, userID string, start, end time.Time) error {
-	return r.WithTx(ctx, func(tx *Tx) error {
-		if err := insertTimelineAudit(ctx, tx.tx, actor, userID, start, end, "error"); err != nil {
-			return fmt.Errorf("audit sensitive player timeline error: %w", err)
-		}
-		return nil
-	})
 }
 
 func (r *Repository) CleanupRawObservations(ctx context.Context, cutoff time.Time, limit int) (deleted int, err error) {

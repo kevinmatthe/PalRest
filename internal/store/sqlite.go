@@ -189,6 +189,14 @@ func (r *Repository) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if version < 11 {
+		if _, err := tx.ExecContext(ctx, schemaV11); err != nil {
+			return fmt.Errorf("apply migration 11: %w", err)
+		}
+		if err := recordMigration(ctx, tx, 11); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}
