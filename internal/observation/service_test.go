@@ -20,6 +20,7 @@ import (
 type recorderFake struct {
 	mu           sync.Mutex
 	writes       []store.PlayerObservationWrite
+	attempts     []store.PlayerObservationWrite
 	recordErr    error
 	cleanupCalls []cleanupCall
 	cleanupErr   error
@@ -33,6 +34,7 @@ type cleanupCall struct {
 func (r *recorderFake) RecordPlayerObservation(_ context.Context, write store.PlayerObservationWrite) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.attempts = append(r.attempts, write)
 	if r.recordErr != nil {
 		return r.recordErr
 	}
@@ -100,7 +102,7 @@ func TestFirstObservationCreatesJoinedEventAndTrajectory(t *testing.T) {
 	}
 }
 
-func TestTrajectorySamplingSuppressesJitterAndRecordsMovementAndHeartbeat(t *testing.T) {
+func TestMovementThresholdBoundary(t *testing.T) {
 	recorder := &recorderFake{}
 	svc := newService(recorder)
 	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
@@ -110,13 +112,9 @@ func TestTrajectorySamplingSuppressesJitterAndRecordsMovementAndHeartbeat(t *tes
 		want int
 	}{
 		{base, 10, 10, 1},
-		{base.Add(time.Minute), 60, 10, 0},
-		{base.Add(2 * time.Minute), 110, 10, 1},
-		{base.Add(3 * time.Minute), 110, 10, 0},
-		{base.Add(4 * time.Minute), 110, 10, 0},
-		{base.Add(5 * time.Minute), 110, 10, 0},
-		{base.Add(6 * time.Minute), 110, 10, 0},
-		{base.Add(7 * time.Minute), 110, 10, 1},
+		{base.Add(time.Minute), 109.999, 10, 0},
+		{base.Add(2 * time.Minute), 110, 10, 0},
+		{base.Add(3 * time.Minute), 110.001, 10, 1},
 	}
 	for i, tc := range observations {
 		if err := svc.Observe(t.Context(), tc.at, []domain.Player{player("u", tc.x, tc.y)}, fmt.Sprintf("poll-%d", i)); err != nil {
@@ -127,8 +125,26 @@ func TestTrajectorySamplingSuppressesJitterAndRecordsMovementAndHeartbeat(t *tes
 		}
 	}
 	firstSegment := recorder.writes[0].Trajectories[0].SegmentID
-	if recorder.writes[2].Trajectories[0].SegmentID != firstSegment || recorder.writes[7].Trajectories[0].SegmentID != firstSegment {
+	if recorder.writes[3].Trajectories[0].SegmentID != firstSegment {
 		t.Fatal("ordinary sampling should preserve segment")
+	}
+}
+
+func TestHeartbeatSamplesAtMaximumInterval(t *testing.T) {
+	recorder := &recorderFake{}
+	svc := newService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	for minute := 0; minute <= 5; minute++ {
+		if err := svc.Observe(t.Context(), base.Add(time.Duration(minute)*time.Minute), []domain.Player{player("u", 10, 10)}, fmt.Sprintf("poll-%d", minute)); err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if minute == 0 || minute == 5 {
+			want = 1
+		}
+		if got := len(recorder.writes[minute].Trajectories); got != want {
+			t.Fatalf("minute %d trajectories=%d, want %d", minute, got, want)
+		}
 	}
 }
 
@@ -146,6 +162,23 @@ func TestExcessiveGapStartsNewSegmentWithAnchorPoint(t *testing.T) {
 	second := recorder.writes[1].Trajectories[0]
 	if first.SegmentID == second.SegmentID || second.X != 11 {
 		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+}
+
+func TestMaxGapEqualityPreservesSegment(t *testing.T) {
+	recorder := &recorderFake{}
+	svc := newService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	if err := svc.Observe(t.Context(), base, []domain.Player{player("u", 10, 10)}, "poll-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Observe(t.Context(), base.Add(75*time.Second), []domain.Player{player("u", 111, 10)}, "poll-2"); err != nil {
+		t.Fatal(err)
+	}
+	first := recorder.writes[0].Trajectories[0]
+	second := recorder.writes[1].Trajectories[0]
+	if first.SegmentID != second.SegmentID {
+		t.Fatalf("segment changed at max-gap equality: first=%+v second=%+v", first, second)
 	}
 }
 
@@ -199,6 +232,36 @@ func TestInvalidCoordinatesBreakPositionalContinuity(t *testing.T) {
 	}
 }
 
+func TestCoordinateValidity(t *testing.T) {
+	tests := map[string]struct {
+		x, y float64
+		want bool
+	}{
+		"nan x":               {math.NaN(), 1, false},
+		"nan y":               {1, math.NaN(), false},
+		"positive infinity x": {math.Inf(1), 1, false},
+		"negative infinity x": {math.Inf(-1), 1, false},
+		"positive infinity y": {1, math.Inf(1), false},
+		"negative infinity y": {1, math.Inf(-1), false},
+		"zero x":              {0, 1, true},
+		"zero y":              {1, 0, true},
+		"origin":              {0, 0, false},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			recorder := &recorderFake{}
+			svc := newService(recorder)
+			at := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+			if err := svc.Observe(t.Context(), at, []domain.Player{player("u", tc.x, tc.y)}, "poll"); err != nil {
+				t.Fatal(err)
+			}
+			if got := len(recorder.writes[0].Trajectories) == 1; got != tc.want {
+				t.Fatalf("trajectory present=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestObserveRejectsInvalidInputWithoutRecording(t *testing.T) {
 	tests := map[string]struct {
 		at          time.Time
@@ -236,6 +299,22 @@ func TestRecorderFailureDoesNotAdvanceBaseline(t *testing.T) {
 	}
 	if len(recorder.writes) != 1 || len(recorder.writes[0].Events) != 1 || recorder.writes[0].Events[0].EventType != "player_joined" || len(recorder.writes[0].Trajectories) != 1 {
 		t.Fatalf("retry write=%+v", recorder.writes)
+	}
+	if len(recorder.attempts) != 2 {
+		t.Fatalf("attempts=%d", len(recorder.attempts))
+	}
+	failed, retry := recorder.attempts[0], recorder.attempts[1]
+	if len(failed.Events) != 1 || len(retry.Events) != 1 ||
+		failed.Events[0].EventType != retry.Events[0].EventType ||
+		failed.Events[0].SubjectID != retry.Events[0].SubjectID ||
+		len(failed.Trajectories) != 1 || len(retry.Trajectories) != 1 ||
+		failed.Trajectories[0].UserID != retry.Trajectories[0].UserID ||
+		failed.Trajectories[0].X != retry.Trajectories[0].X ||
+		failed.Trajectories[0].Y != retry.Trajectories[0].Y {
+		t.Fatalf("failed=%+v retry=%+v", failed, retry)
+	}
+	if failed.Events[0].ID == retry.Events[0].ID || failed.Trajectories[0].SegmentID == retry.Trajectories[0].SegmentID {
+		t.Fatal("retry should use fresh attempt IDs while preserving semantics")
 	}
 }
 

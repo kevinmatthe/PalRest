@@ -17,6 +17,10 @@ import (
 
 const cleanupBatchSize = 500
 
+// Recorder atomically persists one derived observation. RecordPlayerObservation
+// is called while Service holds its mutex and therefore must not re-enter
+// Service.Observe; the lock intentionally serializes persistence with baseline
+// advancement.
 type Recorder interface {
 	RecordPlayerObservation(context.Context, store.PlayerObservationWrite) error
 	CleanupRawObservations(context.Context, time.Time, int) (int, error)
@@ -121,7 +125,7 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 			shouldSample := state.segmentID == ""
 			if !shouldSample {
 				distance := math.Hypot(player.LocationX-state.lastX, player.LocationY-state.lastY)
-				shouldSample = distance >= s.movementThreshold || at.Sub(state.lastSampleAt) >= s.maxSampleInterval
+				shouldSample = distance > s.movementThreshold || at.Sub(state.lastSampleAt) >= s.maxSampleInterval
 			}
 			if shouldSample {
 				if state.segmentID == "" {
@@ -167,6 +171,9 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		write.Events = append(write.Events, event)
 	}
 
+	// Generated UUID-like values identify this persistence attempt. The recorder's
+	// transaction prevents a failed attempt from partially committing; a retry may
+	// use fresh IDs while deriving the same events and trajectory anchor.
 	if err := s.recorder.RecordPlayerObservation(ctx, write); err != nil {
 		s.mu.Unlock()
 		return err
