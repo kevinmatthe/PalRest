@@ -68,7 +68,7 @@ type Poller struct {
 	cycleMu             sync.Mutex
 	mu                  sync.RWMutex
 	status              domain.PollStatus
-	serverSampleSignals chan time.Time
+	serverSampleSignals chan struct{}
 	serverSampleDone    chan struct{}
 	serverSampleTimeout time.Duration
 	serverSampleMu      sync.Mutex
@@ -76,6 +76,8 @@ type Poller struct {
 	lastSettingsAttempt time.Time
 	serverWorkerMu      sync.Mutex
 	serverWorkerRunning bool
+	serverSamplePending bool
+	latestServerSample  time.Time
 }
 
 func New(client Client, guardService Guard, analytics Analytics, interval time.Duration, announceText, kickText string, now func() time.Time, options ...Option) (*Poller, error) {
@@ -91,7 +93,7 @@ func New(client Client, guardService Guard, analytics Analytics, interval time.D
 		client: client, guard: guardService, analytics: analytics, interval: interval,
 		announceTemplate: announce, kickTemplate: kick, now: now,
 		status:              domain.PollStatus{StartedAt: now().UTC(), ConfigVersion: 1},
-		serverSampleSignals: make(chan time.Time, 1),
+		serverSampleSignals: make(chan struct{}, 1),
 		serverSampleDone:    make(chan struct{}, 1),
 		serverSampleTimeout: defaultServerObservationTimeout,
 	}
@@ -101,9 +103,15 @@ func New(client Client, guardService Guard, analytics Analytics, interval time.D
 			option(p)
 		}
 	}
+	if (p.serverReader == nil) != (p.serverRecorder == nil) {
+		return nil, fmt.Errorf("configure server observations: reader and recorder must both be provided")
+	}
 	return p, nil
 }
 
+// Run owns the optional server sampler lifecycle and must only be called once
+// at a time for a Poller. It starts the sampler before the immediate player
+// cycle and cancels and joins it before returning.
 func (p *Poller) Run(ctx context.Context) {
 	slog.Info("poller started", "interval_ms", p.interval.Milliseconds())
 	select {
@@ -135,6 +143,9 @@ func (p *Poller) runScheduledCycle() {
 	}
 }
 
+// RunOnce executes the critical player path. A standalone call does not start
+// optional server sampling; it only dispatches a sample when Run (or the
+// package-private test lifecycle) already owns an active sampler worker.
 func (p *Poller) RunOnce(ctx context.Context) error {
 	// cycleMu is exclusive so direct callers cannot overlap player observation,
 	// Guard state transitions, or enforcement side effects.

@@ -71,6 +71,58 @@ func (noOpServerRecorder) RecordSettings(context.Context, time.Time, domain.Serv
 	return nil
 }
 
+type firstMetricsBlockingReader struct {
+	firstStarted chan struct{}
+	release      chan struct{}
+	calls        atomic.Int32
+}
+
+func (r *firstMetricsBlockingReader) Metrics(context.Context) (domain.ServerMetrics, error) {
+	if r.calls.Add(1) == 1 {
+		close(r.firstStarted)
+		<-r.release
+	}
+	return domain.ServerMetrics{}, nil
+}
+
+func (*firstMetricsBlockingReader) Info(context.Context) (domain.ServerInfo, error) {
+	return domain.ServerInfo{}, nil
+}
+
+func (*firstMetricsBlockingReader) Settings(context.Context) (domain.ServerSettings, error) {
+	return domain.ServerSettings{}, nil
+}
+
+type timestampRecorder struct {
+	metrics              chan time.Time
+	info                 chan time.Time
+	settings             chan time.Time
+	metricsCalls         atomic.Int32
+	secondMetricsRelease chan struct{}
+}
+
+func (r *timestampRecorder) RecordMetrics(ctx context.Context, at time.Time, _ domain.ServerMetrics) error {
+	r.metrics <- at
+	if r.metricsCalls.Add(1) == 2 {
+		select {
+		case <-r.secondMetricsRelease:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (r *timestampRecorder) RecordInfo(_ context.Context, at time.Time, _ domain.ServerInfo) error {
+	r.info <- at
+	return nil
+}
+
+func (r *timestampRecorder) RecordSettings(_ context.Context, at time.Time, _ domain.ServerSettings) error {
+	r.settings <- at
+	return nil
+}
+
 func newAsyncSamplerPoller(t *testing.T, reader ServerReader, interval time.Duration, guardService Guard) *Poller {
 	t.Helper()
 	p, err := New(&fakeClient{}, guardService, &fakeAnalytics{}, interval, "warning", "kick", time.Now,
@@ -87,6 +139,17 @@ func awaitSignal(t *testing.T, signal <-chan struct{}, name string) {
 	case <-signal:
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func awaitTimestamp(t *testing.T, timestamps <-chan time.Time, name string) time.Time {
+	t.Helper()
+	select {
+	case at := <-timestamps:
+		return at
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+		return time.Time{}
 	}
 }
 
@@ -224,4 +287,109 @@ func TestSamplerQueueCoalescesExtraPlayerTicks(t *testing.T) {
 	if calls := reader.metricsCalls.Load(); calls != 2 {
 		t.Fatalf("metrics calls=%d, want 2", calls)
 	}
+}
+
+func TestSamplerCoalescesToNewestTimestampAndEvaluatesMetadataCadenceFromIt(t *testing.T) {
+	t1 := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	t2 := t1.Add(4 * time.Minute)
+	t3 := t1.Add(6 * time.Minute)
+	now := t1
+	reader := &firstMetricsBlockingReader{firstStarted: make(chan struct{}), release: make(chan struct{})}
+	recorder := &timestampRecorder{
+		metrics: make(chan time.Time, 3), info: make(chan time.Time, 3), settings: make(chan time.Time, 3),
+		secondMetricsRelease: make(chan struct{}),
+	}
+	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", func() time.Time { return now },
+		WithServerObservations(reader, recorder), WithServerObservationTimeout(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	completed, stop := p.startServerSampler(ctx)
+	defer stop()
+	defer cancel()
+
+	if err := p.RunOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	awaitSignal(t, reader.firstStarted, "first metrics start")
+	if at := awaitTimestamp(t, recorder.info, "first info record"); !at.Equal(t1) {
+		t.Fatalf("first info timestamp=%s", at)
+	}
+	if at := awaitTimestamp(t, recorder.settings, "first settings record"); !at.Equal(t1) {
+		t.Fatalf("first settings timestamp=%s", at)
+	}
+	now = t2
+	if err := p.RunOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	now = t3
+	if err := p.RunOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	close(reader.release)
+
+	if at := awaitTimestamp(t, recorder.metrics, "first metrics record"); !at.Equal(t1) {
+		t.Fatalf("first metrics timestamp=%s", at)
+	}
+	awaitSignal(t, completed, "first sample completion")
+	if at := awaitTimestamp(t, recorder.metrics, "coalesced metrics record"); !at.Equal(t3) {
+		t.Fatalf("coalesced metrics timestamp=%s, want %s", at, t3)
+	}
+	if at := awaitTimestamp(t, recorder.info, "coalesced info record"); !at.Equal(t3) {
+		t.Fatalf("coalesced info timestamp=%s, want %s", at, t3)
+	}
+	if at := awaitTimestamp(t, recorder.settings, "coalesced settings record"); !at.Equal(t3) {
+		t.Fatalf("coalesced settings timestamp=%s, want %s", at, t3)
+	}
+	p.serverWorkerMu.Lock()
+	pending := p.serverSamplePending
+	queued := len(p.serverSampleSignals)
+	p.serverWorkerMu.Unlock()
+	if pending || queued != 0 {
+		t.Fatalf("unexpected third sample: pending=%t queued=%d", pending, queued)
+	}
+	close(recorder.secondMetricsRelease)
+	awaitSignal(t, completed, "coalesced sample completion")
+	if calls := reader.calls.Load(); calls != 2 {
+		t.Fatalf("metrics calls=%d, want 2", calls)
+	}
+}
+
+type contextBlockingRecorder struct {
+	metricsStarted chan struct{}
+	metricsStopped chan struct{}
+}
+
+func (r *contextBlockingRecorder) RecordMetrics(ctx context.Context, _ time.Time, _ domain.ServerMetrics) error {
+	close(r.metricsStarted)
+	<-ctx.Done()
+	close(r.metricsStopped)
+	return ctx.Err()
+}
+
+func (*contextBlockingRecorder) RecordInfo(context.Context, time.Time, domain.ServerInfo) error {
+	return nil
+}
+
+func (*contextBlockingRecorder) RecordSettings(context.Context, time.Time, domain.ServerSettings) error {
+	return nil
+}
+
+func TestSamplerCancellationJoinsContextBlockingRecorder(t *testing.T) {
+	recorder := &contextBlockingRecorder{metricsStarted: make(chan struct{}), metricsStopped: make(chan struct{})}
+	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now,
+		WithServerObservations(&fakeServerReader{}, recorder), WithServerObservationTimeout(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	_, stop := p.startServerSampler(ctx)
+	if err := p.RunOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	awaitSignal(t, recorder.metricsStarted, "metrics recorder start")
+	cancel()
+	stop()
+	awaitSignal(t, recorder.metricsStopped, "metrics recorder cancellation")
 }

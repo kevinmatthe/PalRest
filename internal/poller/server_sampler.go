@@ -64,7 +64,15 @@ func (p *Poller) startServerSampler(ctx context.Context) (<-chan struct{}, func(
 			select {
 			case <-workerCtx.Done():
 				return
-			case at := <-p.serverSampleSignals:
+			case <-p.serverSampleSignals:
+				p.serverWorkerMu.Lock()
+				if !p.serverSamplePending {
+					p.serverWorkerMu.Unlock()
+					continue
+				}
+				at := p.latestServerSample
+				p.serverSamplePending = false
+				p.serverWorkerMu.Unlock()
 				p.sampleServerObservations(workerCtx, at)
 				select {
 				case p.serverSampleDone <- struct{}{}:
@@ -81,6 +89,7 @@ func (p *Poller) startServerSampler(ctx context.Context) (<-chan struct{}, func(
 			<-done
 			p.serverWorkerMu.Lock()
 			p.serverWorkerRunning = false
+			p.serverSamplePending = false
 			p.serverWorkerMu.Unlock()
 			for len(p.serverSampleSignals) > 0 {
 				<-p.serverSampleSignals
@@ -102,8 +111,13 @@ func (p *Poller) enqueueServerSample(at time.Time) {
 	if !p.serverWorkerRunning {
 		return
 	}
+	p.latestServerSample = at
+	if p.serverSamplePending {
+		return
+	}
+	p.serverSamplePending = true
 	select {
-	case p.serverSampleSignals <- at:
+	case p.serverSampleSignals <- struct{}{}:
 	default:
 	}
 }

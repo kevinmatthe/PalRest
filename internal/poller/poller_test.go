@@ -420,6 +420,25 @@ func TestNilOptionalCollaboratorsAreSafe(t *testing.T) {
 	}
 }
 
+func TestNewRejectsIncompleteServerObservationPair(t *testing.T) {
+	tests := []struct {
+		name     string
+		reader   ServerReader
+		recorder ServerObservationRecorder
+	}{
+		{name: "reader only", reader: &fakeServerReader{}},
+		{name: "recorder only", recorder: &fakeServerRecorder{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now,
+				WithServerObservations(tt.reader, tt.recorder)); err == nil {
+				t.Fatal("expected incomplete server observation pair error")
+			}
+		})
+	}
+}
+
 func TestApplyPolicyTimezoneExcludesPollCycleAndOrdersUpdateFirst(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
