@@ -18,19 +18,10 @@ type LogRow = { item: LogItem; separator: string };
 type TrajectorySample = PlayerTimelineResponse['trajectories'][number];
 type MapPoint = { key: string; sample: TrajectorySample; x: number; y: number };
 type MapBounds = { minX: number; maxX: number; minY: number; maxY: number };
-type MapRegion = { id: string; name: string; x: number; y: number; rx: number; ry: number; tone: string };
 
 const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
 const PALWORLD_BOUNDS: MapBounds = { minX: -500000, maxX: 500000, minY: -500000, maxY: 500000 };
-const PALWORLD_REGIONS: MapRegion[] = [
-  { id: 'astral', name: '雪山地带', x: 34, y: 14, rx: 16, ry: 11, tone: 'snow' },
-  { id: 'desert', name: '沙漠地带', x: 71, y: 22, rx: 15, ry: 12, tone: 'sand' },
-  { id: 'sakrajima', name: '樱岛', x: 82, y: 49, rx: 10, ry: 8, tone: 'bloom' },
-  { id: 'forest', name: '森林与竹林', x: 49, y: 42, rx: 21, ry: 16, tone: 'forest' },
-  { id: 'start', name: '初始台地', x: 41, y: 66, rx: 18, ry: 14, tone: 'grass' },
-  { id: 'archipelago', name: '海风群岛', x: 66, y: 69, rx: 14, ry: 11, tone: 'coast' },
-  { id: 'volcano', name: '火山地带', x: 24, y: 75, rx: 17, ry: 13, tone: 'lava' },
-];
+const PALWORLD_MAP_IMAGE = '/palworld-map/world.png';
 const KNOWN_EVENTS = new Set([
   'player_joined', 'player_left', 'player_attribute_changed',
   'guard_warning_attempted', 'guard_warning_delivered', 'guard_warning_failed',
@@ -220,30 +211,13 @@ function trajectoryLocationLabels(items: LogItem[]) {
 
 function mapLocationLabel(sample: TrajectorySample) {
   const landmark = knownMapLocation(sample);
-  const area = nearestMapRegion(sample);
-  return landmark ? `${landmark} · ${area}` : area;
+  return landmark || '地图坐标位置';
 }
 
 function knownMapLocation(_sample: TrajectorySample): string {
   // This hook is intentionally centralized so licensed map assets or a location
   // translation table can replace coordinate-only labels without touching UI code.
   return '';
-}
-
-function nearestMapRegion(sample: TrajectorySample) {
-  const point = projectWorldSample(sample);
-  let best = PALWORLD_REGIONS[0];
-  let bestScore = Number.POSITIVE_INFINITY;
-  for (const region of PALWORLD_REGIONS) {
-    const dx = (point.x - region.x) / region.rx;
-    const dy = (point.y - region.y) / region.ry;
-    const score = dx * dx + dy * dy;
-    if (score < bestScore) {
-      best = region;
-      bestScore = score;
-    }
-  }
-  return bestScore <= 1.35 ? best.name : `${best.name}附近`;
 }
 
 export function PlayerTimeline({ includePrivate = false, players, refreshKey }: Props) {
@@ -360,6 +334,7 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
 
 function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: { activeIndex: number; items: LogItem[]; loading: boolean; onCursorChange: (index: number) => void; selected: boolean }) {
   const samples = useMemo(() => trajectorySamples(items), [items]);
+  const [mapAvailable, setMapAvailable] = useState(true);
   const points = useMemo<MapPoint[]>(() => {
     return samples.map((sample) => {
       const position = projectWorldSample(sample);
@@ -384,23 +359,8 @@ function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: 
       <span className="timeline-map-count"><Route size={15} /> {samples.length} 个坐标</span>
     </div>
     <div className="timeline-map-surface">
-      <svg aria-label="完整地图" className="timeline-world-map" data-testid="timeline-map" preserveAspectRatio="xMidYMid meet" role="img" viewBox="0 0 100 100">
-        <defs>
-          <pattern height="5" id="timeline-grid" patternUnits="userSpaceOnUse" width="5">
-            <path d="M 8 0 L 0 0 0 8" fill="none" stroke="currentColor" strokeWidth="0.18" />
-          </pattern>
-          <radialGradient id="timeline-sea" cx="48%" cy="44%" r="65%">
-            <stop offset="0%" stopColor="#c9e7ee" />
-            <stop offset="100%" stopColor="#76aebb" />
-          </radialGradient>
-        </defs>
-        <rect className="timeline-map-sea" height="100" width="100" />
-        <rect className="timeline-map-grid" height="100" width="100" />
-        {PALWORLD_REGIONS.map((region) => <g className={`timeline-map-region timeline-map-region--${region.tone}`} key={region.id}>
-          <ellipse cx={region.x} cy={region.y} rx={region.rx} ry={region.ry} />
-          <text x={region.x} y={region.y}>{region.name}</text>
-        </g>)}
-        <path className="timeline-map-shore" d="M20 13 C31 4 49 8 59 18 C69 15 82 19 86 33 C98 41 94 59 82 63 C79 79 64 89 48 84 C35 94 17 86 15 70 C4 61 5 45 16 39 C11 29 13 19 20 13 Z" />
+      {mapAvailable ? <img alt="Palworld 完整游戏地图" className="timeline-real-map" src={PALWORLD_MAP_IMAGE} onError={() => setMapAvailable(false)} /> : <div className="timeline-map-missing" role="status">缺少真实地图资源：请将参考仓库中的 Palworld 地图图片放到 <code>webui/public/palworld-map/world.png</code></div>}
+      <svg aria-label="轨迹覆盖层" className="timeline-world-map timeline-world-map--overlay" data-testid="timeline-map" preserveAspectRatio="xMidYMid meet" role="img" viewBox="0 0 100 100">
         {segments.map((segment) => <polyline className="timeline-map-route" data-testid="timeline-map-route" key={segment[0].key} points={segment.map((point) => `${point.x},${point.y}`).join(' ')} />)}
         {points.map((point) => <circle className="timeline-map-point" cx={point.x} cy={point.y} key={point.key} r="1.35" />)}
         {activePoint ? <g className="timeline-map-active" data-testid="timeline-map-active">
