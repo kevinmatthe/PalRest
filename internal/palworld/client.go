@@ -31,7 +31,6 @@ type playerPayload struct {
 	LocationX     *float64 `json:"location_x"`
 	LocationY     *float64 `json:"location_y"`
 	Level         *int     `json:"level"`
-	BuildingCount *int     `json:"building_count"`
 }
 
 type playersPayload struct {
@@ -83,7 +82,7 @@ func (c *Client) ListPlayers(ctx context.Context) ([]domain.Player, error) {
 		players = append(players, domain.Player{
 			UserID: *player.UserID, PlayerID: *player.PlayerID, Name: *player.Name, AccountName: *player.AccountName,
 			IP: *player.IP, Ping: *player.Ping, LocationX: *player.LocationX, LocationY: *player.LocationY,
-			Level: *player.Level, BuildingCount: *player.BuildingCount,
+			Level: *player.Level,
 		})
 	}
 	return players, nil
@@ -126,7 +125,6 @@ func (p playerPayload) missingRequiredField() string {
 		{"name", p.Name == nil}, {"accountName", p.AccountName == nil}, {"playerId", p.PlayerID == nil},
 		{"userId", p.UserID == nil}, {"ip", p.IP == nil}, {"ping", p.Ping == nil},
 		{"location_x", p.LocationX == nil}, {"location_y", p.LocationY == nil}, {"level", p.Level == nil},
-		{"building_count", p.BuildingCount == nil},
 	} {
 		if field.missing {
 			return field.name
