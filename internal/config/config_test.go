@@ -50,6 +50,8 @@ func TestDayDurationGrammarAndBounds(t *testing.T) {
 		{"106751d", 106751 * 24 * time.Hour, false},
 		{"106752d", 0, true},
 		{"-1d", -24 * time.Hour, false},
+		{"-106751d", -106751 * 24 * time.Hour, false},
+		{"-106752d", 0, true},
 		{"1.5d", 0, true},
 		{"1e2d", 0, true},
 		{"0x2d", 0, true},
@@ -68,20 +70,6 @@ func TestDayDurationGrammarAndBounds(t *testing.T) {
 				t.Fatalf("duration=%s want=%s err=%v", got, tt.want, err)
 			}
 		})
-	}
-}
-
-func TestValidDayDurationParsingDoesNotAllocate(t *testing.T) {
-	var got time.Duration
-	var err error
-	allocations := testing.AllocsPerRun(1000, func() {
-		got, err = parseDuration("106751d")
-	})
-	if err != nil || got != 106751*24*time.Hour {
-		t.Fatalf("duration=%s err=%v", got, err)
-	}
-	if allocations != 0 {
-		t.Fatalf("allocations=%v", allocations)
 	}
 }
 

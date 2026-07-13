@@ -148,9 +148,7 @@ docker run --rm --network homelab-v2 curlimages/curl:latest \
 COOKIE_JAR=$(mktemp)
 trap 'rm -f "$COOKIE_JAR"' EXIT
 jq -n \
-  --arg username "$PALREST_ADMIN_USERNAME" \
-  --arg password "$PALREST_ADMIN_PASSWORD" \
-  '{username: $username, password: $password}' | \
+  '{username: env.PALREST_ADMIN_USERNAME, password: env.PALREST_ADMIN_PASSWORD}' | \
   curl -sS -c "$COOKIE_JAR" \
     -H 'Content-Type: application/json' \
     --data-binary @- \
