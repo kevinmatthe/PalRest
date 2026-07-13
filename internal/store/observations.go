@@ -337,8 +337,8 @@ func (r *Repository) CleanupRawObservations(ctx context.Context, cutoff time.Tim
 	if cutoff.IsZero() {
 		return 0, fmt.Errorf("cleanup raw observations: cutoff is zero")
 	}
-	if limit <= 0 {
-		return 0, fmt.Errorf("cleanup raw observations: limit must be positive")
+	if limit < 1 || limit > 2000 {
+		return 0, fmt.Errorf("cleanup raw observations: limit must be between 1 and 2000")
 	}
 	for _, target := range []struct {
 		name, query string

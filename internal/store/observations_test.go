@@ -316,4 +316,16 @@ func TestObservationCleanupIsBoundedAndPreservesProtectedRows(t *testing.T) {
 	if deleted, err = repo.CleanupRawObservations(ctx, cutoff, 0); err == nil || deleted != 0 {
 		t.Fatalf("invalid cleanup deleted=%d err=%v", deleted, err)
 	}
+	if deleted, err = repo.CleanupRawObservations(ctx, cutoff, 2001); err == nil || deleted != 0 {
+		t.Fatalf("oversized cleanup deleted=%d err=%v", deleted, err)
+	}
+	for _, table := range []string{"activity_events", "trajectory_samples", "server_metric_samples"} {
+		var oldRows int
+		if err := repo.db.QueryRowContext(ctx, `SELECT count(*) FROM `+table).Scan(&oldRows); err != nil {
+			t.Fatal(err)
+		}
+		if oldRows != 3 {
+			t.Fatalf("oversized cleanup changed %s: count=%d", table, oldRows)
+		}
+	}
 }
