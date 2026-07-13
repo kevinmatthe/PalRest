@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"reflect"
 	"strings"
@@ -520,8 +521,68 @@ ORDER BY e.occurred_at,e.id LIMIT ?)`},
 }
 
 func validJSONObject(value []byte) bool {
-	var object map[string]json.RawMessage
-	return json.Unmarshal(value, &object) == nil && object != nil
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.UseNumber()
+	isObject, err := consumeStrictJSONValue(decoder)
+	if err != nil || !isObject {
+		return false
+	}
+	_, err = decoder.Token()
+	return err == io.EOF
+}
+
+func consumeStrictJSONValue(decoder *json.Decoder) (bool, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return false, err
+	}
+	delimiter, compound := token.(json.Delim)
+	if !compound {
+		return false, nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return false, err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return false, fmt.Errorf("JSON object key is not a string")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return false, fmt.Errorf("duplicate JSON object key %q", key)
+			}
+			seen[key] = struct{}{}
+			if _, err := consumeStrictJSONValue(decoder); err != nil {
+				return false, err
+			}
+		}
+		closing, err := decoder.Token()
+		return true, strictClosingDelimiter(closing, '}', err)
+	case '[':
+		for decoder.More() {
+			if _, err := consumeStrictJSONValue(decoder); err != nil {
+				return false, err
+			}
+		}
+		closing, err := decoder.Token()
+		return false, strictClosingDelimiter(closing, ']', err)
+	default:
+		return false, fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
+}
+
+func strictClosingDelimiter(token json.Token, want json.Delim, err error) error {
+	if err != nil {
+		return err
+	}
+	if token != want {
+		return fmt.Errorf("unexpected JSON closing delimiter %v", token)
+	}
+	return nil
 }
 
 const observationTimeFormat = "2006-01-02T15:04:05.000000000Z"

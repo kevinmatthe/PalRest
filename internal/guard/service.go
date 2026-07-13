@@ -265,10 +265,7 @@ func (s *Service) RecordWarningResult(ctx context.Context, decision WarningDecis
 			"action": "warning", "player_name": decision.PlayerName,
 			"threshold_ms": decision.Threshold.Milliseconds(),
 		})
-		if err != nil || !attempted {
-			return err
-		}
-		if err := tx.UpdateWarningResult(decision.UserID, decision.Period.Key, decision.Threshold, status, errorSummary, next, now); err != nil {
+		if err != nil {
 			return err
 		}
 		resultType := "guard_warning_delivered"
@@ -280,8 +277,30 @@ func (s *Service) RecordWarningResult(ctx context.Context, decision WarningDecis
 			resultType = "guard_warning_failed"
 			payload["error_code"] = "delivery_failed"
 		}
-		_, err = appendGuardActivity(tx, ref, "02", resultType, decision.UserID, now, payload)
-		return err
+		if !attempted {
+			inserted, err := appendGuardActivity(tx, ref, "02", resultType, decision.UserID, now, payload)
+			if err != nil {
+				return err
+			}
+			if inserted {
+				return fmt.Errorf("guard warning replay %q was missing its result event", ref)
+			}
+			if event.Attempts < 1 || !event.UpdatedAt.Equal(now) || event.Status != status || event.LastError != errorSummary {
+				return fmt.Errorf("guard warning replay %q conflicts with legacy result", ref)
+			}
+			return nil
+		}
+		if err := tx.UpdateWarningResult(decision.UserID, decision.Period.Key, decision.Threshold, status, errorSummary, next, now); err != nil {
+			return err
+		}
+		inserted, err := appendGuardActivity(tx, ref, "02", resultType, decision.UserID, now, payload)
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			return fmt.Errorf("guard warning result event %q already exists for a new attempt", ref)
+		}
+		return nil
 	})
 }
 
@@ -587,19 +606,17 @@ func (s *Service) RecordKickResult(ctx context.Context, decision KickDecision, r
 		errorSummary = sanitizeError(resultErr)
 	}
 	err := s.repo.WithTx(ctx, func(tx *store.Tx) error {
+		legacy := store.EnforcementEvent{
+			UserID: decision.UserID, PeriodKey: decision.Period.Key, Action: "kick", Result: result,
+			PolicyRevision: decision.PolicyRevision, Generation: decision.Generation, ErrorSummary: errorSummary, CreatedAt: now,
+		}
 		ref := guardEventRef("kick", decision.UserID, decision.Period.Key, fmt.Sprintf("%s|%d", decision.PolicyRevision, decision.Generation), now)
 		attempted, appendErr := appendGuardActivity(tx, ref, "01", "enforcement_attempted", decision.UserID, now, map[string]any{
 			"action": "kick", "generation": decision.Generation, "player_name": decision.PlayerName,
 			"reset_at": decision.ResetAt.UTC().Format(time.RFC3339Nano),
 		})
-		if appendErr != nil || !attempted {
+		if appendErr != nil {
 			return appendErr
-		}
-		if err := tx.AppendEnforcement(store.EnforcementEvent{
-			UserID: decision.UserID, PeriodKey: decision.Period.Key, Action: "kick", Result: result,
-			PolicyRevision: decision.PolicyRevision, Generation: decision.Generation, ErrorSummary: errorSummary, CreatedAt: now,
-		}); err != nil {
-			return err
 		}
 		resultType := "enforcement_succeeded"
 		payload := map[string]any{
@@ -610,8 +627,34 @@ func (s *Service) RecordKickResult(ctx context.Context, decision KickDecision, r
 			resultType = "enforcement_failed"
 			payload["error_code"] = "kick_failed"
 		}
-		_, appendErr = appendGuardActivity(tx, ref, "02", resultType, decision.UserID, now, payload)
-		return appendErr
+		if !attempted {
+			inserted, err := appendGuardActivity(tx, ref, "02", resultType, decision.UserID, now, payload)
+			if err != nil {
+				return err
+			}
+			if inserted {
+				return fmt.Errorf("enforcement replay %q was missing its result event", ref)
+			}
+			exists, err := tx.EnforcementEventExists(legacy)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return fmt.Errorf("enforcement replay %q conflicts with legacy result", ref)
+			}
+			return nil
+		}
+		if err := tx.AppendEnforcement(legacy); err != nil {
+			return err
+		}
+		inserted, appendErr := appendGuardActivity(tx, ref, "02", resultType, decision.UserID, now, payload)
+		if appendErr != nil {
+			return appendErr
+		}
+		if !inserted {
+			return fmt.Errorf("enforcement result event %q already exists for a new attempt", ref)
+		}
+		return nil
 	})
 	if err != nil {
 		return err

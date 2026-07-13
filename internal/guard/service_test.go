@@ -572,6 +572,9 @@ func TestGuardUnifiedEventsAreIdempotentAndRollbackWithLegacyResult(t *testing.T
 	if err := h.service.RecordWarningResult(t.Context(), warning, nil, warningAt); err != nil {
 		t.Fatal(err)
 	}
+	if err := h.service.RecordWarningResult(t.Context(), warning, errors.New("opposite outcome"), warningAt); err == nil {
+		t.Fatal("opposite warning outcome replay must conflict")
+	}
 	if err := h.service.RecordWarningResult(t.Context(), warning, nil, warningAt); err != nil {
 		t.Fatal(err)
 	}
@@ -593,6 +596,9 @@ func TestKickUnifiedEventsAreIdempotentAndRollbackWithLegacyResult(t *testing.T)
 	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err != nil {
 		t.Fatal(err)
 	}
+	if err := h.service.RecordKickResult(t.Context(), kick, errors.New("opposite outcome"), kickAt); err == nil {
+		t.Fatal("opposite kick outcome replay must conflict")
+	}
 	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err != nil {
 		t.Fatal(err)
 	}
@@ -604,6 +610,33 @@ func TestKickUnifiedEventsAreIdempotentAndRollbackWithLegacyResult(t *testing.T)
 	if err != nil || len(timeline.Events) != 2 {
 		t.Fatalf("timeline=%+v err=%v", timeline.Events, err)
 	}
+}
+
+func TestGuardReplayRejectsDifferentLegacyFailureDetails(t *testing.T) {
+	t.Run("warning", func(t *testing.T) {
+		h := newHarness(t, 2*time.Hour, 3*time.Hour)
+		h.observe(h.start, player())
+		at := h.start.Add(91 * time.Minute)
+		decision := h.observe(at, player()).Warnings[0]
+		if err := h.service.RecordWarningResult(t.Context(), decision, errors.New("first safe detail"), at); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.service.RecordWarningResult(t.Context(), decision, errors.New("different safe detail"), at); err == nil {
+			t.Fatal("different warning legacy payload must conflict")
+		}
+	})
+	t.Run("kick", func(t *testing.T) {
+		h := newHarness(t, time.Minute, 3*time.Hour)
+		h.observe(h.start, player())
+		at := h.start.Add(time.Minute)
+		decision := h.observe(at, player()).Kicks[0]
+		if err := h.service.RecordKickResult(t.Context(), decision, errors.New("first safe detail"), at); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.service.RecordKickResult(t.Context(), decision, errors.New("different safe detail"), at); err == nil {
+			t.Fatal("different kick legacy payload must conflict")
+		}
+	})
 }
 
 func TestWarningResultEventInsertFailureRollsBackAttemptAndLegacyUpdate(t *testing.T) {

@@ -129,6 +129,57 @@ func TestPlayerObservationExactReplayIsIdempotentAndCollisionFails(t *testing.T)
 	}
 }
 
+func TestPlayerObservationRejectsDivergentTrajectoryCollision(t *testing.T) {
+	repo, _ := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	sample := observationTrajectory("u", at)
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Trajectories: []TrajectorySample{sample}}); err != nil {
+		t.Fatal(err)
+	}
+	sample.X++
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Trajectories: []TrajectorySample{sample}}); err == nil {
+		t.Fatal("divergent trajectory replay must conflict")
+	}
+	var count int
+	if err := repo.db.QueryRow(`SELECT COUNT(*) FROM trajectory_samples`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+}
+
+func TestActivityPayloadStrictJSONAndReplayEquality(t *testing.T) {
+	repo, _ := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	for name, payload := range map[string]string{
+		"top duplicate":    `{"value":1,"value":1}`,
+		"nested duplicate": `{"nested":{"value":1,"value":1}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			event := observationEvent("invalid-"+name, "player_attribute_changed", "u", at)
+			event.PayloadJSON = payload
+			if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Events: []ActivityEvent{event}}); err == nil {
+				t.Fatal("expected duplicate-key rejection")
+			}
+		})
+	}
+	event := observationEvent("strict", "player_attribute_changed", "u", at)
+	event.PayloadJSON = `{"nested":null,"value":1}`
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Events: []ActivityEvent{event}}); err != nil {
+		t.Fatal(err)
+	}
+	replay := event
+	replay.PayloadJSON = `{ "value": 1, "nested": null }`
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Events: []ActivityEvent{replay}}); err != nil {
+		t.Fatalf("semantic replay: %v", err)
+	}
+	for _, payload := range []string{`{"nested":null,"value":"1"}`, `{"nested":null,"value":1.0}`} {
+		collision := event
+		collision.PayloadJSON = payload
+		if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Events: []ActivityEvent{collision}}); err == nil {
+			t.Fatalf("numeric type/representation collision accepted: %s", payload)
+		}
+	}
+}
+
 func TestServerMetricObservationRollsBackEventAndMetricTogether(t *testing.T) {
 	repo, _ := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)

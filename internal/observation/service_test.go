@@ -2,10 +2,12 @@ package observation_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -29,6 +31,28 @@ type recorderFake struct {
 type cleanupCall struct {
 	cutoff time.Time
 	limit  int
+}
+
+type commitThenErrorRecorder struct {
+	delegate *store.Repository
+	attempts []store.PlayerObservationWrite
+	failOnce bool
+}
+
+func (r *commitThenErrorRecorder) RecordPlayerObservation(ctx context.Context, write store.PlayerObservationWrite) error {
+	r.attempts = append(r.attempts, write)
+	if err := r.delegate.RecordPlayerObservation(ctx, write); err != nil {
+		return err
+	}
+	if r.failOnce {
+		r.failOnce = false
+		return errors.New("ambiguous commit result")
+	}
+	return nil
+}
+
+func (r *commitThenErrorRecorder) CleanupRawObservations(ctx context.Context, cutoff time.Time, limit int) (int, error) {
+	return r.delegate.CleanupRawObservations(ctx, cutoff, limit)
 }
 
 func (r *recorderFake) RecordPlayerObservation(_ context.Context, write store.PlayerObservationWrite) error {
@@ -249,6 +273,48 @@ func TestAttributeChangeEventIDIsStableAcrossReplay(t *testing.T) {
 	first, replay := derive("first"), derive("replay")
 	if first.ID != replay.ID || first.PayloadJSON != replay.PayloadJSON {
 		t.Fatalf("first=%+v replay=%+v", first, replay)
+	}
+}
+
+func TestAmbiguousCommitReplaysExactWriteBeforeAdvancingBaseline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "observations.db")
+	repo, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	recorder := &commitThenErrorRecorder{delegate: repo, failOnce: true}
+	sequence := 0
+	svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, func() string {
+		sequence++
+		return fmt.Sprintf("generated-%d", sequence)
+	})
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	a, b := player("a", 10, 10), player("b", 20, 20)
+	if err := svc.Observe(t.Context(), base, []domain.Player{a, b}, "poll-1"); err == nil {
+		t.Fatal("expected ambiguous commit result")
+	}
+	a.Level++
+	if err := svc.Observe(t.Context(), base.Add(time.Minute), []domain.Player{a}, "poll-2"); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.attempts) != 3 || !reflect.DeepEqual(recorder.attempts[0], recorder.attempts[1]) {
+		t.Fatalf("attempts were not replayed exactly: %+v", recorder.attempts)
+	}
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for table, want := range map[string]int{"activity_events": 4, "trajectory_samples": 2, "player_private_samples": 3} {
+		var got int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&got); err != nil || got != want {
+			t.Fatalf("%s=%d want=%d err=%v", table, got, want, err)
+		}
+	}
+	var distinctSegments int
+	if err := db.QueryRow(`SELECT COUNT(DISTINCT segment_id) FROM trajectory_samples`).Scan(&distinctSegments); err != nil || distinctSegments != 2 {
+		t.Fatalf("segments=%d err=%v", distinctSegments, err)
 	}
 }
 
@@ -493,8 +559,8 @@ func TestRecorderFailureDoesNotAdvanceBaseline(t *testing.T) {
 		failed.Trajectories[0].Y != retry.Trajectories[0].Y {
 		t.Fatalf("failed=%+v retry=%+v", failed, retry)
 	}
-	if failed.Events[0].ID == retry.Events[0].ID || failed.Trajectories[0].SegmentID == retry.Trajectories[0].SegmentID {
-		t.Fatal("retry should use fresh attempt IDs while preserving semantics")
+	if !reflect.DeepEqual(failed, retry) {
+		t.Fatal("retry must preserve the exact pending observation write")
 	}
 }
 

@@ -414,6 +414,20 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, event.UserID, event.PeriodKey, event.Action, ev
 	return nil
 }
 
+func (tx *Tx) EnforcementEventExists(event EnforcementEvent) (bool, error) {
+	var count int
+	err := tx.tx.QueryRow(`
+SELECT COUNT(*) FROM enforcement_events
+WHERE user_id=? AND period_key=? AND action=? AND result=? AND policy_revision=?
+  AND generation=? AND error_summary=? AND created_at=?`, event.UserID, event.PeriodKey,
+		event.Action, event.Result, event.PolicyRevision, event.Generation, event.ErrorSummary,
+		formatTime(event.CreatedAt)).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("verify enforcement event replay: %w", err)
+	}
+	return count == 1, nil
+}
+
 // AppendActivityEvent adds an immutable business event inside the caller's
 // transaction. The boolean is false when the same stable event ID was already
 // committed, allowing action-result replays to remain idempotent.

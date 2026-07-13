@@ -40,6 +40,16 @@ type Service struct {
 	online            map[string]playerState
 	lastCleanup       time.Time
 	continuityValid   bool
+	pending           *pendingObservation
+}
+
+type pendingObservation struct {
+	write           store.PlayerObservationWrite
+	next            map[string]playerState
+	current         map[string]domain.Player
+	at              time.Time
+	correlationID   string
+	continuityValid bool
 }
 
 type playerState struct {
@@ -109,6 +119,25 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 	at = at.UTC()
 
 	s.mu.Lock()
+	if s.pending != nil {
+		pending := s.pending
+		if err := s.recorder.RecordPlayerObservation(ctx, pending.write); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		s.online = pending.next
+		s.asOf = pending.at
+		s.continuityValid = pending.continuityValid
+		s.pending = nil
+		if at.Equal(pending.at) {
+			same := correlationID == pending.correlationID && playerMapsEqual(current, pending.current)
+			s.mu.Unlock()
+			if !same {
+				return fmt.Errorf("observe players: observation at %s differs from pending replay", at.Format(time.RFC3339Nano))
+			}
+			return nil
+		}
+	}
 	if !s.asOf.IsZero() && !at.After(s.asOf) {
 		s.mu.Unlock()
 		return fmt.Errorf("observe players: observation time %s must be after %s", at.Format(time.RFC3339Nano), s.asOf.Format(time.RFC3339Nano))
@@ -211,10 +240,14 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		write.Events = append(write.Events, event)
 	}
 
-	// Generated UUID-like values identify this persistence attempt. The recorder's
-	// transaction prevents a failed attempt from partially committing; a retry may
-	// use fresh IDs while deriving the same events and trajectory anchor.
+	// Keep the complete write pending until the recorder confirms it. This also
+	// covers an ambiguous commit result: the next call replays these exact IDs,
+	// source references, and segment anchors before advancing the baseline.
 	if err := s.recorder.RecordPlayerObservation(ctx, write); err != nil {
+		s.pending = &pendingObservation{
+			write: write, next: next, current: current, at: at,
+			correlationID: correlationID, continuityValid: true,
+		}
 		s.mu.Unlock()
 		return err
 	}
@@ -243,6 +276,21 @@ func (s *Service) PollFailed() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.continuityValid = false
+	if s.pending != nil {
+		s.pending.continuityValid = false
+	}
+}
+
+func playerMapsEqual(a, b map[string]domain.Player) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for id, player := range a {
+		if other, ok := b[id]; !ok || player != other {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) playerAttributeChangedEvent(previous, current domain.Player, at time.Time, correlationID string) (store.ActivityEvent, bool, error) {
