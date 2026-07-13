@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"unicode"
 )
@@ -40,8 +41,12 @@ func RedactJSON(raw []byte) ([]byte, error) {
 	if err := decoder.Decode(&value); err != nil {
 		return nil, fmt.Errorf("decode sensitive JSON: %w", err)
 	}
-	if decoder.More() {
-		return nil, fmt.Errorf("decode sensitive JSON: trailing content")
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("decode sensitive JSON: trailing JSON value")
+		}
+		return nil, fmt.Errorf("decode sensitive JSON: trailing content: %w", err)
 	}
 	redacted, err := json.Marshal(Redact(value))
 	if err != nil {

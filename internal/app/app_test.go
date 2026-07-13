@@ -89,7 +89,7 @@ func TestNewWiresUnifiedPlayerAndServerObservations(t *testing.T) {
 		requests <- r.URL.Path
 		switch r.URL.Path {
 		case "/v1/api/players":
-			_, _ = w.Write([]byte(`{"players":[{"name":"One","playerId":"pal-1","userId":"u1","location_x":10,"location_y":20,"level":3}]}`))
+			_, _ = w.Write([]byte(`{"players":[{"name":"One","accountName":"one","playerId":"pal-1","userId":"u1","ip":"","ping":1,"location_x":10,"location_y":20,"level":3,"building_count":0}]}`))
 		case "/v1/api/metrics":
 			_, _ = w.Write([]byte(`{"serverfps":60,"currentplayernum":1,"serverframetime":1,"maxplayernum":32,"uptime":100,"basecampnum":1,"days":2}`))
 		case "/v1/api/info":
@@ -182,7 +182,7 @@ func TestNewUsesObservationSamplingConfiguration(t *testing.T) {
 		mu.Unlock()
 		switch r.URL.Path {
 		case "/v1/api/players":
-			_, _ = fmt.Fprintf(w, `{"players":[{"name":"One","playerId":"pal-1","userId":"u1","location_x":%d,"location_y":20}]}`, call)
+			_, _ = fmt.Fprintf(w, `{"players":[{"name":"One","accountName":"one","playerId":"pal-1","userId":"u1","ip":"127.0.0.1","ping":1,"location_x":%d,"location_y":20,"level":3,"building_count":0}]}`, call)
 		case "/v1/api/metrics":
 			_, _ = w.Write([]byte(`{"serverfps":60,"currentplayernum":1,"serverframetime":1,"maxplayernum":32,"uptime":100,"basecampnum":1,"days":2}`))
 		case "/v1/api/info":
