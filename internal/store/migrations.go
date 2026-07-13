@@ -154,6 +154,8 @@ CREATE TABLE activity_events (
 );
 CREATE INDEX activity_events_subject_time
 ON activity_events(subject_type, subject_id, occurred_at, id);
+CREATE INDEX activity_events_retention
+ON activity_events(occurred_at, id);
 
 CREATE TABLE trajectory_samples (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,6 +171,8 @@ CREATE TABLE trajectory_samples (
 );
 CREATE INDEX trajectory_user_time
 ON trajectory_samples(user_id, observed_at);
+CREATE INDEX trajectory_samples_retention
+ON trajectory_samples(observed_at, id);
 
 CREATE TABLE server_metric_samples (
     observed_at TEXT NOT NULL PRIMARY KEY,

@@ -73,7 +73,7 @@ INSERT INTO activity_events(
     id,event_type,subject_type,subject_id,occurred_at,observed_at,source,source_ref,
     correlation_id,confidence,schema_version,payload_json
 ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, event.ID, event.EventType, event.SubjectType, event.SubjectID,
-				formatTime(event.OccurredAt), formatTime(event.ObservedAt), event.Source, event.SourceRef,
+				formatObservationTime(event.OccurredAt), formatObservationTime(event.ObservedAt), event.Source, event.SourceRef,
 				event.CorrelationID, event.Confidence, event.SchemaVersion, event.PayloadJSON); err != nil {
 				return fmt.Errorf("insert activity event %q: %w", event.ID, err)
 			}
@@ -81,9 +81,9 @@ INSERT INTO activity_events(
 		for _, sample := range write.Trajectories {
 			if _, err := tx.tx.ExecContext(ctx, `
 INSERT INTO trajectory_samples(user_id,segment_id,observed_at,x,y,ping,level,source_ref)
-VALUES(?,?,?,?,?,?,?,?)`, sample.UserID, sample.SegmentID, formatTime(sample.ObservedAt),
+VALUES(?,?,?,?,?,?,?,?)`, sample.UserID, sample.SegmentID, formatObservationTime(sample.ObservedAt),
 				sample.X, sample.Y, sample.Ping, sample.Level, sample.SourceRef); err != nil {
-				return fmt.Errorf("insert trajectory sample for %q at %s: %w", sample.UserID, formatTime(sample.ObservedAt), err)
+				return fmt.Errorf("insert trajectory sample for %q at %s: %w", sample.UserID, formatObservationTime(sample.ObservedAt), err)
 			}
 		}
 		return nil
@@ -160,7 +160,7 @@ func (r *Repository) RecordServerMetrics(ctx context.Context, at time.Time, metr
 INSERT INTO server_metric_samples(
     observed_at,server_fps,current_player_num,server_frame_time,max_player_num,
     uptime_seconds,base_camp_num,game_days
-) VALUES(?,?,?,?,?,?,?,?)`, formatTime(at), metrics.ServerFPS, metrics.CurrentPlayerNum,
+) VALUES(?,?,?,?,?,?,?,?)`, formatObservationTime(at), metrics.ServerFPS, metrics.CurrentPlayerNum,
 			metrics.ServerFrameTime, metrics.MaxPlayerNum, metrics.UptimeSeconds, metrics.BaseCampNum, metrics.Days); err != nil {
 			return fmt.Errorf("insert server metric sample: %w", err)
 		}
@@ -183,7 +183,7 @@ func (r *Repository) RecordServerDocument(ctx context.Context, kind string, at t
 	}
 	result, err := r.db.ExecContext(ctx, `
 INSERT INTO server_documents(kind,content_hash,observed_at,canonical_json)
-VALUES(?,?,?,?) ON CONFLICT(kind,content_hash) DO NOTHING`, kind, hash, formatTime(at), string(canonical))
+VALUES(?,?,?,?) ON CONFLICT(kind,content_hash) DO NOTHING`, kind, hash, formatObservationTime(at), string(canonical))
 	if err != nil {
 		return false, fmt.Errorf("insert server document: %w", err)
 	}
@@ -253,7 +253,7 @@ SELECT id,event_type,subject_type,subject_id,occurred_at,observed_at,source,sour
        correlation_id,confidence,schema_version,payload_json
 FROM activity_events
 WHERE subject_type='player' AND subject_id=? AND occurred_at>=? AND occurred_at<?
-ORDER BY occurred_at,id LIMIT ?`, userID, formatTime(start), formatTime(end), limit)
+ORDER BY occurred_at,id LIMIT ?`, userID, formatObservationTime(start), formatObservationTime(end), limit)
 	if err != nil {
 		return nil, fmt.Errorf("query activity events: %w", err)
 	}
@@ -289,7 +289,7 @@ func queryTimelineSamples(ctx context.Context, tx *sql.Tx, userID string, start,
 SELECT user_id,segment_id,observed_at,x,y,ping,level,source_ref
 FROM trajectory_samples
 WHERE user_id=? AND observed_at>=? AND observed_at<?
-ORDER BY observed_at,id LIMIT ?`, userID, formatTime(start), formatTime(end), limit)
+ORDER BY observed_at,id LIMIT ?`, userID, formatObservationTime(start), formatObservationTime(end), limit)
 	if err != nil {
 		return nil, fmt.Errorf("query trajectory samples: %w", err)
 	}
@@ -320,7 +320,7 @@ func insertTimelineAudit(ctx context.Context, tx *sql.Tx, actor, userID string, 
 INSERT INTO sensitive_access_audit(
     actor,action,subject_type,subject_id,range_start,range_end,outcome,requested_at
 ) VALUES(?,?,?,?,?,?,?,?)`, actor, "read_player_timeline", "player", userID,
-		formatTime(start), formatTime(end), outcome, formatTime(time.Now()))
+		formatObservationTime(start), formatObservationTime(end), outcome, formatObservationTime(time.Now()))
 	return err
 }
 
@@ -349,7 +349,7 @@ func (r *Repository) CleanupRawObservations(ctx context.Context, cutoff time.Tim
 	} {
 		var affected int64
 		if err := r.WithTx(ctx, func(tx *Tx) error {
-			result, execErr := tx.tx.ExecContext(ctx, target.query, formatTime(cutoff), limit)
+			result, execErr := tx.tx.ExecContext(ctx, target.query, formatObservationTime(cutoff), limit)
 			if execErr != nil {
 				return fmt.Errorf("delete %s: %w", target.name, execErr)
 			}
@@ -369,6 +369,12 @@ func (r *Repository) CleanupRawObservations(ctx context.Context, cutoff time.Tim
 func validJSONObject(value []byte) bool {
 	var object map[string]json.RawMessage
 	return json.Unmarshal(value, &object) == nil && object != nil
+}
+
+const observationTimeFormat = "2006-01-02T15:04:05.000000000Z"
+
+func formatObservationTime(value time.Time) string {
+	return value.UTC().Format(observationTimeFormat)
 }
 
 func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }

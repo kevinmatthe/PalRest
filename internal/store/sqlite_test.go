@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,7 +85,7 @@ func TestOpenMigrationCreatesAnalyticsSchema(t *testing.T) {
 	if cleanupIndex != 1 {
 		t.Fatalf("player_sessions_ended_at count=%d", cleanupIndex)
 	}
-	for _, index := range []string{"activity_events_subject_time", "trajectory_user_time", "sensitive_audit_actor_time"} {
+	for _, index := range []string{"activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "sensitive_audit_actor_time"} {
 		var count int
 		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -171,7 +172,7 @@ VALUES('u1','One','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`); err != nil 
 			t.Fatalf("table %s count=%d", table, count)
 		}
 	}
-	for _, index := range []string{"activity_events_subject_time", "trajectory_user_time", "sensitive_audit_actor_time"} {
+	for _, index := range []string{"activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "sensitive_audit_actor_time"} {
 		var count int
 		if err := repo.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -247,6 +248,44 @@ INSERT INTO server_metric_samples(
 INSERT INTO sensitive_access_audit(actor, action, subject_type, subject_id, outcome, requested_at)
 VALUES('admin', 'read_timeline', 'player', 'u1', 'success', '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatalf("insert audit with nullable ranges: %v", err)
+	}
+}
+
+func TestObservationCleanupSelectorsUseTimeLeadingIndexes(t *testing.T) {
+	repo, _ := openTemp(t)
+	for _, tc := range []struct {
+		name, query, index string
+	}{
+		{"activity events", `SELECT rowid FROM activity_events WHERE occurred_at<? ORDER BY occurred_at,id LIMIT ?`, "activity_events_retention"},
+		{"trajectory samples", `SELECT id FROM trajectory_samples WHERE observed_at<? ORDER BY observed_at,id LIMIT ?`, "trajectory_samples_retention"},
+		{"server metrics", `SELECT rowid FROM server_metric_samples WHERE observed_at<? ORDER BY observed_at LIMIT ?`, "sqlite_autoindex_server_metric_samples_1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := repo.db.QueryContext(t.Context(), `EXPLAIN QUERY PLAN `+tc.query, "2026-07-13T08:00:00.000000000Z", 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var details []string
+			for rows.Next() {
+				var id, parent, unused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+					t.Fatal(err)
+				}
+				details = append(details, detail)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			plan := strings.ToLower(strings.Join(details, " | "))
+			if !strings.Contains(plan, strings.ToLower(tc.index)) {
+				t.Fatalf("plan does not use %q: %s", tc.index, plan)
+			}
+			if strings.Contains(plan, "use temp b-tree") || strings.Contains(plan, "scan activity_events") || strings.Contains(plan, "scan trajectory_samples") || strings.Contains(plan, "scan server_metric_samples") {
+				t.Fatalf("cleanup selector uses scan or temp sort: %s", plan)
+			}
+		})
 	}
 }
 

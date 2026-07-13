@@ -131,6 +131,131 @@ func TestObservationRecordServerMetricsRejectsStaleWrites(t *testing.T) {
 	}
 }
 
+func TestObservationFixedWidthTimesPreserveTimelineOrderAndHalfOpenRange(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	end := base.Add(time.Second)
+	write := PlayerObservationWrite{
+		Events: []ActivityEvent{
+			observationEvent("whole", "whole", "steam_1", base),
+			observationEvent("fraction", "fraction", "steam_1", base.Add(100*time.Millisecond)),
+			observationEvent("before-end", "before", "steam_1", end.Add(-100*time.Millisecond)),
+			observationEvent("at-end", "boundary", "steam_1", end),
+			observationEvent("after-end", "after", "steam_1", end.Add(100*time.Millisecond)),
+		},
+		Trajectories: []TrajectorySample{
+			observationTrajectory("steam_1", base),
+			observationTrajectory("steam_1", base.Add(100*time.Millisecond)),
+		},
+	}
+	if err := repo.RecordPlayerObservation(t.Context(), write); err != nil {
+		t.Fatal(err)
+	}
+	events, samples, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "steam_1", base, end, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var eventIDs []string
+	for _, event := range events {
+		eventIDs = append(eventIDs, event.ID)
+	}
+	if got := strings.Join(eventIDs, ","); got != "whole,fraction,before-end" {
+		t.Fatalf("event order/range=%q", got)
+	}
+	if len(samples) != 2 || !samples[0].ObservedAt.Equal(base) || !samples[1].ObservedAt.Equal(base.Add(100*time.Millisecond)) {
+		t.Fatalf("trajectory order=%#v", samples)
+	}
+}
+
+func TestObservationFixedWidthTimesProtectCleanupBoundary(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	cutoff := base.Add(time.Second)
+	before, after := cutoff.Add(-100*time.Millisecond), cutoff.Add(100*time.Millisecond)
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{
+		Events: []ActivityEvent{
+			observationEvent("before", "sample", "u", before),
+			observationEvent("after", "sample", "u", after),
+		},
+		Trajectories: []TrajectorySample{
+			observationTrajectory("before", before),
+			observationTrajectory("after", after),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordServerMetrics(t.Context(), before, domain.ServerMetrics{ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordServerMetrics(t.Context(), after, domain.ServerMetrics{ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := repo.CleanupRawObservations(t.Context(), cutoff, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 3 {
+		t.Fatalf("deleted=%d want=3", deleted)
+	}
+	for table, column := range map[string]string{
+		"activity_events": "occurred_at", "trajectory_samples": "observed_at", "server_metric_samples": "observed_at",
+	} {
+		var count int
+		if err := repo.db.QueryRowContext(t.Context(), `SELECT count(*) FROM `+table+` WHERE `+column+`=?`, "2026-07-13T08:00:01.100000000Z").Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("post-cutoff %s count=%d", table, count)
+		}
+	}
+}
+
+func TestObservationFixedWidthMetricTimesRejectOutOfOrderFraction(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	metrics := domain.ServerMetrics{ServerFPS: 60, ServerFrameTime: 1}
+	if err := repo.RecordServerMetrics(t.Context(), base, metrics); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordServerMetrics(t.Context(), base.Add(200*time.Millisecond), metrics); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordServerMetrics(t.Context(), base.Add(100*time.Millisecond), metrics); err == nil {
+		t.Fatal("expected sample older than latest fractional sample to fail")
+	}
+	var count int
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT count(*) FROM server_metric_samples`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("metric count=%d", count)
+	}
+}
+
+func TestObservationDocumentsAndAuditUseFixedWidthTimes(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	if _, err := repo.RecordServerDocument(t.Context(), "info", base.Add(100*time.Millisecond), []byte(`{}`), "h"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "missing", base, base.Add(time.Second), 10); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	var documentAt, rangeStart, rangeEnd, requestedAt string
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT observed_at FROM server_documents`).Scan(&documentAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT range_start,range_end,requested_at FROM sensitive_access_audit`).Scan(&rangeStart, &rangeEnd, &requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	if documentAt != "2026-07-13T08:00:00.100000000Z" || rangeStart != "2026-07-13T08:00:00.000000000Z" || rangeEnd != "2026-07-13T08:00:01.000000000Z" {
+		t.Fatalf("document=%q range=%q..%q", documentAt, rangeStart, rangeEnd)
+	}
+	if len(requestedAt) != len("2026-07-13T08:00:00.000000000Z") || !strings.HasSuffix(requestedAt, "Z") {
+		t.Fatalf("requested_at is not fixed width: %q", requestedAt)
+	}
+}
+
 func TestObservationRecordServerDocumentDeduplicatesCanonicalHash(t *testing.T) {
 	repo, _ := openTemp(t)
 	now := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
