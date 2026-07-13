@@ -26,7 +26,7 @@ const (
 // transition. Implementations must accept exact committed replays.
 type ServerRepository interface {
 	RecordServerMetricObservation(context.Context, store.ServerMetricObservation) error
-	LatestServerMetrics(context.Context) (time.Time, domain.ServerMetrics, error)
+	LatestServerMetricObservation(context.Context) (store.ServerMetricSnapshot, error)
 	RecordServerDocumentObservation(context.Context, store.ServerDocumentObservation) (bool, error)
 	LatestServerDocument(context.Context, string) (store.ServerDocumentSnapshot, error)
 }
@@ -73,7 +73,7 @@ func NewServer(repository ServerRepository, idGenerator func() string) *ServerSe
 // methods still reconcile with the repository before every transition, so an
 // ambiguous prior commit or another writer cannot make this cache authoritative.
 func (s *ServerService) Restore(ctx context.Context) error {
-	metricAt, metrics, metricErr := s.repository.LatestServerMetrics(ctx)
+	metric, metricErr := s.repository.LatestServerMetricObservation(ctx)
 	if metricErr != nil && !errors.Is(metricErr, store.ErrNotFound) {
 		return fmt.Errorf("restore observed server metrics: %w", metricErr)
 	}
@@ -100,7 +100,7 @@ func (s *ServerService) Restore(ctx context.Context) error {
 	defer s.infoMu.Unlock()
 	defer s.metricsMu.Unlock()
 	if metricErr == nil {
-		s.metrics = serverMetricBaseline{valid: true, at: metricAt, uptime: metrics.UptimeSeconds}
+		s.metrics = serverMetricBaseline{valid: true, at: metric.At, uptime: metric.Metrics.UptimeSeconds}
 	} else {
 		s.metrics = serverMetricBaseline{}
 	}

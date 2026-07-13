@@ -314,7 +314,12 @@ func (r *Repository) CleanupRawObservations(ctx context.Context, cutoff time.Tim
 	for _, target := range []struct {
 		name, query string
 	}{
-		{"activity events", `DELETE FROM activity_events WHERE rowid IN (SELECT rowid FROM activity_events WHERE occurred_at<? ORDER BY occurred_at,id LIMIT ?)`},
+		{"activity events", `DELETE FROM activity_events WHERE rowid IN (
+SELECT e.rowid FROM activity_events e
+WHERE e.occurred_at<?
+  AND NOT EXISTS (SELECT 1 FROM server_metric_samples m WHERE m.event_id=e.id)
+  AND NOT EXISTS (SELECT 1 FROM server_document_observations d WHERE d.event_id=e.id)
+ORDER BY e.occurred_at,e.id LIMIT ?)`},
 		{"trajectory samples", `DELETE FROM trajectory_samples WHERE id IN (SELECT id FROM trajectory_samples WHERE observed_at<? ORDER BY observed_at,id LIMIT ?)`},
 		{"server metric samples", `DELETE FROM server_metric_samples WHERE rowid IN (SELECT rowid FROM server_metric_samples WHERE observed_at<? ORDER BY observed_at LIMIT ?)`},
 	} {

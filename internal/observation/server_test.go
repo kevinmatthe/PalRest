@@ -24,15 +24,16 @@ type serverRecorderFake struct {
 	documentCalls []documentCall
 	writes        []store.PlayerObservationWrite
 
-	metricErrors    []error
-	documentErrors  []error
-	eventErrors     []error
-	inserted        []bool
-	metricEntered   chan struct{}
-	metricRelease   chan struct{}
-	latestMetricAt  time.Time
-	latestMetrics   domain.ServerMetrics
-	latestDocuments map[string]store.ServerDocumentSnapshot
+	metricErrors      []error
+	documentErrors    []error
+	eventErrors       []error
+	inserted          []bool
+	metricEntered     chan struct{}
+	metricRelease     chan struct{}
+	latestMetricAt    time.Time
+	latestMetrics     domain.ServerMetrics
+	latestMetricEvent *store.ActivityEvent
+	latestDocuments   map[string]store.ServerDocumentSnapshot
 }
 
 type metricCall struct {
@@ -71,8 +72,8 @@ func (r *atomicRepositorySpy) RecordServerMetricObservation(ctx context.Context,
 	return nil
 }
 
-func (r *atomicRepositorySpy) LatestServerMetrics(ctx context.Context) (time.Time, domain.ServerMetrics, error) {
-	return r.delegate.LatestServerMetrics(ctx)
+func (r *atomicRepositorySpy) LatestServerMetricObservation(ctx context.Context) (store.ServerMetricSnapshot, error) {
+	return r.delegate.LatestServerMetricObservation(ctx)
 }
 
 func (r *atomicRepositorySpy) RecordServerDocumentObservation(ctx context.Context, write store.ServerDocumentObservation) (bool, error) {
@@ -174,6 +175,7 @@ func (r *serverRecorderFake) RecordServerMetricObservation(ctx context.Context, 
 	r.mu.Lock()
 	r.latestMetricAt = write.At.UTC()
 	r.latestMetrics = write.Metrics
+	r.latestMetricEvent = cloneActivityEvent(write.Event)
 	r.mu.Unlock()
 	return nil
 }
@@ -185,6 +187,15 @@ func (r *serverRecorderFake) LatestServerMetrics(context.Context) (time.Time, do
 		return time.Time{}, domain.ServerMetrics{}, store.ErrNotFound
 	}
 	return r.latestMetricAt, r.latestMetrics, nil
+}
+
+func (r *serverRecorderFake) LatestServerMetricObservation(context.Context) (store.ServerMetricSnapshot, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.latestMetricAt.IsZero() {
+		return store.ServerMetricSnapshot{}, store.ErrNotFound
+	}
+	return store.ServerMetricSnapshot{At: r.latestMetricAt, Metrics: r.latestMetrics, Event: cloneActivityEvent(r.latestMetricEvent)}, nil
 }
 
 func (r *serverRecorderFake) RecordServerDocumentObservation(ctx context.Context, write store.ServerDocumentObservation) (bool, error) {
@@ -206,7 +217,7 @@ func (r *serverRecorderFake) RecordServerDocumentObservation(ctx context.Context
 		return false, nil
 	}
 	r.latestDocuments[write.Kind] = store.ServerDocumentSnapshot{
-		Kind: write.Kind, At: write.At.UTC(), Hash: write.Hash, Canonical: append([]byte(nil), write.Canonical...),
+		Kind: write.Kind, At: write.At.UTC(), Hash: write.Hash, Canonical: append([]byte(nil), write.Canonical...), Event: cloneActivityEvent(write.Event),
 	}
 	return true, nil
 }
@@ -219,7 +230,16 @@ func (r *serverRecorderFake) LatestServerDocument(_ context.Context, kind string
 		return store.ServerDocumentSnapshot{}, store.ErrNotFound
 	}
 	document.Canonical = append([]byte(nil), document.Canonical...)
+	document.Event = cloneActivityEvent(document.Event)
 	return document, nil
+}
+
+func cloneActivityEvent(event *store.ActivityEvent) *store.ActivityEvent {
+	if event == nil {
+		return nil
+	}
+	cloned := *event
+	return &cloned
 }
 
 func errorAt(errors []error, index int) error {
@@ -743,7 +763,7 @@ func TestServerServiceAcceptsExactRetryAfterAmbiguousAtomicMetricCommit(t *testi
 	if err := service.RecordMetrics(t.Context(), base.Add(time.Minute), restart); err != nil {
 		t.Fatalf("exact retry after ambiguous commit: %v", err)
 	}
-	if len(spy.metrics) != 1 || spy.metrics[0].Event == nil || spy.metrics[0].Event.EventType != "server_restarted" {
+	if len(spy.metrics) != 2 || spy.metrics[0].Event == nil || spy.metrics[0].Event.EventType != "server_restarted" || !reflect.DeepEqual(spy.metrics[0], spy.metrics[1]) {
 		t.Fatalf("atomic writes=%#v", spy.metrics)
 	}
 	if err := repo.RecordServerMetricObservation(t.Context(), spy.metrics[0]); err != nil {
@@ -773,16 +793,22 @@ func TestServerServiceAcceptsNewerCallAfterAmbiguousDocumentCommits(t *testing.T
 	if err := service.RecordInfo(t.Context(), base.Add(time.Minute), domain.ServerInfo{Version: "v2"}); err == nil {
 		t.Fatal("expected ambiguous info commit")
 	}
+	if err := service.RecordInfo(t.Context(), base.Add(time.Minute), domain.ServerInfo{Version: "v2"}); err != nil {
+		t.Fatalf("exact info retry after ambiguous commit: %v", err)
+	}
 	if err := service.RecordInfo(t.Context(), base.Add(2*time.Minute), domain.ServerInfo{Version: "v3"}); err != nil {
 		t.Fatalf("newer info after ambiguous commit: %v", err)
 	}
 	if err := service.RecordSettings(t.Context(), base.Add(time.Minute), domain.ServerSettings{Values: map[string]any{"value": "B"}}); err == nil {
 		t.Fatal("expected ambiguous settings commit")
 	}
+	if err := service.RecordSettings(t.Context(), base.Add(time.Minute), domain.ServerSettings{Values: map[string]any{"value": "B"}}); err != nil {
+		t.Fatalf("exact settings retry after ambiguous commit: %v", err)
+	}
 	if err := service.RecordSettings(t.Context(), base.Add(2*time.Minute), domain.ServerSettings{Values: map[string]any{"value": "C"}}); err != nil {
 		t.Fatalf("newer settings after ambiguous commit: %v", err)
 	}
-	if len(spy.documents) != 4 {
+	if len(spy.documents) != 6 || !reflect.DeepEqual(spy.documents[0], spy.documents[1]) || !reflect.DeepEqual(spy.documents[3], spy.documents[4]) {
 		t.Fatalf("document writes=%#v", spy.documents)
 	}
 	for _, write := range spy.documents {

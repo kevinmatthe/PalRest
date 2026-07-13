@@ -20,26 +20,29 @@ func (s *ServerService) RecordMetrics(ctx context.Context, at time.Time, metrics
 	s.metricsMu.Lock()
 	defer s.metricsMu.Unlock()
 
-	latestAt, latest, err := s.repository.LatestServerMetrics(ctx)
+	latest, err := s.repository.LatestServerMetricObservation(ctx)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("record observed server metrics: read durable baseline: %w", err)
 	}
 	if err == nil {
-		s.metrics = serverMetricBaseline{valid: true, at: latestAt, uptime: latest.UptimeSeconds}
+		s.metrics = serverMetricBaseline{valid: true, at: latest.At, uptime: latest.Metrics.UptimeSeconds}
 		switch {
-		case at.Before(latestAt):
-			return fmt.Errorf("record observed server metrics: observation time %s is before durable baseline %s", at.Format(time.RFC3339Nano), latestAt.Format(time.RFC3339Nano))
-		case at.Equal(latestAt):
-			if latest != metrics {
+		case at.Before(latest.At):
+			return fmt.Errorf("record observed server metrics: observation time %s is before durable baseline %s", at.Format(time.RFC3339Nano), latest.At.Format(time.RFC3339Nano))
+		case at.Equal(latest.At):
+			if latest.Metrics != metrics {
 				return fmt.Errorf("record observed server metrics: observation at %s does not match durable sample", at.Format(time.RFC3339Nano))
+			}
+			if replayErr := s.repository.RecordServerMetricObservation(ctx, store.ServerMetricObservation{At: at, Metrics: metrics, Event: latest.Event}); replayErr != nil {
+				return fmt.Errorf("record observed server metrics: prove durable replay: %w", replayErr)
 			}
 			return nil
 		}
 	}
 
 	write := store.ServerMetricObservation{At: at, Metrics: metrics}
-	if err == nil && metrics.UptimeSeconds < latest.UptimeSeconds {
-		event, eventErr := s.newRestartEvent(at, metrics.UptimeSeconds, latest.UptimeSeconds)
+	if err == nil && metrics.UptimeSeconds < latest.Metrics.UptimeSeconds {
+		event, eventErr := s.newRestartEvent(at, metrics.UptimeSeconds, latest.Metrics.UptimeSeconds)
 		if eventErr != nil {
 			return eventErr
 		}

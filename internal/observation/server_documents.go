@@ -72,6 +72,11 @@ func (s *ServerService) recordDocument(ctx context.Context, kind string, at time
 			if latest.Hash != hash || !bytes.Equal(latest.Canonical, canonical) {
 				return fmt.Errorf("record observed server %s: observation at %s does not match durable document", kind, at.Format(time.RFC3339Nano))
 			}
+			if _, replayErr := s.repository.RecordServerDocumentObservation(ctx, store.ServerDocumentObservation{
+				Kind: kind, At: at, Canonical: canonical, Hash: hash, Event: latest.Event,
+			}); replayErr != nil {
+				return fmt.Errorf("record observed server %s: prove durable replay: %w", kind, replayErr)
+			}
 			return nil
 		}
 	}

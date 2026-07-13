@@ -133,7 +133,8 @@ func TestLatestServerMetricsSurvivesReopen(t *testing.T) {
 	repo, path := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
 	metrics := serverMetrics(42)
-	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at, Metrics: metrics}); err != nil {
+	event := serverObservationEvent("restart-reopen", "server_restarted", at, `{"old_uptime_seconds":100,"new_uptime_seconds":42}`)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at, Metrics: metrics, Event: &event}); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.Close(); err != nil {
@@ -147,6 +148,10 @@ func TestLatestServerMetricsSurvivesReopen(t *testing.T) {
 	gotAt, got, err := reopened.LatestServerMetrics(t.Context())
 	if err != nil || gotAt != at || got != metrics {
 		t.Fatalf("at=%s metrics=%+v err=%v", gotAt, got, err)
+	}
+	snapshot, err := reopened.LatestServerMetricObservation(t.Context())
+	if err != nil || snapshot.At != at || snapshot.Metrics != metrics || snapshot.Event == nil || *snapshot.Event != event {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
 	}
 }
 
@@ -189,7 +194,7 @@ func TestServerDocumentObservationRecordsRecurrentTransitions(t *testing.T) {
 		}
 	}
 	latest, err := repo.LatestServerDocument(t.Context(), "settings")
-	if err != nil || latest.At != aAgain.At || latest.Hash != "hash-a" || string(latest.Canonical) != `{"value":"A"}` {
+	if err != nil || latest.At != aAgain.At || latest.Hash != "hash-a" || string(latest.Canonical) != `{"value":"A"}` || latest.Event == nil || *latest.Event != aEvent {
 		t.Fatalf("latest=%+v err=%v", latest, err)
 	}
 }
@@ -230,7 +235,8 @@ func TestServerDocumentObservationRejectsReplayMismatchAndStale(t *testing.T) {
 func TestLatestServerDocumentSurvivesReopen(t *testing.T) {
 	repo, path := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
-	write := ServerDocumentObservation{Kind: "info", At: at, Canonical: []byte(`{"version":"v1"}`), Hash: "hash-v1"}
+	event := serverObservationEvent("info-reopen", "server_version_changed", at, `{"old_version":"v0","new_version":"v1"}`)
+	write := ServerDocumentObservation{Kind: "info", At: at, Canonical: []byte(`{"version":"v1"}`), Hash: "hash-v1", Event: &event}
 	if _, err := repo.RecordServerDocumentObservation(t.Context(), write); err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +249,52 @@ func TestLatestServerDocumentSurvivesReopen(t *testing.T) {
 	}
 	defer reopened.Close()
 	latest, err := reopened.LatestServerDocument(t.Context(), "info")
-	if err != nil || latest.At != at || latest.Hash != write.Hash || string(latest.Canonical) != string(write.Canonical) {
+	if err != nil || latest.At != at || latest.Hash != write.Hash || string(latest.Canonical) != string(write.Canonical) || latest.Event == nil || *latest.Event != event {
+		t.Fatalf("latest=%+v err=%v", latest, err)
+	}
+}
+
+func TestObservationCleanupPreservesEventsLinkedToDurableServerObservations(t *testing.T) {
+	repo, _ := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	metricEvent := serverObservationEvent("metric-linked", "server_restarted", at, `{}`)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{
+		At: at, Metrics: serverMetrics(1), Event: &metricEvent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	documentEvent := serverObservationEvent("document-linked", "server_settings_changed", at, `{}`)
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), ServerDocumentObservation{
+		Kind: "settings", At: at, Canonical: []byte(`{"value":"B"}`), Hash: "hash-b", Event: &documentEvent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ordinary := observationEvent("ordinary-old", "joined", "u", at)
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Events: []ActivityEvent{ordinary}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := repo.CleanupRawObservations(t.Context(), at.Add(time.Hour), 100); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{metricEvent.ID, documentEvent.ID} {
+		var count int
+		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM activity_events WHERE id=?`, id).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("linked event %q count=%d", id, count)
+		}
+	}
+	var ordinaryCount int
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM activity_events WHERE id=?`, ordinary.ID).Scan(&ordinaryCount); err != nil {
+		t.Fatal(err)
+	}
+	if ordinaryCount != 0 {
+		t.Fatalf("ordinary retained event count=%d", ordinaryCount)
+	}
+	latest, err := repo.LatestServerDocument(t.Context(), "settings")
+	if err != nil || latest.Event == nil || *latest.Event != documentEvent {
 		t.Fatalf("latest=%+v err=%v", latest, err)
 	}
 }

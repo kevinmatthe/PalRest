@@ -18,6 +18,12 @@ type ServerMetricObservation struct {
 	Event   *ActivityEvent
 }
 
+type ServerMetricSnapshot struct {
+	At      time.Time
+	Metrics domain.ServerMetrics
+	Event   *ActivityEvent
+}
+
 type ServerDocumentObservation struct {
 	Kind      string
 	At        time.Time
@@ -31,6 +37,7 @@ type ServerDocumentSnapshot struct {
 	At        time.Time
 	Canonical []byte
 	Hash      string
+	Event     *ActivityEvent
 }
 
 func (r *Repository) RecordServerMetricObservation(ctx context.Context, write ServerMetricObservation) error {
@@ -76,8 +83,20 @@ INSERT INTO server_metric_samples(
 }
 
 func (r *Repository) LatestServerMetrics(ctx context.Context) (time.Time, domain.ServerMetrics, error) {
-	latestAt, metrics, _, err := latestServerMetricDB(ctx, r.db)
-	return latestAt, metrics, err
+	snapshot, err := r.LatestServerMetricObservation(ctx)
+	return snapshot.At, snapshot.Metrics, err
+}
+
+func (r *Repository) LatestServerMetricObservation(ctx context.Context) (ServerMetricSnapshot, error) {
+	latestAt, metrics, eventID, err := latestServerMetricDB(ctx, r.db)
+	if err != nil {
+		return ServerMetricSnapshot{}, err
+	}
+	event, err := readOptionalStoredEvent(ctx, r.db, eventID)
+	if err != nil {
+		return ServerMetricSnapshot{}, fmt.Errorf("read latest server metrics: %w", err)
+	}
+	return ServerMetricSnapshot{At: latestAt, Metrics: metrics, Event: event}, nil
 }
 
 func latestServerMetricTx(ctx context.Context, tx *sql.Tx) (time.Time, domain.ServerMetrics, sql.NullString, error) {
@@ -215,12 +234,13 @@ func (r *Repository) LatestServerDocument(ctx context.Context, kind string) (Ser
 	}
 	var snapshot ServerDocumentSnapshot
 	var observedAt string
+	var eventID sql.NullString
 	err := r.db.QueryRowContext(ctx, `
-SELECT o.kind,o.observed_at,o.content_hash,d.canonical_json
+SELECT o.kind,o.observed_at,o.content_hash,d.canonical_json,o.event_id
 FROM server_document_observations o
 JOIN server_documents d ON d.kind=o.kind AND d.content_hash=o.content_hash
 WHERE o.kind=? ORDER BY o.observed_at DESC LIMIT 1`, kind).
-		Scan(&snapshot.Kind, &observedAt, &snapshot.Hash, &snapshot.Canonical)
+		Scan(&snapshot.Kind, &observedAt, &snapshot.Hash, &snapshot.Canonical, &eventID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ServerDocumentSnapshot{}, ErrNotFound
 	}
@@ -230,6 +250,10 @@ WHERE o.kind=? ORDER BY o.observed_at DESC LIMIT 1`, kind).
 	snapshot.At, err = parseTime(observedAt)
 	if err != nil {
 		return ServerDocumentSnapshot{}, fmt.Errorf("read latest server document time: %w", err)
+	}
+	snapshot.Event, err = readOptionalStoredEvent(ctx, r.db, eventID)
+	if err != nil {
+		return ServerDocumentSnapshot{}, fmt.Errorf("read latest server document: %w", err)
 	}
 	return snapshot, nil
 }
@@ -318,27 +342,46 @@ func compareOptionalStoredEvent(ctx context.Context, tx *sql.Tx, storedID sql.Nu
 	if storedID.String != event.ID {
 		return fmt.Errorf("stored event ID %q does not match %q", storedID.String, event.ID)
 	}
-	var stored ActivityEvent
-	var occurredAt, observedAt string
-	err := tx.QueryRowContext(ctx, `
-SELECT id,event_type,subject_type,subject_id,occurred_at,observed_at,source,source_ref,
-       correlation_id,confidence,schema_version,payload_json
-FROM activity_events WHERE id=?`, storedID.String).Scan(&stored.ID, &stored.EventType, &stored.SubjectType,
-		&stored.SubjectID, &occurredAt, &observedAt, &stored.Source, &stored.SourceRef, &stored.CorrelationID,
-		&stored.Confidence, &stored.SchemaVersion, &stored.PayloadJSON)
+	stored, err := readStoredEvent(ctx, tx, storedID.String)
 	if err != nil {
-		return fmt.Errorf("read stored event %q: %w", storedID.String, err)
+		return err
 	}
-	stored.OccurredAt, err = parseTime(occurredAt)
-	if err != nil {
-		return fmt.Errorf("parse stored event occurred time: %w", err)
-	}
-	stored.ObservedAt, err = parseTime(observedAt)
-	if err != nil {
-		return fmt.Errorf("parse stored event observed time: %w", err)
-	}
-	if stored != *event {
+	if *stored != *event {
 		return fmt.Errorf("stored event %q does not match replay", event.ID)
 	}
 	return nil
+}
+
+type queryRower interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func readOptionalStoredEvent(ctx context.Context, queryer queryRower, storedID sql.NullString) (*ActivityEvent, error) {
+	if !storedID.Valid {
+		return nil, nil
+	}
+	return readStoredEvent(ctx, queryer, storedID.String)
+}
+
+func readStoredEvent(ctx context.Context, queryer queryRower, id string) (*ActivityEvent, error) {
+	var stored ActivityEvent
+	var occurredAt, observedAt string
+	err := queryer.QueryRowContext(ctx, `
+SELECT id,event_type,subject_type,subject_id,occurred_at,observed_at,source,source_ref,
+       correlation_id,confidence,schema_version,payload_json
+FROM activity_events WHERE id=?`, id).Scan(&stored.ID, &stored.EventType, &stored.SubjectType,
+		&stored.SubjectID, &occurredAt, &observedAt, &stored.Source, &stored.SourceRef, &stored.CorrelationID,
+		&stored.Confidence, &stored.SchemaVersion, &stored.PayloadJSON)
+	if err != nil {
+		return nil, fmt.Errorf("read stored event %q: %w", id, err)
+	}
+	stored.OccurredAt, err = parseTime(occurredAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse stored event occurred time: %w", err)
+	}
+	stored.ObservedAt, err = parseTime(observedAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse stored event observed time: %w", err)
+	}
+	return &stored, nil
 }

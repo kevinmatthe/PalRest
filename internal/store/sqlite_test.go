@@ -271,7 +271,11 @@ func TestObservationCleanupSelectorsUseTimeLeadingIndexes(t *testing.T) {
 	for _, tc := range []struct {
 		name, query, index string
 	}{
-		{"activity events", `SELECT rowid FROM activity_events WHERE occurred_at<? ORDER BY occurred_at,id LIMIT ?`, "activity_events_retention"},
+		{"activity events", `SELECT e.rowid FROM activity_events e
+WHERE e.occurred_at<?
+  AND NOT EXISTS (SELECT 1 FROM server_metric_samples m WHERE m.event_id=e.id)
+  AND NOT EXISTS (SELECT 1 FROM server_document_observations d WHERE d.event_id=e.id)
+ORDER BY e.occurred_at,e.id LIMIT ?`, "activity_events_retention"},
 		{"trajectory samples", `SELECT id FROM trajectory_samples WHERE observed_at<? ORDER BY observed_at,id LIMIT ?`, "trajectory_samples_retention"},
 		{"server metrics", `SELECT rowid FROM server_metric_samples WHERE observed_at<? ORDER BY observed_at LIMIT ?`, "sqlite_autoindex_server_metric_samples_1"},
 	} {

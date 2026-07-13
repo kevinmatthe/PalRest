@@ -185,6 +185,8 @@ CREATE TABLE server_metric_samples (
     game_days INTEGER NOT NULL,
     event_id TEXT
 );
+CREATE INDEX server_metric_samples_event
+ON server_metric_samples(event_id);
 
 CREATE TABLE server_documents (
     kind TEXT NOT NULL,
@@ -204,6 +206,8 @@ CREATE TABLE server_document_observations (
 );
 CREATE INDEX server_document_observations_kind_time
 ON server_document_observations(kind, observed_at);
+CREATE INDEX server_document_observations_event
+ON server_document_observations(event_id);
 
 CREATE TABLE sensitive_access_audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
