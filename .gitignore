@@ -4,3 +4,6 @@ config.yaml
 data/
 playtime-guard
 coverage.out
+pal-saves/
+__pycache__/
+*.pyc

@@ -288,7 +288,7 @@ func safeEvent(event store.ActivityEvent) adminEventDTO {
 				if oldOK && newOK {
 					changes[key] = map[string]any{"old": oldValue, "new": newValue}
 				}
-			case "level", "building_count":
+			case "level":
 				oldValue, oldOK := change.Old.(float64)
 				newValue, newOK := change.New.(float64)
 				if oldOK && newOK {
@@ -343,16 +343,15 @@ func safeEvent(event store.ActivityEvent) adminEventDTO {
 		return result
 	}
 	var payload struct {
-		PlayerID      string `json:"player_id"`
-		Name          string `json:"name"`
-		AccountName   string `json:"account_name"`
-		Level         int    `json:"level"`
-		BuildingCount int    `json:"building_count"`
+		PlayerID    string `json:"player_id"`
+		Name        string `json:"name"`
+		AccountName string `json:"account_name"`
+		Level       int    `json:"level"`
 	}
 	if json.Unmarshal([]byte(event.PayloadJSON), &payload) != nil {
 		result.Summary = "invalid event payload"
 		return result
 	}
-	result.Data = map[string]any{"player_id": payload.PlayerID, "name": payload.Name, "account_name": payload.AccountName, "level": payload.Level, "building_count": payload.BuildingCount}
+	result.Data = map[string]any{"player_id": payload.PlayerID, "name": payload.Name, "account_name": payload.AccountName, "level": payload.Level}
 	return result
 }

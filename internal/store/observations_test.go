@@ -325,7 +325,7 @@ func TestPlayerObservationExactReplayIsIdempotentAndCollisionFails(t *testing.T)
 	write := PlayerObservationWrite{
 		Events:         []ActivityEvent{observationEvent("stable", "player_attribute_changed", "u", at)},
 		Trajectories:   []TrajectorySample{observationTrajectory("segment", at)},
-		PrivateSamples: []PlayerPrivateSample{{UserID: "u", ObservedAt: at, IP: "192.0.2.1", Ping: 20, Level: 4, BuildingCount: 2, SourceRef: "poll"}},
+		PrivateSamples: []PlayerPrivateSample{{UserID: "u", ObservedAt: at, IP: "192.0.2.1", Ping: 20, Level: 4, SourceRef: "poll"}},
 	}
 	write.Events[0].PayloadJSON = `{"old":1,"new":2}`
 	if err := repo.RecordPlayerObservation(t.Context(), write); err != nil {
@@ -987,7 +987,7 @@ func TestObservationRecordIsAtomic(t *testing.T) {
 func TestPrivatePlayerSamplesAreAtomicValidatedAndReturned(t *testing.T) {
 	repo, _ := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
-	private := PlayerPrivateSample{UserID: "steam_1", ObservedAt: at, IP: "[2001:db8::1]:8211", Ping: 28.5, Level: 41, BuildingCount: 12, SourceRef: "poll-1"}
+	private := PlayerPrivateSample{UserID: "steam_1", ObservedAt: at, IP: "[2001:db8::1]:8211", Ping: 28.5, Level: 41, SourceRef: "poll-1"}
 	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{PrivateSamples: []PlayerPrivateSample{private}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1009,13 +1009,12 @@ func TestPrivatePlayerSamplesAreAtomicValidatedAndReturned(t *testing.T) {
 		t.Fatalf("invalid write was partially committed: count=%d err=%v", count, err)
 	}
 	for name, mutate := range map[string]func(*PlayerPrivateSample){
-		"empty IP":                func(s *PlayerPrivateSample) { s.IP = "" },
-		"C1 control IP":           func(s *PlayerPrivateSample) { s.IP = "bad\u0085address" },
-		"long IP":                 func(s *PlayerPrivateSample) { s.IP = strings.Repeat("x", 257) },
-		"negative ping":           func(s *PlayerPrivateSample) { s.Ping = -1 },
-		"nonfinite ping":          func(s *PlayerPrivateSample) { s.Ping = math.NaN() },
-		"negative level":          func(s *PlayerPrivateSample) { s.Level = -1 },
-		"negative building count": func(s *PlayerPrivateSample) { s.BuildingCount = -1 },
+		"empty IP":       func(s *PlayerPrivateSample) { s.IP = "" },
+		"C1 control IP":  func(s *PlayerPrivateSample) { s.IP = "bad\u0085address" },
+		"long IP":        func(s *PlayerPrivateSample) { s.IP = strings.Repeat("x", 257) },
+		"negative ping":  func(s *PlayerPrivateSample) { s.Ping = -1 },
+		"nonfinite ping": func(s *PlayerPrivateSample) { s.Ping = math.NaN() },
+		"negative level": func(s *PlayerPrivateSample) { s.Level = -1 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			value := private

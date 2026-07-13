@@ -22,15 +22,15 @@ type Client struct {
 }
 
 type playerPayload struct {
-	Name          *string  `json:"name"`
-	AccountName   *string  `json:"accountName"`
-	PlayerID      *string  `json:"playerId"`
-	UserID        *string  `json:"userId"`
-	IP            *string  `json:"ip"`
-	Ping          *float64 `json:"ping"`
-	LocationX     *float64 `json:"location_x"`
-	LocationY     *float64 `json:"location_y"`
-	Level         *int     `json:"level"`
+	Name        *string  `json:"name"`
+	AccountName *string  `json:"accountName"`
+	PlayerID    *string  `json:"playerId"`
+	UserID      *string  `json:"userId"`
+	IP          *string  `json:"iP"`
+	Ping        *float64 `json:"ping"`
+	LocationX   *float64 `json:"location_x"`
+	LocationY   *float64 `json:"location_y"`
+	Level       *int     `json:"level"`
 }
 
 type playersPayload struct {
@@ -123,7 +123,7 @@ func (p playerPayload) missingRequiredField() string {
 		missing bool
 	}{
 		{"name", p.Name == nil}, {"accountName", p.AccountName == nil}, {"playerId", p.PlayerID == nil},
-		{"userId", p.UserID == nil}, {"ip", p.IP == nil}, {"ping", p.Ping == nil},
+		{"userId", p.UserID == nil}, {"iP", p.IP == nil}, {"ping", p.Ping == nil},
 		{"location_x", p.LocationX == nil}, {"location_y", p.LocationY == nil}, {"level", p.Level == nil},
 	} {
 		if field.missing {

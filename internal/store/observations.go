@@ -46,13 +46,12 @@ type TrajectorySample struct {
 }
 
 type PlayerPrivateSample struct {
-	UserID        string    `json:"user_id"`
-	ObservedAt    time.Time `json:"observed_at"`
-	IP            string    `json:"ip"`
-	Ping          float64   `json:"ping"`
-	Level         int       `json:"level"`
-	BuildingCount int       `json:"building_count"`
-	SourceRef     string    `json:"source_ref"`
+	UserID     string    `json:"user_id"`
+	ObservedAt time.Time `json:"observed_at"`
+	IP         string    `json:"ip"`
+	Ping       float64   `json:"ping"`
+	Level      int       `json:"level"`
+	SourceRef  string    `json:"source_ref"`
 }
 
 type SensitivePlayerTimeline struct {
@@ -172,9 +171,9 @@ VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,observed_at) DO NOTHING`, sample.U
 		}
 		for _, sample := range write.PrivateSamples {
 			result, err := tx.tx.ExecContext(ctx, `
-INSERT INTO player_private_samples(user_id,observed_at,ip,ping,level,building_count,source_ref)
-VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id,observed_at) DO NOTHING`, sample.UserID, formatObservationTime(sample.ObservedAt), sample.IP,
-				sample.Ping, sample.Level, sample.BuildingCount, sample.SourceRef)
+INSERT INTO player_private_samples(user_id,observed_at,ip,ping,level,source_ref)
+VALUES(?,?,?,?,?,?) ON CONFLICT(user_id,observed_at) DO NOTHING`, sample.UserID, formatObservationTime(sample.ObservedAt), sample.IP,
+				sample.Ping, sample.Level, sample.SourceRef)
 			if err != nil {
 				return fmt.Errorf("insert private player sample for %q at %s: %w", sample.UserID, formatObservationTime(sample.ObservedAt), err)
 			}
@@ -185,7 +184,7 @@ VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id,observed_at) DO NOTHING`, sample.UserI
 			if inserted == 0 {
 				var stored PlayerPrivateSample
 				var observed string
-				err := tx.tx.QueryRowContext(ctx, `SELECT user_id,observed_at,ip,ping,level,building_count,source_ref FROM player_private_samples WHERE user_id=? AND observed_at=?`, sample.UserID, formatObservationTime(sample.ObservedAt)).Scan(&stored.UserID, &observed, &stored.IP, &stored.Ping, &stored.Level, &stored.BuildingCount, &stored.SourceRef)
+				err := tx.tx.QueryRowContext(ctx, `SELECT user_id,observed_at,ip,ping,level,source_ref FROM player_private_samples WHERE user_id=? AND observed_at=?`, sample.UserID, formatObservationTime(sample.ObservedAt)).Scan(&stored.UserID, &observed, &stored.IP, &stored.Ping, &stored.Level, &stored.SourceRef)
 				if err != nil {
 					return fmt.Errorf("read replayed private sample: %w", err)
 				}
@@ -242,8 +241,8 @@ func playerObservationAlreadyStored(ctx context.Context, tx *sql.Tx, write Playe
 	for _, sample := range write.PrivateSamples {
 		var stored PlayerPrivateSample
 		var observed string
-		err := tx.QueryRowContext(ctx, `SELECT user_id,observed_at,ip,ping,level,building_count,source_ref FROM player_private_samples WHERE user_id=? AND observed_at=?`, sample.UserID, formatObservationTime(sample.ObservedAt)).
-			Scan(&stored.UserID, &observed, &stored.IP, &stored.Ping, &stored.Level, &stored.BuildingCount, &stored.SourceRef)
+		err := tx.QueryRowContext(ctx, `SELECT user_id,observed_at,ip,ping,level,source_ref FROM player_private_samples WHERE user_id=? AND observed_at=?`, sample.UserID, formatObservationTime(sample.ObservedAt)).
+			Scan(&stored.UserID, &observed, &stored.IP, &stored.Ping, &stored.Level, &stored.SourceRef)
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
@@ -284,7 +283,7 @@ func trajectorySamplesEqual(a, b TrajectorySample) bool {
 }
 
 func privateSamplesEqual(a, b PlayerPrivateSample) bool {
-	return a.UserID == b.UserID && a.ObservedAt.Equal(b.ObservedAt) && a.IP == b.IP && a.Ping == b.Ping && a.Level == b.Level && a.BuildingCount == b.BuildingCount && a.SourceRef == b.SourceRef
+	return a.UserID == b.UserID && a.ObservedAt.Equal(b.ObservedAt) && a.IP == b.IP && a.Ping == b.Ping && a.Level == b.Level && a.SourceRef == b.SourceRef
 }
 
 func validatePlayerPrivateSample(sample PlayerPrivateSample) error {
@@ -297,8 +296,8 @@ func validatePlayerPrivateSample(sample PlayerPrivateSample) error {
 	if sample.IP == "" || len(sample.IP) > 256 || strings.IndexFunc(sample.IP, unicode.IsControl) >= 0 {
 		return fmt.Errorf("IP must be nonempty safe text of at most 256 bytes")
 	}
-	if !finite(sample.Ping) || sample.Ping < 0 || sample.Level < 0 || sample.BuildingCount < 0 {
-		return fmt.Errorf("ping must be finite and nonnegative and counts must be nonnegative")
+	if !finite(sample.Ping) || sample.Ping < 0 || sample.Level < 0 {
+		return fmt.Errorf("ping must be finite and nonnegative and level must be nonnegative")
 	}
 	return nil
 }
@@ -457,7 +456,7 @@ queryFailed:
 }
 
 func queryTimelinePrivateSamples(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time, limit int) ([]PlayerPrivateSample, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT user_id,observed_at,ip,ping,level,building_count,source_ref
+	rows, err := tx.QueryContext(ctx, `SELECT user_id,observed_at,ip,ping,level,source_ref
 FROM player_private_samples WHERE user_id=? AND observed_at>=? AND observed_at<? ORDER BY observed_at,id LIMIT ?`,
 		userID, formatObservationTime(start), formatObservationTime(end), limit)
 	if err != nil {
@@ -468,7 +467,7 @@ FROM player_private_samples WHERE user_id=? AND observed_at>=? AND observed_at<?
 	for rows.Next() {
 		var sample PlayerPrivateSample
 		var observed string
-		if err := rows.Scan(&sample.UserID, &observed, &sample.IP, &sample.Ping, &sample.Level, &sample.BuildingCount, &sample.SourceRef); err != nil {
+		if err := rows.Scan(&sample.UserID, &observed, &sample.IP, &sample.Ping, &sample.Level, &sample.SourceRef); err != nil {
 			return nil, err
 		}
 		sample.ObservedAt, err = parseTime(observed)

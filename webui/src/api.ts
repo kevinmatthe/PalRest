@@ -170,7 +170,6 @@ export type PlayerPrivateSample = {
   ip: string;
   ping: number;
   level: number;
-  building_count: number;
   source_ref: string;
 };
 

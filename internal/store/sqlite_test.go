@@ -413,7 +413,7 @@ func TestOpenMigratesVersionNineToTenPreservingObservationData(t *testing.T) {
 	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{PrivateSamples: []PlayerPrivateSample{conflict}}); err == nil {
 		t.Fatal("expected same-time private sample conflict")
 	}
-	if _, err := repo.db.ExecContext(t.Context(), `INSERT INTO player_private_samples(user_id,observed_at,ip,ping,level,building_count,source_ref) VALUES('null-ip','2026-07-13T08:00:01.000000000Z',NULL,0,0,0,'poll')`); err == nil {
+	if _, err := repo.db.ExecContext(t.Context(), `INSERT INTO player_private_samples(user_id,observed_at,ip,ping,level,source_ref) VALUES('null-ip','2026-07-13T08:00:01.000000000Z',NULL,0,0,'poll')`); err == nil {
 		t.Fatal("expected NOT NULL IP constraint")
 	}
 }

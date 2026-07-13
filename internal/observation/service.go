@@ -73,11 +73,10 @@ type playerState struct {
 }
 
 type eventPayload struct {
-	PlayerID      string `json:"player_id,omitempty"`
-	Name          string `json:"name,omitempty"`
-	AccountName   string `json:"account_name,omitempty"`
-	Level         int    `json:"level,omitempty"`
-	BuildingCount int    `json:"building_count,omitempty"`
+	PlayerID    string `json:"player_id,omitempty"`
+	Name        string `json:"name,omitempty"`
+	AccountName string `json:"account_name,omitempty"`
+	Level       int    `json:"level,omitempty"`
 }
 
 type attributeChange struct {
@@ -227,12 +226,12 @@ func (s *Service) observeNormalized(ctx context.Context, at time.Time, current m
 
 		shouldPrivateSample := state.lastPrivateAt.IsZero() ||
 			player.IP != previous.player.IP || player.Level != previous.player.Level ||
-			player.BuildingCount != previous.player.BuildingCount || at.Sub(state.lastPrivateAt) >= s.maxSampleInterval
+			at.Sub(state.lastPrivateAt) >= s.maxSampleInterval
 		if player.IP != "" && shouldPrivateSample {
 			ping, _ := normalizedPing(player.Ping)
 			write.PrivateSamples = append(write.PrivateSamples, store.PlayerPrivateSample{
 				UserID: player.UserID, ObservedAt: at, IP: player.IP, Ping: ping,
-				Level: player.Level, BuildingCount: player.BuildingCount, SourceRef: correlationID,
+				Level: player.Level, SourceRef: correlationID,
 			})
 			state.lastPrivateAt = at
 		}
@@ -387,9 +386,6 @@ func (s *Service) playerAttributeChangedEvent(previous, current domain.Player, a
 	if knownLevel(previous.Level) && knownLevel(current.Level) && previous.Level != current.Level {
 		changes["level"] = attributeChange{Old: previous.Level, New: current.Level}
 	}
-	if previous.BuildingCount != current.BuildingCount {
-		changes["building_count"] = attributeChange{Old: previous.BuildingCount, New: current.BuildingCount}
-	}
 	if len(changes) == 0 {
 		return store.ActivityEvent{}, false, nil
 	}
@@ -413,7 +409,7 @@ func (s *Service) playerEvent(eventType string, player domain.Player, at time.Ti
 	}
 	payload, err := json.Marshal(eventPayload{
 		PlayerID: player.PlayerID, Name: player.Name, AccountName: player.AccountName,
-		Level: player.Level, BuildingCount: player.BuildingCount,
+		Level: player.Level,
 	})
 	if err != nil {
 		return store.ActivityEvent{}, fmt.Errorf("observe players: encode %s payload: %w", eventType, err)

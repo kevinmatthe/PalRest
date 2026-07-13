@@ -92,7 +92,7 @@ Player activity is a business timeline, not a distributed trace. VictoriaTraces 
 
 ### Players
 
-`/players` runs at the configured poll interval, currently 30 seconds by default. The normalized observation includes user ID, player ID, display names, IP address, ping, exact coordinates, level, and building count when present.
+`/players` runs at the configured poll interval, currently 30 seconds by default. The normalized observation includes user ID, player ID, display names, IP address from Palworld's `iP` field, ping, exact coordinates, and level.
 
 A failed request:
 

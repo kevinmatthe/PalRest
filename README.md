@@ -86,11 +86,11 @@ policy:
 
 ## Phase 1 数据采集与故障语义
 
-每次关键轮询读取 Palworld REST `/players` 的 `name`、`accountName`、`playerId`、`userId`、`ip`、`ping`、`location_x`、`location_y`、`level` 和 `building_count`。独立的可选采样器在每轮读取 `/metrics` 的 `serverfps`、`currentplayernum`、`serverframetime`、`maxplayernum`、`uptime`、`basecampnum`、`days`，并按 `observation.server_document_interval` 读取 `/info` 的 `version`、`servername`、`description`、`worldguid` 和完整 `/settings` JSON。
+每次关键轮询读取 Palworld REST `/players` 的 `name`、`accountName`、`playerId`、`userId`、`iP`、`ping`、`location_x`、`location_y` 和 `level`。独立的可选采样器在每轮读取 `/metrics` 的 `serverfps`、`currentplayernum`、`serverframetime`、`maxplayernum`、`uptime`、`basecampnum`、`days`，并按 `observation.server_document_interval` 读取 `/info` 的 `version`、`servername`、`description`、`worldguid` 和完整 `/settings` JSON。
 
 玩家列表、Analytics、业务时间线和防沉迷执法构成关键路径；关键读取或写入失败会中断本轮连续性，不计未知区间，也不执法。服务器 metrics/info/settings 是边界超时的可选路径：三类请求彼此独立，任意一类读取或持久化失败只记录该数据流缺口，不会把缺口写成零，不会阻塞玩家关键路径，也不会阻止另外两类提交。
 
-Phase 1 使用同一个 correlation ID 把一次玩家观察写成统一业务时间线：玩家加入、离开和已知属性变化是事件；坐标按最小移动距离或最大采样间隔稀疏采样，已知 level 改变或已知 ping 相对最后一个已采样已知值累计达到 `observation.trajectory_ping_change_threshold`（默认 10ms）时也立即保留轨迹点。小于阈值的浮点抖动不触发采样；NaN、无限值和负 ping 均视为 unknown、持久化为 0，unknown 与 known 之间的切换本身不构成变化。IP、ping、level 和 building count 是只供管理员读取的稀疏 private sample。启动后的第一轮、轮询失败、持久化失败、超过 `server.max_observation_gap` 的区间以及进程停止期间都表示“未知”，不能推断为离线、零并发或零活动。
+Phase 1 使用同一个 correlation ID 把一次玩家观察写成统一业务时间线：玩家加入、离开和已知属性变化是事件；坐标按最小移动距离或最大采样间隔稀疏采样，已知 level 改变或已知 ping 相对最后一个已采样已知值累计达到 `observation.trajectory_ping_change_threshold`（默认 10ms）时也立即保留轨迹点。小于阈值的浮点抖动不触发采样；NaN、无限值和负 ping 均视为 unknown、持久化为 0，unknown 与 known 之间的切换本身不构成变化。IP、ping 和 level 是只供管理员读取的稀疏 private sample。启动后的第一轮、轮询失败、持久化失败、超过 `server.max_observation_gap` 的区间以及进程停止期间都表示“未知”，不能推断为离线、零并发或零活动。
 
 `/metrics` 的 uptime 明确下降会生成 `server_restarted`，并在同一 SQLite 事务中推进持久化 server runtime epoch。轨迹 API 同时返回 `runtime_epoch`，并以 `runtime:<epoch>:<base64url(raw_segment_id)>` 无歧义编码 `segment_id`；即使玩家边界样本先于异步 metrics 写入，restart 事务也会修正该时刻及之后已写样本的 epoch，因此前端不会跨服务器重启连线。epoch 在应用重启后恢复，重复提交和多写者 CAS 不会重复推进。
 

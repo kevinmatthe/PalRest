@@ -258,7 +258,6 @@ CREATE TABLE player_private_samples (
     ip TEXT NOT NULL,
     ping REAL NOT NULL,
     level INTEGER NOT NULL,
-    building_count INTEGER NOT NULL,
     source_ref TEXT NOT NULL,
     UNIQUE(user_id, observed_at)
 );

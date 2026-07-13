@@ -160,7 +160,7 @@ func player(id string, x, y float64) domain.Player {
 	return domain.Player{
 		UserID: id, PlayerID: "pal-" + id, Name: "name-" + id,
 		AccountName: "account-" + id, IP: "192.0.2.10", Ping: 28.5,
-		LocationX: x, LocationY: y, Level: 41, BuildingCount: 12,
+		LocationX: x, LocationY: y, Level: 41,
 	}
 }
 
@@ -240,7 +240,6 @@ func TestConsecutiveObservationsDeriveKnownPlayerAttributeChanges(t *testing.T) 
 	after.PlayerID = "pal-u-2"
 	after.Name = "renamed"
 	after.Level = 42
-	after.BuildingCount = 13
 	after.IP = "198.51.100.4"
 	after.Ping = 999
 
@@ -264,12 +263,12 @@ func TestConsecutiveObservationsDeriveKnownPlayerAttributeChanges(t *testing.T) 
 	if err := json.Unmarshal([]byte(events[0].PayloadJSON), &payload); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"player_id", "name", "level", "building_count"} {
+	for _, field := range []string{"player_id", "name", "level"} {
 		if _, ok := payload.Changes[field]; !ok {
 			t.Errorf("missing change %q in %s", field, events[0].PayloadJSON)
 		}
 	}
-	if strings.Contains(events[0].PayloadJSON, before.IP) || strings.Contains(events[0].PayloadJSON, after.IP) || strings.Contains(events[0].PayloadJSON, "999") || len(payload.Changes) != 4 {
+	if strings.Contains(events[0].PayloadJSON, before.IP) || strings.Contains(events[0].PayloadJSON, after.IP) || strings.Contains(events[0].PayloadJSON, "999") || len(payload.Changes) != 3 {
 		t.Fatalf("unsafe or unexpected payload=%s", events[0].PayloadJSON)
 	}
 }

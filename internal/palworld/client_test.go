@@ -15,7 +15,7 @@ import (
 
 func TestReadOnlyEndpointsDecodeOfficialSchemas(t *testing.T) {
 	fixtures := map[string]string{
-		"/players":  `{"players":[{"name":"Kevin","accountName":"kevin","playerId":"ABC","userId":"steam_1","ip":"192.0.2.1","ping":28.5,"location_x":123.25,"location_y":-99.5,"level":41`,
+		"/players":  `{"players":[{"name":"Kevin","accountName":"kevin","playerId":"ABC","userId":"steam_1","iP":"192.0.2.1","ping":28.5,"location_x":123.25,"location_y":-99.5,"level":41}]}`,
 		"/metrics":  `{"serverfps":58,"currentplayernum":1,"serverframetime":17.2,"maxplayernum":32,"uptime":3600,"basecampnum":2,"days":126}`,
 		"/info":     `{"version":"v0.7.2","servername":"Home","description":"Family","worldguid":"WORLD"}`,
 		"/settings": `{"Difficulty":"None","ExpRate":1.0,"ServerPlayerMaxNum":32,"RESTAPIEnabled":true,"Nested":{"Limit":12},"Modes":[1,2.5]}`,
@@ -42,7 +42,7 @@ func TestReadOnlyEndpointsDecodeOfficialSchemas(t *testing.T) {
 	}
 	wantPlayers := []domain.Player{{
 		UserID: "steam_1", PlayerID: "ABC", Name: "Kevin", AccountName: "kevin",
-		IP: "192.0.2.1", Ping: 28.5, LocationX: 123.25, LocationY: -99.5, Level: 41, BuildingCount: 119,
+		IP: "192.0.2.1", Ping: 28.5, LocationX: 123.25, LocationY: -99.5, Level: 41,
 	}}
 	if !reflect.DeepEqual(players, wantPlayers) {
 		t.Fatalf("players=%#v, want %#v", players, wantPlayers)
@@ -165,7 +165,7 @@ func TestReadOnlyEndpointsRequireOfficialFields(t *testing.T) {
 			name: "players", path: "/players",
 			valid: map[string]any{"players": []any{map[string]any{
 				"name": "Kevin", "accountName": "kevin", "playerId": "ABC", "userId": "steam_1",
-				"ip": "192.0.2.1", "ping": 28.5, "location_x": 123.25, "location_y": -99.5,
+				"iP": "192.0.2.1", "ping": 28.5, "location_x": 123.25, "location_y": -99.5,
 				"level": 41,
 			}}},
 			required: []string{"players"},
@@ -219,7 +219,7 @@ func TestReadOnlyEndpointsRequireOfficialFields(t *testing.T) {
 				payloads["null players"] = invalidPayload{
 					value: map[string]any{"players": nil}, wantError: "decode Palworld players: missing required field players",
 				}
-				playerFields := []string{"name", "accountName", "playerId", "userId", "ip", "ping", "location_x", "location_y", "level"}
+				playerFields := []string{"name", "accountName", "playerId", "userId", "iP", "ping", "location_x", "location_y", "level"}
 				for _, field := range playerFields {
 					copy := cloneJSONMap(t, test.valid)
 					player := copy["players"].([]any)[0].(map[string]any)
@@ -293,7 +293,7 @@ func TestReadOnlyEndpointRejectsTrailingJSON(t *testing.T) {
 func TestPlayerSensitiveObservationFieldsDoNotMarshal(t *testing.T) {
 	player := domain.Player{
 		UserID: "steam_1", PlayerID: "ABC", Name: "Kevin", AccountName: "kevin",
-		IP: "192.0.2.1", Ping: 28.5, LocationX: 123.25, LocationY: -99.5, Level: 41, BuildingCount: 119,
+		IP: "192.0.2.1", Ping: 28.5, LocationX: 123.25, LocationY: -99.5, Level: 41,
 	}
 	encoded, err := json.Marshal(player)
 	if err != nil {
@@ -335,7 +335,7 @@ func TestListPlayersUsesBasicAuthAndDecodesPlayers(t *testing.T) {
 			t.Errorf("request=%s %s", r.Method, r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"players": []map[string]any{{
-			"name": "Kevin", "accountName": "kevin", "playerId": "ABC", "userId": "steam_1", "ip": "127.0.0.1",
+			"name": "Kevin", "accountName": "kevin", "playerId": "ABC", "userId": "steam_1", "iP": "127.0.0.1",
 			"ping": 0, "location_x": 0, "location_y": 0, "level": 0,
 		}}})
 	}))

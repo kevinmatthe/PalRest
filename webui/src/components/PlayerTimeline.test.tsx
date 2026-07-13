@@ -73,7 +73,7 @@ describe('PlayerTimeline', () => {
         { user_id: 'u/1', segment_id: 's2', observed_at: '2026-07-13T09:00:00Z', x: 123.45, y: -9.5, ping: 20, level: 12, source_ref: 'poll-2', runtime_epoch: 1 },
         { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T08:30:00Z', x: 10, y: 20, ping: 18, level: 12, source_ref: 'poll-1', runtime_epoch: 0 },
       ],
-      private_samples: [{ user_id: 'u/1', observed_at: '2026-07-13T08:45:00Z', ip: '2001:db8::1:8211', ping: 17, level: 12, building_count: 3, source_ref: 'private-1' }],
+      private_samples: [{ user_id: 'u/1', observed_at: '2026-07-13T08:45:00Z', ip: '2001:db8::1:8211', ping: 17, level: 12, source_ref: 'private-1' }],
     };
     const original = JSON.stringify(payload);
     vi.mocked(api.getPlayerTimeline).mockResolvedValue(payload);
@@ -145,7 +145,7 @@ describe('PlayerTimeline', () => {
   });
 
   it('retains the selected player and private context when search excludes that player', async () => {
-    vi.mocked(api.getPlayerTimeline).mockResolvedValue({ ...empty, private_samples: [{ user_id: 'u/1', observed_at: '2026-07-13T08:00:00Z', ip: '192.0.2.1:8211', ping: 10, level: 2, building_count: 1, source_ref: 'private' }] });
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue({ ...empty, private_samples: [{ user_id: 'u/1', observed_at: '2026-07-13T08:00:00Z', ip: '192.0.2.1:8211', ping: 10, level: 2, source_ref: 'private' }] });
     render(<PlayerTimeline players={players} refreshKey={0} />);
     const select = screen.getByRole('combobox', { name: /player/i });
     fireEvent.change(select, { target: { value: 'u/1' } });
@@ -159,7 +159,7 @@ describe('PlayerTimeline', () => {
   it('warns when any evidence source reaches the response limit', async () => {
     vi.mocked(api.getPlayerTimeline).mockResolvedValue({
       ...empty,
-      private_samples: Array.from({ length: 500 }, (_, index) => ({ user_id: 'u/1', observed_at: new Date(Date.UTC(2026, 6, 13, 8, 0, index)).toISOString(), ip: `192.0.2.${index}`, ping: 10, level: 2, building_count: 1, source_ref: `private-${index}` })),
+      private_samples: Array.from({ length: 500 }, (_, index) => ({ user_id: 'u/1', observed_at: new Date(Date.UTC(2026, 6, 13, 8, 0, index)).toISOString(), ip: `192.0.2.${index}`, ping: 10, level: 2, source_ref: `private-${index}` })),
     });
     render(<PlayerTimeline players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });

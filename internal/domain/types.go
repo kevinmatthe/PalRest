@@ -3,17 +3,16 @@ package domain
 import "time"
 
 type Player struct {
-	UserID        string    `json:"user_id"`
-	PlayerID      string    `json:"player_id"`
-	Name          string    `json:"name"`
-	AccountName   string    `json:"account_name"`
-	LastOnline    time.Time `json:"last_online"`
-	IP            string    `json:"-"`
-	Ping          float64   `json:"-"`
-	LocationX     float64   `json:"-"`
-	LocationY     float64   `json:"-"`
-	Level         int       `json:"-"`
-	BuildingCount int       `json:"-"`
+	UserID      string    `json:"user_id"`
+	PlayerID    string    `json:"player_id"`
+	Name        string    `json:"name"`
+	AccountName string    `json:"account_name"`
+	LastOnline  time.Time `json:"last_online"`
+	IP          string    `json:"-"`
+	Ping        float64   `json:"-"`
+	LocationX   float64   `json:"-"`
+	LocationY   float64   `json:"-"`
+	Level       int       `json:"-"`
 }
 
 type ServerMetrics struct {
