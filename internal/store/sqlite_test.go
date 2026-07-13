@@ -171,6 +171,68 @@ VALUES('u1','One','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`); err != nil 
 			t.Fatalf("table %s count=%d", table, count)
 		}
 	}
+	for _, index := range []string{"activity_events_subject_time", "trajectory_user_time", "sensitive_audit_actor_time"} {
+		var count int
+		if err := repo.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("index %s count=%d", index, count)
+		}
+	}
+
+	if _, err := repo.db.Exec(`
+INSERT INTO activity_events(
+    id, event_type, subject_type, subject_id, occurred_at, observed_at,
+    source, source_ref, correlation_id, confidence, schema_version, payload_json
+) VALUES('event_1', 'joined', 'player', 'u1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z',
+         'rest', 'status_1', 'correlation_1', 'observed', 1, '{}')`); err != nil {
+		t.Fatalf("insert activity event: %v", err)
+	}
+	if _, err := repo.db.Exec(`
+INSERT INTO activity_events(
+    id, event_type, subject_type, subject_id, occurred_at, observed_at,
+    source, source_ref, correlation_id, confidence, schema_version, payload_json
+) VALUES('event_1', 'left', 'player', 'u1', '2026-01-01T01:00:00Z', '2026-01-01T01:00:01Z',
+         'rest', 'status_2', 'correlation_2', 'observed', 1, '{}')`); err == nil {
+		t.Fatal("expected duplicate activity event id to fail")
+	}
+	if _, err := repo.db.Exec(`INSERT INTO activity_events(id) VALUES('event_2')`); err == nil {
+		t.Fatal("expected activity event NOT NULL constraint to fail")
+	}
+
+	if _, err := repo.db.Exec(`
+INSERT INTO trajectory_samples(user_id, segment_id, observed_at, x, y, ping, level, source_ref)
+VALUES('u1', 'segment_1', '2026-01-01T00:00:00Z', 1, 2, 3, 4, 'sample_1')`); err != nil {
+		t.Fatalf("insert trajectory sample: %v", err)
+	}
+	if _, err := repo.db.Exec(`
+INSERT INTO trajectory_samples(user_id, segment_id, observed_at, x, y, ping, level, source_ref)
+VALUES('u1', 'segment_2', '2026-01-01T00:00:00Z', 5, 6, 7, 8, 'sample_2')`); err == nil {
+		t.Fatal("expected duplicate trajectory user/time to fail")
+	}
+
+	if _, err := repo.db.Exec(`
+INSERT INTO server_documents(kind, content_hash, observed_at, canonical_json)
+VALUES('settings', 'hash_1', '2026-01-01T00:00:00Z', '{}')`); err != nil {
+		t.Fatalf("insert server document: %v", err)
+	}
+	if _, err := repo.db.Exec(`
+INSERT INTO server_documents(kind, content_hash, observed_at, canonical_json)
+VALUES('settings', 'hash_1', '2026-01-01T01:00:00Z', '{"changed":true}')`); err == nil {
+		t.Fatal("expected duplicate server document kind/hash to fail")
+	}
+	if _, err := repo.db.Exec(`
+INSERT INTO server_documents(kind, content_hash, observed_at)
+VALUES('settings', 'hash_2', '2026-01-01T01:00:00Z')`); err == nil {
+		t.Fatal("expected server document NOT NULL constraint to fail")
+	}
+
+	if _, err := repo.db.Exec(`
+INSERT INTO sensitive_access_audit(actor, action, subject_type, subject_id, outcome, requested_at)
+VALUES('admin', 'read_timeline', 'player', 'u1', 'success', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert audit with nullable ranges: %v", err)
+	}
 }
 
 func TestOpenMigratesVersionSevenToEightWithoutLosingAnalytics(t *testing.T) {
