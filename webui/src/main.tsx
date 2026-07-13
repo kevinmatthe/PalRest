@@ -35,6 +35,7 @@ import { AdminLoginModal } from './components/AdminLoginModal';
 import { PlayerUsage } from './components/PlayerUsage';
 import { PolicyManager } from './components/PolicyManager';
 import { AnalyticsDashboard } from './components/AnalyticsDashboard';
+import { PlayerTimeline } from './components/PlayerTimeline';
 import { policyCondition } from './policyCondition';
 import './styles.css';
 
@@ -59,8 +60,9 @@ export function App() {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [manualRefreshKey, setManualRefreshKey] = useState(0);
   const [adminBusy, setAdminBusy] = useState(false);
-  const [view, setView] = useState<'dashboard' | 'analytics' | 'policy'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'analytics' | 'timeline' | 'policy'>('dashboard');
   const [analyticsCadenceKey, setAnalyticsCadenceKey] = useState(0);
+  const [timelineRefreshKey, setTimelineRefreshKey] = useState(0);
 
   useEffect(() => {
     let mounted = true;
@@ -83,6 +85,7 @@ export function App() {
           return;
         }
         setState({ kind: 'ready', data: { health, status, players: playersResponse.players, policies, admin } });
+        if (admin.authenticated) setTimelineRefreshKey((value) => value + 1);
         setLastRefresh(new Date());
       } catch (error) {
         if (!mounted || requestController.signal.aborted) {
@@ -106,6 +109,9 @@ export function App() {
   }, [manualRefreshKey]);
 
   const data = state.data;
+  useEffect(() => {
+    if (view === 'timeline' && data && !data.admin.authenticated) setView('dashboard');
+  }, [data, view]);
   const players = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     const source = data?.players ?? [];
@@ -193,11 +199,13 @@ export function App() {
       {view !== 'policy' ? <nav className="view-tabs" aria-label="Console views">
         <button type="button" aria-current={view === 'dashboard' ? 'page' : undefined} onClick={() => setView('dashboard')}>Overview</button>
         <button type="button" aria-current={view === 'analytics' ? 'page' : undefined} onClick={() => setView('analytics')}>Analytics</button>
+        {data?.admin.authenticated ? <button type="button" aria-current={view === 'timeline' ? 'page' : undefined} onClick={() => setView('timeline')}>Timeline</button> : null}
       </nav> : null}
 
       {view === 'policy' && data?.admin.authenticated ? (
         <PolicyManager policies={data.policies} players={data.players} busy={adminBusy} onSave={onSavePolicies} onBack={() => setView('dashboard')} />
-      ) : view === 'analytics' ? <AnalyticsDashboard players={data?.players ?? []} refreshKey={manualRefreshKey + analyticsCadenceKey} /> : <>
+      ) : view === 'analytics' ? <AnalyticsDashboard players={data?.players ?? []} refreshKey={manualRefreshKey + analyticsCadenceKey} />
+        : view === 'timeline' && data?.admin.authenticated ? <PlayerTimeline players={data.players} refreshKey={timelineRefreshKey} /> : <>
       <section className="status-grid" aria-label="Service status">
         <MetricCard icon={<Users size={20} />} label="Online players" value={activePlayers.toString()} detail={`API reports ${data?.status.online_count ?? 0}`} />
         <MetricCard icon={<CircleGauge size={20} />} label="Near limit" value={atRiskPlayers.toString()} detail="10 minutes or less" tone={atRiskPlayers > 0 ? 'warn' : 'ok'} />

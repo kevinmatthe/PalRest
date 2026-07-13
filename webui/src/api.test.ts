@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getAnalyticsActivity, getAnalyticsSummary } from './api';
-import type { AnalyticsActivity, AnalyticsSummary } from './api';
+import { getAnalyticsActivity, getAnalyticsSummary, getPlayerTimeline } from './api';
+import type { AnalyticsActivity, AnalyticsSummary, PlayerTimelineResponse } from './api';
 
 const summaryFixture = {
   online_count: 1, as_of: null, today_observed_ms: 60_000, peak_count: 2, peak_at: null,
@@ -45,5 +45,18 @@ describe('analytics API', () => {
   it('preserves existing API error behavior', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ error: { message: 'bad range' } }), { status: 400 }));
     await expect(getAnalyticsActivity('7d')).rejects.toMatchObject({ message: 'bad range', status: 400 });
+  });
+});
+
+describe('administrator timeline API', () => {
+  it('encodes the player, RFC3339 range and limit while forwarding AbortSignal', async () => {
+    const payload = { user_id: 'steam/id one', events: [], trajectories: [], private_samples: [] } satisfies PlayerTimelineResponse;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(payload)));
+    const controller = new AbortController();
+
+    await expect(getPlayerTimeline('steam/id one', '2026-07-12T08:00:00+08:00', '2026-07-13T08:00:00+08:00', 500, controller.signal)).resolves.toEqual(payload);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/admin/players/steam%2Fid%20one/timeline?start=2026-07-12T08%3A00%3A00%2B08%3A00&end=2026-07-13T08%3A00%3A00%2B08%3A00&limit=500');
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ signal: controller.signal }));
   });
 });
