@@ -2,8 +2,10 @@ package observation_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"path/filepath"
 	"reflect"
@@ -645,15 +647,55 @@ func TestServerSettingsKeepsDistinctLargeIntegerHashes(t *testing.T) {
 	}
 }
 
+func TestServerSettingsPersistenceNeverStoresSecretsOrPasswordOnlyHistory(t *testing.T) {
+	repo, path := openServerRepository(t)
+	defer repo.Close()
+	sequence := 0
+	service := observation.NewServer(repo, func() string { sequence++; return fmt.Sprintf("redact-%d", sequence) })
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	first := domain.ServerSettings{Values: map[string]any{"Difficulty": "Hard", "ServerPassword": "one", "nested": []any{map[string]any{"credential": "cred-one"}}}}
+	second := domain.ServerSettings{Values: map[string]any{"Difficulty": "Hard", "ServerPassword": "two", "nested": []any{map[string]any{"credential": "cred-two"}}}}
+	if err := service.RecordSettings(t.Context(), base, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordSettings(t.Context(), base.Add(time.Minute), second); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var documents, occurrences int
+	var canonical string
+	if err := db.QueryRowContext(t.Context(), `SELECT count(*),canonical_json FROM server_documents WHERE kind='settings'`).Scan(&documents, &canonical); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM server_document_observations WHERE kind='settings'`).Scan(&occurrences); err != nil {
+		t.Fatal(err)
+	}
+	if documents != 1 || occurrences != 1 {
+		t.Fatalf("documents=%d occurrences=%d canonical=%s", documents, occurrences, canonical)
+	}
+	for _, secret := range []string{"one", "two", "cred-one", "cred-two"} {
+		if strings.Contains(canonical, secret) {
+			t.Fatalf("raw database leaked %q: %s", secret, canonical)
+		}
+	}
+	if !strings.Contains(canonical, `"ServerPassword":"[REDACTED]"`) || !strings.Contains(canonical, `"Difficulty":"Hard"`) {
+		t.Fatalf("canonical=%s", canonical)
+	}
+}
+
 func TestServerSettingsChangeEventContainsOnlyHashesAndSafeSummary(t *testing.T) {
 	eventErr := errors.New("event failed")
 	recorder := &serverRecorderFake{eventErrors: []error{eventErr, nil}}
 	service := newServerService(recorder)
 	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
-	if err := service.RecordSettings(t.Context(), base, domain.ServerSettings{Values: map[string]any{"password": "secret-one"}}); err != nil {
+	if err := service.RecordSettings(t.Context(), base, domain.ServerSettings{Values: map[string]any{"Difficulty": "Normal", "password": "secret-one"}}); err != nil {
 		t.Fatal(err)
 	}
-	changed := domain.ServerSettings{Values: map[string]any{"password": "secret-two", "Nested": map[string]any{"token": "private"}}}
+	changed := domain.ServerSettings{Values: map[string]any{"Difficulty": "Hard", "password": "secret-two", "Nested": map[string]any{"token": "private"}}}
 	if err := service.RecordSettings(t.Context(), base.Add(time.Minute), changed); !errors.Is(err, eventErr) {
 		t.Fatalf("err=%v", err)
 	}
@@ -761,8 +803,8 @@ func TestServerInfoAndSettingsEmitRecurrentTransitionsWithoutSecrets(t *testing.
 	if err := service.RecordInfo(t.Context(), base.Add(2*time.Minute), infoA); err != nil {
 		t.Fatal(err)
 	}
-	settingsA := domain.ServerSettings{Values: map[string]any{"password": "secret-a"}}
-	settingsB := domain.ServerSettings{Values: map[string]any{"password": "secret-b"}}
+	settingsA := domain.ServerSettings{Values: map[string]any{"Difficulty": "A", "password": "secret-a"}}
+	settingsB := domain.ServerSettings{Values: map[string]any{"Difficulty": "B", "password": "secret-b"}}
 	if err := service.RecordSettings(t.Context(), base, settingsA); err != nil {
 		t.Fatal(err)
 	}

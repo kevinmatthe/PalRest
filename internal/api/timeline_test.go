@@ -62,6 +62,41 @@ func TestAdminMetricsAndDocumentsValidateAndReturnTypedJSON(t *testing.T) {
 	}
 }
 
+func TestAdminDocumentsRedactSecretsFromLegacyCanonicalRows(t *testing.T) {
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	legacy := []byte(`{"Difficulty":"Hard","AdminPassword":"old-secret","nested":{"apiKey":"key-secret","items":[{"token":"token-secret","kept":"yes"}]}}`)
+	repo := &observationQueriesFake{documents: []store.ServerDocumentOccurrence{{Kind: "settings", ObservedAt: at, ContentHash: "legacy", Canonical: legacy}}}
+	server := timelineServer(repo)
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, adminRequest(t, server, "/api/v1/admin/server/documents?kind=settings"))
+	body := res.Body.String()
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, body)
+	}
+	for _, secret := range []string{"old-secret", "key-secret", "token-secret"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("response leaked %q: %s", secret, body)
+		}
+	}
+	for _, retained := range []string{`"Difficulty":"Hard"`, `"kept":"yes"`, `"AdminPassword":"[REDACTED]"`} {
+		if !strings.Contains(body, retained) {
+			t.Fatalf("response missing %s: %s", retained, body)
+		}
+	}
+}
+
+func TestAdminMetricsAndDocumentsMapNotFound(t *testing.T) {
+	repo := &observationQueriesFake{err: store.ErrNotFound}
+	server := timelineServer(repo)
+	for _, path := range []string{"/api/v1/admin/server/metrics?start=2026-07-13T08:00:00Z&end=2026-07-13T09:00:00Z", "/api/v1/admin/server/documents?kind=info"} {
+		res := httptest.NewRecorder()
+		server.Handler().ServeHTTP(res, adminRequest(t, server, path))
+		if res.Code != http.StatusNotFound || !strings.Contains(res.Body.String(), `"code":"not_found"`) {
+			t.Errorf("path=%s code=%d body=%s", path, res.Code, res.Body.String())
+		}
+	}
+}
+
 func timelineServer(repo *observationQueriesFake) *Server {
 	cfg := config.Config{Version: 1}
 	return New(fakeHealth{}, fakeStatus{}, fakeSnapshots{}, fakeAnalyticsQueries{}, fakeAnalyticsOnline{}, fakePolicies{}, fakeResetter{}, repo, "root", "secret", func() config.Config { return cfg })

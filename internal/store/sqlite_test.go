@@ -55,7 +55,7 @@ func TestOpenMigrationCreatesAnalyticsSchema(t *testing.T) {
 	if err := repo.db.QueryRowContext(t.Context(), `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 {
+	if version != 10 {
 		t.Fatalf("migration version=%d", version)
 	}
 
@@ -66,6 +66,7 @@ func TestOpenMigrationCreatesAnalyticsSchema(t *testing.T) {
 		"analytics_observation_state",
 		"activity_events",
 		"trajectory_samples",
+		"player_private_samples",
 		"server_metric_samples",
 		"server_documents",
 		"server_document_observations",
@@ -87,7 +88,7 @@ func TestOpenMigrationCreatesAnalyticsSchema(t *testing.T) {
 	if cleanupIndex != 1 {
 		t.Fatalf("player_sessions_ended_at count=%d", cleanupIndex)
 	}
-	for _, index := range []string{"activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "server_metric_samples_event", "server_document_observations_kind_time", "server_document_observations_event", "sensitive_audit_actor_time"} {
+	for _, index := range []string{"activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "player_private_samples_user_time", "player_private_samples_retention", "server_metric_samples_event", "server_document_observations_kind_time", "server_document_observations_event", "sensitive_audit_actor_time"} {
 		var count int
 		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -170,10 +171,10 @@ VALUES('u1','One','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`); err != nil 
 	if err := repo.db.QueryRow(`SELECT COUNT(*) FROM players WHERE user_id='u1' AND name='One'`).Scan(&players); err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 || players != 1 {
+	if version != 10 || players != 1 {
 		t.Fatalf("version=%d players=%d", version, players)
 	}
-	for _, table := range []string{"activity_events", "trajectory_samples", "server_metric_samples", "server_documents", "server_document_observations", "server_observation_state", "sensitive_access_audit"} {
+	for _, table := range []string{"activity_events", "trajectory_samples", "player_private_samples", "server_metric_samples", "server_documents", "server_document_observations", "server_observation_state", "sensitive_access_audit"} {
 		var count int
 		if err := repo.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -182,7 +183,7 @@ VALUES('u1','One','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`); err != nil 
 			t.Fatalf("table %s count=%d", table, count)
 		}
 	}
-	for _, index := range []string{"activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "server_metric_samples_event", "server_document_observations_kind_time", "server_document_observations_event", "sensitive_audit_actor_time"} {
+	for _, index := range []string{"activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "player_private_samples_user_time", "player_private_samples_retention", "server_metric_samples_event", "server_document_observations_kind_time", "server_document_observations_event", "sensitive_audit_actor_time"} {
 		var count int
 		if err := repo.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -362,8 +363,51 @@ DELETE FROM schema_migrations WHERE version>=8`); err != nil {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 || len(players) != 1 || players[0].UserID != "u1" || !watermark.Equal(at) {
+	if version != 10 || len(players) != 1 || players[0].UserID != "u1" || !watermark.Equal(at) {
 		t.Fatalf("version=%d players=%+v watermark=%v", version, players, watermark)
+	}
+}
+
+func TestOpenMigratesVersionNineToTenPreservingObservationData(t *testing.T) {
+	repo, path := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	event := observationEvent("preserved-v9", "player_joined", "u1", at)
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Events: []ActivityEvent{event}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(t.Context(), `DROP TABLE player_private_samples; DELETE FROM schema_migrations WHERE version=10`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	var version, events, indexes int
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT count(*) FROM activity_events WHERE id='preserved-v9'`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_master WHERE type='index' AND name IN ('player_private_samples_user_time','player_private_samples_retention')`).Scan(&indexes); err != nil {
+		t.Fatal(err)
+	}
+	if version != 10 || events != 1 || indexes != 2 {
+		t.Fatalf("version=%d events=%d indexes=%d", version, events, indexes)
+	}
+	valid := PlayerPrivateSample{UserID: "u1", ObservedAt: at, IP: "192.0.2.1", SourceRef: "poll"}
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{PrivateSamples: []PlayerPrivateSample{valid}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{PrivateSamples: []PlayerPrivateSample{valid}}); err == nil {
+		t.Fatal("expected unique user/time constraint")
+	}
+	if _, err := repo.db.ExecContext(t.Context(), `INSERT INTO player_private_samples(user_id,observed_at,ip,ping,level,building_count,source_ref) VALUES('null-ip','2026-07-13T08:00:01.000000000Z',NULL,0,0,0,'poll')`); err == nil {
+		t.Fatal("expected NOT NULL IP constraint")
 	}
 }
 
@@ -430,7 +474,7 @@ INSERT INTO player_sessions(user_id,started_at,ended_at,last_observed_at) VALUES
 			t.Fatal(err)
 		}
 	}
-	if version != 9 || indexes != 1 || players != 1 || sessions != 1 {
+	if version != 10 || indexes != 1 || players != 1 || sessions != 1 {
 		t.Fatalf("version=%d index=%d players=%d sessions=%d", version, indexes, players, sessions)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kevinmatt/palworld-playtime-guard/internal/sensitivejson"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
 )
 
@@ -71,6 +72,10 @@ func (s *Server) getAdminServerMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := s.observations.ReadServerMetrics(r.Context(), s.adminActor(), start, end, limit)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "server metrics not found")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query_failed", "metrics query failed")
 		return
@@ -102,6 +107,10 @@ func (s *Server) getAdminServerDocuments(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	items, err := s.observations.ReadServerDocuments(r.Context(), s.adminActor(), kind, limit)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "server documents not found")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query_failed", "documents query failed")
 		return
@@ -114,7 +123,12 @@ func (s *Server) getAdminServerDocuments(w http.ResponseWriter, r *http.Request)
 	}
 	response := make([]documentDTO, 0, len(items))
 	for _, item := range items {
-		response = append(response, documentDTO{item.Kind, item.ObservedAt, item.ContentHash, json.RawMessage(item.Canonical)})
+		canonical, redactErr := sensitivejson.RedactJSON(item.Canonical)
+		if redactErr != nil {
+			writeError(w, http.StatusInternalServerError, "query_failed", "documents query failed")
+			return
+		}
+		response = append(response, documentDTO{item.Kind, item.ObservedAt, item.ContentHash, json.RawMessage(canonical)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"documents": response})
 }

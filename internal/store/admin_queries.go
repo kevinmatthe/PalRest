@@ -34,6 +34,7 @@ func (r *Repository) ReadServerMetrics(ctx context.Context, actor string, start,
 	rows, err := tx.QueryContext(ctx, `SELECT observed_at,server_fps,current_player_num,server_frame_time,max_player_num,uptime_seconds,base_camp_num,game_days
 FROM server_metric_samples WHERE observed_at>=? AND observed_at<? ORDER BY observed_at LIMIT ?`, formatObservationTime(start), formatObservationTime(end), limit)
 	result := make([]ServerMetricSample, 0)
+	outcome := "success"
 	if err == nil {
 		for rows.Next() {
 			var sample ServerMetricSample
@@ -53,7 +54,10 @@ FROM server_metric_samples WHERE observed_at>=? AND observed_at<? ORDER BY obser
 		}
 	}
 	if err == nil {
-		err = insertAdminAudit(ctx, tx, actor, "read_server_metrics", "server", "metrics", &start, &end, "success")
+		if len(result) == 0 {
+			outcome = "not_found"
+		}
+		err = insertAdminAudit(ctx, tx, actor, "read_server_metrics", "server", "metrics", &start, &end, outcome)
 	}
 	if err == nil {
 		err = tx.Commit()
@@ -62,6 +66,9 @@ FROM server_metric_samples WHERE observed_at>=? AND observed_at<? ORDER BY obser
 	}
 	if err != nil {
 		return nil, r.auditQueryError(ctx, actor, "read_server_metrics", "server", "metrics", &start, &end, err)
+	}
+	if outcome == "not_found" {
+		return nil, ErrNotFound
 	}
 	return result, nil
 }
@@ -84,6 +91,7 @@ func (r *Repository) ReadServerDocuments(ctx context.Context, actor, kind string
 FROM server_document_observations o JOIN server_documents d ON d.kind=o.kind AND d.content_hash=o.content_hash
 WHERE o.kind=? ORDER BY o.observed_at,o.content_hash LIMIT ?`, kind, limit)
 	result := make([]ServerDocumentOccurrence, 0)
+	outcome := "success"
 	if err == nil {
 		for rows.Next() {
 			var item ServerDocumentOccurrence
@@ -103,7 +111,10 @@ WHERE o.kind=? ORDER BY o.observed_at,o.content_hash LIMIT ?`, kind, limit)
 		}
 	}
 	if err == nil {
-		err = insertAdminAudit(ctx, tx, actor, "read_server_documents", "server", kind, nil, nil, "success")
+		if len(result) == 0 {
+			outcome = "not_found"
+		}
+		err = insertAdminAudit(ctx, tx, actor, "read_server_documents", "server", kind, nil, nil, outcome)
 	}
 	if err == nil {
 		err = tx.Commit()
@@ -112,6 +123,9 @@ WHERE o.kind=? ORDER BY o.observed_at,o.content_hash LIMIT ?`, kind, limit)
 	}
 	if err != nil {
 		return nil, r.auditQueryError(ctx, actor, "read_server_documents", "server", kind, nil, nil, err)
+	}
+	if outcome == "not_found" {
+		return nil, ErrNotFound
 	}
 	return result, nil
 }

@@ -640,6 +640,33 @@ func TestServerReadQueryErrorsAreAudited(t *testing.T) {
 	}
 }
 
+func TestEmptyServerReadsReturnNotFoundAndAuditOutcome(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	if _, err := repo.ReadServerMetrics(t.Context(), "root", base, base.Add(time.Hour), 10); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("metrics err=%v", err)
+	}
+	if _, err := repo.ReadServerDocuments(t.Context(), "root", "settings", 10); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("documents err=%v", err)
+	}
+	rows, err := repo.db.QueryContext(t.Context(), `SELECT action,outcome FROM sensitive_access_audit ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var action, outcome string
+		if err := rows.Scan(&action, &outcome); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, action+":"+outcome)
+	}
+	if strings.Join(got, ",") != "read_server_metrics:not_found,read_server_documents:not_found" {
+		t.Fatalf("audits=%v", got)
+	}
+}
+
 func TestCleanupRawObservationsIncludesPrivateSamplesWithBound(t *testing.T) {
 	repo, _ := openTemp(t)
 	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)

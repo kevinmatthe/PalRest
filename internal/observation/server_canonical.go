@@ -9,6 +9,8 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+
+	"github.com/kevinmatt/palworld-playtime-guard/internal/sensitivejson"
 )
 
 const (
@@ -26,7 +28,7 @@ func canonicalDocument(value any) ([]byte, string, error) {
 }
 
 func canonicalSettings(values map[string]any) ([]byte, string, error) {
-	normalized, err := canonicalJSONValue(values)
+	normalized, err := canonicalJSONValue(sensitivejson.Redact(values))
 	if err != nil {
 		return nil, "", err
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/palworld"
 )
 
@@ -35,5 +36,34 @@ func TestPalworldSettingsNumbersReachCanonicalizationExactly(t *testing.T) {
 	want := `{"large_fraction":9007199254740992.1,"negative_zero":0,"safe":1,"tiny":0.` + strings.Repeat("0", 399) + `1}`
 	if got := string(recorder.documentCalls[0].canonical); got != want {
 		t.Fatalf("canonical=%s want=%s", got, want)
+	}
+}
+
+func TestServerSettingsRecursivelyRedactsSecretsWithoutMutatingInput(t *testing.T) {
+	recorder := &serverRecorderFake{}
+	values := map[string]any{
+		"Difficulty":    "Hard",
+		"AdminPassword": "admin-secret",
+		"nested":        map[string]any{"api_key": "key-secret", "items": []any{map[string]any{"AccessToken": "token-secret", "ordinary": "kept"}}},
+	}
+	if err := newServerService(recorder).RecordSettings(t.Context(), time.Now(), domain.ServerSettings{Values: values}); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.documentCalls) != 1 {
+		t.Fatalf("calls=%d", len(recorder.documentCalls))
+	}
+	canonical := string(recorder.documentCalls[0].canonical)
+	for _, secret := range []string{"admin-secret", "key-secret", "token-secret"} {
+		if strings.Contains(canonical, secret) {
+			t.Fatalf("canonical leaked %q: %s", secret, canonical)
+		}
+	}
+	for _, retained := range []string{`"Difficulty":"Hard"`, `"ordinary":"kept"`, `"AdminPassword":"[REDACTED]"`, `"api_key":"[REDACTED]"`, `"AccessToken":"[REDACTED]"`} {
+		if !strings.Contains(canonical, retained) {
+			t.Fatalf("canonical missing %s: %s", retained, canonical)
+		}
+	}
+	if values["AdminPassword"] != "admin-secret" || values["nested"].(map[string]any)["api_key"] != "key-secret" {
+		t.Fatalf("input was mutated: %#v", values)
 	}
 }
