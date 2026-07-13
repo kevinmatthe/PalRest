@@ -180,6 +180,32 @@ func TestActivityPayloadStrictJSONAndReplayEquality(t *testing.T) {
 	}
 }
 
+func TestJSONSemanticEqualityRejectsDuplicateKeysOnEitherSide(t *testing.T) {
+	if jsonSemanticallyEqual(`{"value":1,"value":2}`, `{"value":2}`) || jsonSemanticallyEqual(`{"value":2}`, `{"value":1,"value":2}`) {
+		t.Fatal("duplicate keys were folded during semantic equality")
+	}
+	if !jsonSemanticallyEqual(`{"nested":null,"value":2}`, `{ "value": 2, "nested": null }`) {
+		t.Fatal("strict equivalent objects did not compare equal")
+	}
+}
+
+func TestLegacyDuplicateKeyActivityPayloadConflictsWithIncomingReplay(t *testing.T) {
+	repo, _ := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	event := observationEvent("legacy-duplicate", "player_attribute_changed", "u", at)
+	if _, err := repo.db.Exec(`
+INSERT INTO activity_events(id,event_type,subject_type,subject_id,occurred_at,observed_at,source,source_ref,correlation_id,confidence,schema_version,payload_json)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, event.ID, event.EventType, event.SubjectType, event.SubjectID,
+		formatObservationTime(event.OccurredAt), formatObservationTime(event.ObservedAt), event.Source, event.SourceRef,
+		event.CorrelationID, event.Confidence, event.SchemaVersion, `{"value":1,"value":2}`); err != nil {
+		t.Fatal(err)
+	}
+	event.PayloadJSON = `{"value":2}`
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Events: []ActivityEvent{event}}); err == nil {
+		t.Fatal("legacy duplicate-key payload was treated as an equivalent replay")
+	}
+}
+
 func TestServerMetricObservationRollsBackEventAndMetricTogether(t *testing.T) {
 	repo, _ := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)

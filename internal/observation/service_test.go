@@ -318,6 +318,86 @@ func TestAmbiguousCommitReplaysExactWriteBeforeAdvancingBaseline(t *testing.T) {
 	}
 }
 
+func TestAmbiguousCommitAfterPollFailedBreaksContinuityOnReplay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "observations.db")
+	repo, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	recorder := &commitThenErrorRecorder{delegate: repo, failOnce: true}
+	sequence := 0
+	svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, func() string {
+		sequence++
+		return fmt.Sprintf("generated-%d", sequence)
+	})
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	before := player("u", 10, 10)
+	if err := svc.Observe(t.Context(), base, []domain.Player{before}, "poll-1"); err == nil {
+		t.Fatal("expected ambiguous commit")
+	}
+	svc.PollFailed() // mirrors Poller after PlayerObserver.Observe returned the error
+	after := before
+	after.Level++
+	after.LocationX = 11
+	if err := svc.Observe(t.Context(), base.Add(time.Minute), []domain.Player{after}, "poll-2"); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.attempts) != 3 || !reflect.DeepEqual(recorder.attempts[0], recorder.attempts[1]) {
+		t.Fatalf("attempts=%+v", recorder.attempts)
+	}
+	newWrite := recorder.attempts[2]
+	if len(newWrite.Events) != 0 {
+		t.Fatalf("attribute event crossed unknown continuity: %+v", newWrite.Events)
+	}
+	if len(newWrite.Trajectories) != 1 || newWrite.Trajectories[0].SegmentID == recorder.attempts[0].Trajectories[0].SegmentID {
+		t.Fatalf("new segment was not anchored after unknown continuity: %+v", newWrite.Trajectories)
+	}
+}
+
+func TestAmbiguousCommitSameTimeReplayAndMismatchSemantics(t *testing.T) {
+	newAmbiguous := func(t *testing.T) (*observation.Service, *commitThenErrorRecorder, time.Time, domain.Player) {
+		t.Helper()
+		repo, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "same-at.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = repo.Close() })
+		recorder := &commitThenErrorRecorder{delegate: repo, failOnce: true}
+		seq := 0
+		svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, func() string { seq++; return fmt.Sprintf("id-%d", seq) })
+		at := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+		value := player("u", 10, 10)
+		if err := svc.Observe(t.Context(), at, []domain.Player{value}, "poll-1"); err == nil {
+			t.Fatal("expected ambiguous commit")
+		}
+		return svc, recorder, at, value
+	}
+	t.Run("same input", func(t *testing.T) {
+		svc, recorder, at, value := newAmbiguous(t)
+		if err := svc.Observe(t.Context(), at, []domain.Player{value}, "poll-1"); err != nil {
+			t.Fatal(err)
+		}
+		if len(recorder.attempts) != 2 || !reflect.DeepEqual(recorder.attempts[0], recorder.attempts[1]) {
+			t.Fatalf("attempts=%+v", recorder.attempts)
+		}
+	})
+	t.Run("different input lands pending then rejects", func(t *testing.T) {
+		svc, recorder, at, value := newAmbiguous(t)
+		different := value
+		different.Level++
+		if err := svc.Observe(t.Context(), at, []domain.Player{different}, "poll-1"); err == nil || !strings.Contains(err.Error(), "differs from pending replay") {
+			t.Fatalf("error=%v", err)
+		}
+		if len(recorder.attempts) != 2 || !reflect.DeepEqual(recorder.attempts[0], recorder.attempts[1]) {
+			t.Fatalf("attempts=%+v", recorder.attempts)
+		}
+		if err := svc.Observe(t.Context(), at, []domain.Player{value}, "poll-1"); err == nil || !strings.Contains(err.Error(), "must be after") {
+			t.Fatalf("pending baseline was not landed after mismatch: %v", err)
+		}
+	})
+}
+
 func TestMissingIPSkipsPrivateSampleWithoutBlockingObservationOrBaseline(t *testing.T) {
 	recorder := &recorderFake{}
 	svc := newService(recorder)

@@ -184,6 +184,9 @@ func activityEventsEqual(a, b ActivityEvent) bool {
 }
 
 func jsonSemanticallyEqual(a, b string) bool {
+	if !validJSONObject([]byte(a)) || !validJSONObject([]byte(b)) {
+		return false
+	}
 	var left, right any
 	leftDecoder := json.NewDecoder(bytes.NewBufferString(a))
 	leftDecoder.UseNumber()
