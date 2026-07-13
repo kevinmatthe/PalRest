@@ -78,7 +78,7 @@ func (c *Client) ListPlayers(ctx context.Context) ([]domain.Player, error) {
 			return nil, fmt.Errorf("decode Palworld players: player %d missing required field %s", index, missing)
 		}
 		if *player.UserID == "" {
-			return nil, fmt.Errorf("decode Palworld players: player has empty userId")
+			return nil, fmt.Errorf("decode Palworld players: player %d has empty userId", index)
 		}
 		players = append(players, domain.Player{
 			UserID: *player.UserID, PlayerID: *player.PlayerID, Name: *player.Name, AccountName: *player.AccountName,

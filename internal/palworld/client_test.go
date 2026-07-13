@@ -201,34 +201,52 @@ func TestReadOnlyEndpointsRequireOfficialFields(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			payloads := map[string]any{"empty object": map[string]any{}}
+			type invalidPayload struct {
+				value     any
+				wantError string
+			}
+			payloads := map[string]invalidPayload{
+				"empty object": {value: map[string]any{}, wantError: "decode Palworld " + test.name + ": missing required field " + test.required[0]},
+			}
 			for _, field := range test.required {
 				copy := cloneJSONMap(t, test.valid)
 				delete(copy, field)
-				payloads["missing "+field] = copy
+				payloads["missing "+field] = invalidPayload{
+					value: copy, wantError: "decode Palworld " + test.name + ": missing required field " + field,
+				}
 			}
 			if test.name == "players" {
-				payloads["null players"] = map[string]any{"players": nil}
+				payloads["null players"] = invalidPayload{
+					value: map[string]any{"players": nil}, wantError: "decode Palworld players: missing required field players",
+				}
 				playerFields := []string{"name", "accountName", "playerId", "userId", "ip", "ping", "location_x", "location_y", "level", "building_count"}
 				for _, field := range playerFields {
 					copy := cloneJSONMap(t, test.valid)
 					player := copy["players"].([]any)[0].(map[string]any)
 					delete(player, field)
-					payloads["player missing "+field] = copy
+					payloads["player missing "+field] = invalidPayload{
+						value: copy, wantError: "decode Palworld players: player 0 missing required field " + field,
+					}
+				}
+				copy := cloneJSONMap(t, test.valid)
+				copy["players"].([]any)[0].(map[string]any)["userId"] = ""
+				payloads["player empty userId"] = invalidPayload{
+					value: copy, wantError: "decode Palworld players: player 0 has empty userId",
 				}
 			}
 
-			for name, payload := range payloads {
+			for name, invalid := range payloads {
 				t.Run(name, func(t *testing.T) {
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						if r.URL.Path != test.path {
 							t.Errorf("path=%s, want %s", r.URL.Path, test.path)
 						}
-						_ = json.NewEncoder(w).Encode(payload)
+						_ = json.NewEncoder(w).Encode(invalid.value)
 					}))
 					defer server.Close()
-					if err := test.call(New(server.URL, "secret", time.Second)); err == nil {
-						t.Fatal("expected missing required field error")
+					err := test.call(New(server.URL, "secret", time.Second))
+					if err == nil || !strings.Contains(err.Error(), invalid.wantError) {
+						t.Fatalf("err=%v, want error containing %q", err, invalid.wantError)
 					}
 				})
 			}
