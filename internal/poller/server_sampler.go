@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	serverMetadataInterval          = 5 * time.Minute
-	defaultServerObservationTimeout = 10 * time.Second
+	DefaultServerMetadataInterval   = 5 * time.Minute
+	DefaultServerObservationTimeout = 10 * time.Second
 )
 
 type ServerReader interface {

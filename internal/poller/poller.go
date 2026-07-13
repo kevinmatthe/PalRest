@@ -96,8 +96,8 @@ func New(client Client, guardService Guard, analytics Analytics, interval time.D
 		status:                 domain.PollStatus{StartedAt: now().UTC(), ConfigVersion: 1},
 		serverSampleSignals:    make(chan struct{}, 1),
 		serverSampleDone:       make(chan struct{}, 1),
-		serverSampleTimeout:    defaultServerObservationTimeout,
-		serverMetadataInterval: serverMetadataInterval,
+		serverSampleTimeout:    DefaultServerObservationTimeout,
+		serverMetadataInterval: DefaultServerMetadataInterval,
 	}
 	p.correlationID = newCorrelationID
 	for _, option := range options {

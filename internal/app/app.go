@@ -93,16 +93,19 @@ func New(configPath string) (*App, error) {
 	playerObservations := observation.New(repo, cfg.Server.MaxObservationGap.Duration, observation.DefaultMovementThreshold,
 		observation.DefaultMaxSampleInterval, observation.DefaultRawObservationRetention, observation.NewID)
 	serverObservations := observation.NewServer(repo, observation.NewID)
-	serverTimeout := cfg.Server.RequestTimeout.Duration
-	if serverTimeout > observation.DefaultServerObservationTimeout {
-		serverTimeout = observation.DefaultServerObservationTimeout
+	if err := serverObservations.Restore(context.Background()); err != nil {
+		_ = repo.Close()
+		return nil, err
 	}
-	poll, err := poller.New(client, guardService, analyticsService, cfg.Server.PollInterval.Duration, cfg.Enforcement.AnnounceMessage, cfg.Enforcement.KickMessage, time.Now,
+	pollOptions := []poller.Option{
 		poller.WithPlayerObserver(playerObservations),
 		poller.WithServerObservations(client, serverObservations),
-		poller.WithServerObservationTimeout(serverTimeout),
-		poller.WithServerMetadataInterval(observation.DefaultServerDocumentInterval),
-	)
+	}
+	if cfg.Server.RequestTimeout.Duration < poller.DefaultServerObservationTimeout {
+		pollOptions = append(pollOptions, poller.WithServerObservationTimeout(cfg.Server.RequestTimeout.Duration))
+	}
+	poll, err := poller.New(client, guardService, analyticsService, cfg.Server.PollInterval.Duration,
+		cfg.Enforcement.AnnounceMessage, cfg.Enforcement.KickMessage, time.Now, pollOptions...)
 	if err != nil {
 		_ = repo.Close()
 		return nil, err

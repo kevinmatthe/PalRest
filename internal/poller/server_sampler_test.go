@@ -367,6 +367,12 @@ func TestServerMetadataIntervalOptionOverridesDefaultCadence(t *testing.T) {
 	}
 }
 
+func TestServerObservationDefaultsArePublicConfigurationSource(t *testing.T) {
+	if DefaultServerObservationTimeout != 10*time.Second || DefaultServerMetadataInterval != 5*time.Minute {
+		t.Fatalf("timeout=%s metadata=%s", DefaultServerObservationTimeout, DefaultServerMetadataInterval)
+	}
+}
+
 type contextBlockingRecorder struct {
 	metricsStarted chan struct{}
 	metricsStopped chan struct{}

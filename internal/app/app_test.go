@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -133,8 +131,21 @@ func TestNewWiresUnifiedPlayerAndServerObservations(t *testing.T) {
 			t.Fatalf("timed out waiting for wired observation requests: %v", seen)
 		}
 	}
-	// Let the independent sampler finish its repository writes before stopping.
-	time.Sleep(50 * time.Millisecond)
+	for {
+		_, _, metricErr := application.repo.LatestServerMetrics(t.Context())
+		_, infoErr := application.repo.LatestServerDocument(t.Context(), "info")
+		_, settingsErr := application.repo.LatestServerDocument(t.Context(), "settings")
+		if metricErr == nil && infoErr == nil && settingsErr == nil {
+			break
+		}
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("timed out waiting for durable server observations: metric=%v info=%v settings=%v", metricErr, infoErr, settingsErr)
+		}
+	}
 	cancel()
 	<-done
 
@@ -148,14 +159,51 @@ func TestNewWiresUnifiedPlayerAndServerObservations(t *testing.T) {
 	if err := application.repo.RecordServerMetrics(t.Context(), time.Unix(1, 0), domain.ServerMetrics{ServerFrameTime: 1}); err == nil {
 		t.Fatal("expected old metric to be rejected after wired sampler persisted a sample")
 	}
-	canonicalInfo := []byte(`{"version":"v1","servername":"server","description":"hello","worldguid":"world"}`)
-	hash := sha256.Sum256(canonicalInfo)
-	inserted, err := application.repo.RecordServerDocument(t.Context(), "info", time.Now(), canonicalInfo, hex.EncodeToString(hash[:]))
+	latestInfo, err := application.repo.LatestServerDocument(t.Context(), "info")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inserted {
-		t.Fatal("wired sampler did not persist the canonical info document")
+	if string(latestInfo.Canonical) != `{"version":"v1","servername":"server","description":"hello","worldguid":"world"}` {
+		t.Fatalf("canonical info=%s", latestInfo.Canonical)
+	}
+}
+
+func TestNewRestoresDurableServerBaselinesBeforePolling(t *testing.T) {
+	palworld := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/api/players" {
+			_, _ = w.Write([]byte(`{"players":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer palworld.Close()
+	t.Setenv("ADMIN_PASSWORD", "secret")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "guard.db")
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(appConfig(palworld.URL+"/v1/api", dbPath, "127.0.0.1:0", false)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := store.Open(t.Context(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidTypedInfo := store.ServerDocumentObservation{
+		Kind: "info", At: time.Now(), Canonical: []byte(`{"version":5}`), Hash: "invalid-info-type",
+	}
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), invalidTypedInfo); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(configPath)
+	if err == nil {
+		_ = application.Close()
+		t.Fatal("expected startup restore to reject invalid durable typed info")
+	}
+	if !strings.Contains(err.Error(), "restore observed server info") {
+		t.Fatalf("error=%v", err)
 	}
 }
 

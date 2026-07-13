@@ -16,11 +16,9 @@ import (
 )
 
 const (
-	DefaultMovementThreshold        = 100
-	DefaultMaxSampleInterval        = 5 * time.Minute
-	DefaultRawObservationRetention  = 90 * 24 * time.Hour
-	DefaultServerDocumentInterval   = 5 * time.Minute
-	DefaultServerObservationTimeout = 10 * time.Second
+	DefaultMovementThreshold       = 100
+	DefaultMaxSampleInterval       = 5 * time.Minute
+	DefaultRawObservationRetention = 90 * 24 * time.Hour
 )
 
 // ServerRepository atomically persists derived server facts with their
