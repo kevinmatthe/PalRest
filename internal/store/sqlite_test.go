@@ -103,15 +103,7 @@ func TestOpenMigrationCreatesAnalyticsSchema(t *testing.T) {
 	if metricEventColumn != 1 {
 		t.Fatalf("server_metric_samples.event_id count=%d", metricEventColumn)
 	}
-	for table, want := range map[string]int{"server_metric_samples": 1, "server_document_observations": 3} {
-		var got int
-		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM pragma_foreign_key_list(?)`, table).Scan(&got); err != nil {
-			t.Fatal(err)
-		}
-		if got != want {
-			t.Fatalf("%s foreign keys=%d want=%d", table, got, want)
-		}
-	}
+	assertServerObservationForeignKeys(t, repo)
 
 	now := time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)
 	if _, err := repo.db.ExecContext(t.Context(), `
@@ -206,6 +198,7 @@ VALUES('u1','One','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`); err != nil 
 	if metricEventColumn != 1 {
 		t.Fatalf("server_metric_samples.event_id count=%d", metricEventColumn)
 	}
+	assertServerObservationForeignKeys(t, repo)
 
 	if _, err := repo.db.Exec(`
 INSERT INTO activity_events(
@@ -273,6 +266,19 @@ INSERT INTO server_metric_samples(
 INSERT INTO sensitive_access_audit(actor, action, subject_type, subject_id, outcome, requested_at)
 VALUES('admin', 'read_timeline', 'player', 'u1', 'success', '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatalf("insert audit with nullable ranges: %v", err)
+	}
+}
+
+func assertServerObservationForeignKeys(t *testing.T, repo *Repository) {
+	t.Helper()
+	for table, want := range map[string]int{"server_metric_samples": 1, "server_document_observations": 3, "server_observation_state": 2} {
+		var got int
+		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM pragma_foreign_key_list(?)`, table).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s foreign keys=%d want=%d", table, got, want)
+		}
 	}
 }
 
