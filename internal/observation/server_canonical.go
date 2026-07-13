@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
+	"strconv"
+	"strings"
 )
 
 func canonicalDocument(value any) ([]byte, string, error) {
@@ -37,35 +40,31 @@ func canonicalJSONValue(value any) (any, error) {
 	case nil, bool, string:
 		return value, nil
 	case json.Number:
-		number, err := value.Float64()
-		if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
-			return nil, fmt.Errorf("settings contain an invalid number")
-		}
-		return number, nil
+		return canonicalNumber(value.String())
 	case float32:
-		return canonicalFloat(float64(value))
+		return canonicalFloat(float64(value), 32)
 	case float64:
-		return canonicalFloat(value)
+		return canonicalFloat(value, 64)
 	case int:
-		return float64(value), nil
+		return canonicalNumber(strconv.FormatInt(int64(value), 10))
 	case int8:
-		return float64(value), nil
+		return canonicalNumber(strconv.FormatInt(int64(value), 10))
 	case int16:
-		return float64(value), nil
+		return canonicalNumber(strconv.FormatInt(int64(value), 10))
 	case int32:
-		return float64(value), nil
+		return canonicalNumber(strconv.FormatInt(int64(value), 10))
 	case int64:
-		return float64(value), nil
+		return canonicalNumber(strconv.FormatInt(value, 10))
 	case uint:
-		return float64(value), nil
+		return canonicalNumber(strconv.FormatUint(uint64(value), 10))
 	case uint8:
-		return float64(value), nil
+		return canonicalNumber(strconv.FormatUint(uint64(value), 10))
 	case uint16:
-		return float64(value), nil
+		return canonicalNumber(strconv.FormatUint(uint64(value), 10))
 	case uint32:
-		return float64(value), nil
+		return canonicalNumber(strconv.FormatUint(uint64(value), 10))
 	case uint64:
-		return float64(value), nil
+		return canonicalNumber(strconv.FormatUint(value, 10))
 	case []any:
 		result := make([]any, len(value))
 		for index, child := range value {
@@ -91,11 +90,71 @@ func canonicalJSONValue(value any) (any, error) {
 	}
 }
 
-func canonicalFloat(value float64) (float64, error) {
+func canonicalFloat(value float64, bitSize int) (json.Number, error) {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
-		return 0, fmt.Errorf("settings contain a non-finite number")
+		return "", fmt.Errorf("settings contain a non-finite number")
 	}
-	return value, nil
+	return canonicalNumber(strconv.FormatFloat(value, 'g', -1, bitSize))
+}
+
+func canonicalNumber(value string) (json.Number, error) {
+	rational, ok := new(big.Rat).SetString(value)
+	if !ok {
+		return "", fmt.Errorf("settings contain an invalid number")
+	}
+	if rational.Sign() == 0 {
+		return json.Number("0"), nil
+	}
+	if rational.IsInt() {
+		return json.Number(rational.Num().String()), nil
+	}
+
+	denominator := new(big.Int).Set(rational.Denom())
+	twos := factorCount(denominator, 2)
+	fives := factorCount(denominator, 5)
+	if denominator.Cmp(big.NewInt(1)) != 0 {
+		return "", fmt.Errorf("settings number has no finite decimal representation")
+	}
+	scale := twos
+	if fives > scale {
+		scale = fives
+	}
+	scaled := new(big.Int).Set(rational.Num())
+	if scale > twos {
+		scaled.Mul(scaled, new(big.Int).Exp(big.NewInt(2), big.NewInt(int64(scale-twos)), nil))
+	}
+	if scale > fives {
+		scaled.Mul(scaled, new(big.Int).Exp(big.NewInt(5), big.NewInt(int64(scale-fives)), nil))
+	}
+	negative := scaled.Sign() < 0
+	digits := new(big.Int).Abs(scaled).String()
+	if len(digits) <= scale {
+		digits = strings.Repeat("0", scale-len(digits)+1) + digits
+	}
+	integer := digits[:len(digits)-scale]
+	fraction := strings.TrimRight(digits[len(digits)-scale:], "0")
+	result := integer
+	if fraction != "" {
+		result += "." + fraction
+	}
+	if negative {
+		result = "-" + result
+	}
+	return json.Number(result), nil
+}
+
+func factorCount(value *big.Int, factor int64) int {
+	count := 0
+	divisor := big.NewInt(factor)
+	for {
+		quotient, remainder := new(big.Int), new(big.Int)
+		quotient.QuoRem(value, divisor, remainder)
+		if remainder.Sign() != 0 {
+			return count
+		}
+		value.Set(quotient)
+		count++
+	}
 }
 
 func documentHash(canonical []byte) string {

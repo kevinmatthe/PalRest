@@ -85,6 +85,28 @@ func TestReadOnlyEndpointsDecodeOfficialSchemas(t *testing.T) {
 	}
 }
 
+func TestSettingsPreservesIntegersBeyondIEEE754SafeRange(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"large_a":9007199254740992,"large_b":9007199254740993,"large_exp":9.007199254740993e15,"safe":9007199254740991,"official":1.0}`))
+	}))
+	defer server.Close()
+	settings, err := New(server.URL, "secret", time.Second).Settings(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"large_a": "9007199254740992", "large_b": "9007199254740993", "large_exp": "9007199254740993",
+	} {
+		number, ok := settings.Values[key].(json.Number)
+		if !ok || number.String() != want {
+			t.Fatalf("%s=%#v want json.Number(%q)", key, settings.Values[key], want)
+		}
+	}
+	if settings.Values["safe"] != float64(9007199254740991) || settings.Values["official"] != float64(1) {
+		t.Fatalf("safe compatibility values=%#v", settings.Values)
+	}
+}
+
 func TestReadOnlyEndpointsRejectNonObjectTopLevelJSON(t *testing.T) {
 	tests := []struct {
 		name string

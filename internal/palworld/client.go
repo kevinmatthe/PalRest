@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -133,8 +135,18 @@ func (c *Client) getJSON(ctx context.Context, path string, destination any, useN
 func normalizeJSONValue(value any) (any, error) {
 	switch value := value.(type) {
 	case json.Number:
+		rational, ok := new(big.Rat).SetString(value.String())
+		if !ok {
+			return nil, fmt.Errorf("invalid JSON number")
+		}
+		if rational.IsInt() {
+			absolute := new(big.Int).Abs(new(big.Int).Set(rational.Num()))
+			if absolute.Cmp(big.NewInt(9007199254740991)) > 0 {
+				return json.Number(rational.Num().String()), nil
+			}
+		}
 		decimal, err := value.Float64()
-		if err != nil {
+		if err != nil || math.IsNaN(decimal) || math.IsInf(decimal, 0) {
 			return nil, fmt.Errorf("invalid JSON number")
 		}
 		return decimal, nil

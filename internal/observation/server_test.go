@@ -511,6 +511,45 @@ func TestServerSettingsCanonicalizationIsStableAndDoesNotMutateInput(t *testing.
 	}
 }
 
+func TestServerSettingsCanonicalizesEquivalentExponentsAndNegativeZero(t *testing.T) {
+	recorder := &serverRecorderFake{}
+	service := newServerService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	first := domain.ServerSettings{Values: map[string]any{
+		"integer": json.Number("1e3"), "decimal": json.Number("1.25e1"), "zero": json.Number("-0.000e9"),
+	}}
+	second := domain.ServerSettings{Values: map[string]any{
+		"zero": float64(0), "decimal": float64(12.5), "integer": int64(1000),
+	}}
+	if err := service.RecordSettings(t.Context(), base, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordSettings(t.Context(), base.Add(time.Minute), second); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.documentCalls) != 2 || string(recorder.documentCalls[0].canonical) != string(recorder.documentCalls[1].canonical) || recorder.documentCalls[0].hash != recorder.documentCalls[1].hash {
+		t.Fatalf("calls=%#v", recorder.documentCalls)
+	}
+	if got := string(recorder.documentCalls[0].canonical); got != `{"decimal":12.5,"integer":1000,"zero":0}` {
+		t.Fatalf("canonical=%s", got)
+	}
+}
+
+func TestServerSettingsKeepsDistinctLargeIntegerHashes(t *testing.T) {
+	recorder := &serverRecorderFake{}
+	service := newServerService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	if err := service.RecordSettings(t.Context(), base, domain.ServerSettings{Values: map[string]any{"value": json.Number("9007199254740992")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordSettings(t.Context(), base.Add(time.Minute), domain.ServerSettings{Values: map[string]any{"value": json.Number("9007199254740993")}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.documentCalls) != 2 || recorder.documentCalls[0].hash == recorder.documentCalls[1].hash || string(recorder.documentCalls[0].canonical) == string(recorder.documentCalls[1].canonical) {
+		t.Fatalf("large integer collision: %#v", recorder.documentCalls)
+	}
+}
+
 func TestServerSettingsChangeEventContainsOnlyHashesAndSafeSummary(t *testing.T) {
 	eventErr := errors.New("event failed")
 	recorder := &serverRecorderFake{eventErrors: []error{eventErr, nil}}
