@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -76,6 +79,217 @@ func TestNewLoadsDisabledConfiguration(t *testing.T) {
 	}
 	if application.CurrentConfig().Policy.Default.Enabled {
 		t.Fatal("expected disabled policy")
+	}
+}
+
+func TestNewWiresUnifiedPlayerAndServerObservations(t *testing.T) {
+	requests := make(chan string, 20)
+	palworld := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.URL.Path
+		switch r.URL.Path {
+		case "/v1/api/players":
+			_, _ = w.Write([]byte(`{"players":[{"name":"One","playerId":"pal-1","userId":"u1","location_x":10,"location_y":20,"level":3}]}`))
+		case "/v1/api/metrics":
+			_, _ = w.Write([]byte(`{"serverfps":60,"currentplayernum":1,"serverframetime":1,"maxplayernum":32,"uptime":100,"basecampnum":1,"days":2}`))
+		case "/v1/api/info":
+			_, _ = w.Write([]byte(`{"version":"v1","servername":"server","description":"hello","worldguid":"world"}`))
+		case "/v1/api/settings":
+			_, _ = w.Write([]byte(`{"Difficulty":"Normal"}`))
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	t.Cleanup(palworld.Close)
+	t.Setenv("ADMIN_PASSWORD", "secret")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "guard.db")
+	configPath := filepath.Join(dir, "config.yaml")
+	configData := strings.Replace(appConfig(palworld.URL+"/v1/api", dbPath, "127.0.0.1:0", false), "poll_interval: 20ms", "poll_interval: 1s", 1)
+	configData = strings.Replace(configData, "max_observation_gap: 100ms", "max_observation_gap: 2s", 1)
+	if err := os.WriteFile(configPath, []byte(configData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		application.poller.Run(ctx)
+		close(done)
+	}()
+
+	seen := map[string]bool{}
+	deadline := time.After(2 * time.Second)
+	for !(seen["/v1/api/players"] && seen["/v1/api/metrics"] && seen["/v1/api/info"] && seen["/v1/api/settings"]) {
+		select {
+		case path := <-requests:
+			seen[path] = true
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("timed out waiting for wired observation requests: %v", seen)
+		}
+	}
+	for {
+		_, _, metricErr := application.repo.LatestServerMetrics(t.Context())
+		_, infoErr := application.repo.LatestServerDocument(t.Context(), "info")
+		_, settingsErr := application.repo.LatestServerDocument(t.Context(), "settings")
+		if metricErr == nil && infoErr == nil && settingsErr == nil {
+			break
+		}
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("timed out waiting for durable server observations: metric=%v info=%v settings=%v", metricErr, infoErr, settingsErr)
+		}
+	}
+	cancel()
+	<-done
+
+	timeline, err := application.repo.ReadSensitivePlayerTimeline(t.Context(), "test", "u1", time.Now().Add(-time.Minute), time.Now().Add(time.Minute), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline.Events) != 1 || timeline.Events[0].EventType != "player_joined" || len(timeline.Trajectories) != 1 || len(timeline.PrivateSamples) != 0 {
+		t.Fatalf("events=%+v samples=%+v", timeline.Events, timeline.Trajectories)
+	}
+	if err := application.repo.RecordServerMetrics(t.Context(), time.Unix(1, 0), domain.ServerMetrics{ServerFrameTime: 1}); err == nil {
+		t.Fatal("expected old metric to be rejected after wired sampler persisted a sample")
+	}
+	latestInfo, err := application.repo.LatestServerDocument(t.Context(), "info")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(latestInfo.Canonical) != `{"version":"v1","servername":"server","description":"hello","worldguid":"world"}` {
+		t.Fatalf("canonical info=%s", latestInfo.Canonical)
+	}
+}
+
+func TestNewUsesObservationSamplingConfiguration(t *testing.T) {
+	var mu sync.Mutex
+	counts := map[string]int{}
+	palworld := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		counts[r.URL.Path]++
+		call := counts[r.URL.Path]
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/v1/api/players":
+			_, _ = fmt.Fprintf(w, `{"players":[{"name":"One","playerId":"pal-1","userId":"u1","location_x":%d,"location_y":20}]}`, call)
+		case "/v1/api/metrics":
+			_, _ = w.Write([]byte(`{"serverfps":60,"currentplayernum":1,"serverframetime":1,"maxplayernum":32,"uptime":100,"basecampnum":1,"days":2}`))
+		case "/v1/api/info":
+			_, _ = w.Write([]byte(`{"version":"v1","servername":"server","description":"hello","worldguid":"world"}`))
+		case "/v1/api/settings":
+			_, _ = w.Write([]byte(`{"Difficulty":"Normal"}`))
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	t.Cleanup(palworld.Close)
+	t.Setenv("ADMIN_PASSWORD", "secret")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "guard.db")
+	configPath := filepath.Join(dir, "config.yaml")
+	configData := appConfig(palworld.URL+"/v1/api", dbPath, "127.0.0.1:0", false) + `
+observation:
+  server_document_interval: 1h
+  trajectory_min_distance: 0
+  trajectory_max_interval: 1h
+  raw_retention: 1d
+`
+	if err := os.WriteFile(configPath, []byte(configData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		application.poller.Run(ctx)
+		close(done)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		metricsCalls := counts["/v1/api/metrics"]
+		mu.Unlock()
+		if metricsCalls >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("timed out waiting for samples: %+v", counts)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	mu.Lock()
+	infoCalls, settingsCalls := counts["/v1/api/info"], counts["/v1/api/settings"]
+	mu.Unlock()
+	if infoCalls != 1 || settingsCalls != 1 {
+		t.Fatalf("metadata cadence ignored: info=%d settings=%d", infoCalls, settingsCalls)
+	}
+	timeline, err := application.repo.ReadSensitivePlayerTimeline(t.Context(), "test", "u1", time.Now().Add(-time.Minute), time.Now().Add(time.Minute), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline.Trajectories) < 3 {
+		t.Fatalf("trajectory distance ignored: samples=%d", len(timeline.Trajectories))
+	}
+}
+
+func TestNewRestoresDurableServerBaselinesBeforePolling(t *testing.T) {
+	palworld := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/api/players" {
+			_, _ = w.Write([]byte(`{"players":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer palworld.Close()
+	t.Setenv("ADMIN_PASSWORD", "secret")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "guard.db")
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(appConfig(palworld.URL+"/v1/api", dbPath, "127.0.0.1:0", false)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := store.Open(t.Context(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidCanonical := []byte(`{"version":5}`)
+	invalidDigest := sha256.Sum256(invalidCanonical)
+	invalidTypedInfo := store.ServerDocumentObservation{
+		Kind: "info", At: time.Now(), Canonical: invalidCanonical, Hash: hex.EncodeToString(invalidDigest[:]),
+	}
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), invalidTypedInfo); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(configPath)
+	if err == nil {
+		_ = application.Close()
+		t.Fatal("expected startup restore to reject invalid durable typed info")
+	}
+	if !strings.Contains(err.Error(), "restore observed server info") {
+		t.Fatalf("error=%v", err)
 	}
 }
 
@@ -198,6 +412,26 @@ func TestReloadRejectsStartupOnlySettings(t *testing.T) {
 	}
 	if err := application.reload(); err == nil || !strings.Contains(err.Error(), "restart") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestReloadRejectsObservationSettingsWithoutChangingPolicy(t *testing.T) {
+	application, path := newTestApp(t)
+	before := application.policies.Resolve("player")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := string(data) + "\nobservation:\n  trajectory_min_distance: 25\n"
+	if err := os.WriteFile(path, []byte(changed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = application.reload()
+	if err == nil || !strings.Contains(err.Error(), "observation") || !strings.Contains(err.Error(), "restart") {
+		t.Fatalf("error=%v", err)
+	}
+	if after := application.policies.Resolve("player"); after.Revision != before.Revision {
+		t.Fatalf("observation reload changed stored policy: before=%+v after=%+v", before, after)
 	}
 }
 

@@ -136,3 +136,139 @@ SELECT 1, MAX(last_observed_at)
 FROM player_sessions
 HAVING COUNT(*) > 0;
 `
+
+const schemaV9 = `
+CREATE TABLE activity_events (
+    id TEXT NOT NULL PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_ref TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX activity_events_subject_time
+ON activity_events(subject_type, subject_id, occurred_at, id);
+CREATE INDEX activity_events_retention
+ON activity_events(occurred_at, id);
+
+CREATE TABLE trajectory_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    segment_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    ping REAL NOT NULL,
+    level INTEGER NOT NULL,
+    source_ref TEXT NOT NULL,
+    UNIQUE(user_id, observed_at)
+);
+CREATE INDEX trajectory_user_time
+ON trajectory_samples(user_id, observed_at);
+CREATE INDEX trajectory_samples_retention
+ON trajectory_samples(observed_at, id);
+
+CREATE TABLE server_metric_samples (
+    observed_at TEXT NOT NULL PRIMARY KEY,
+    server_fps INTEGER NOT NULL,
+    current_player_num INTEGER NOT NULL,
+    server_frame_time REAL NOT NULL,
+    max_player_num INTEGER NOT NULL,
+    uptime_seconds INTEGER NOT NULL,
+    base_camp_num INTEGER NOT NULL,
+	game_days INTEGER NOT NULL,
+	event_id TEXT REFERENCES activity_events(id)
+);
+CREATE INDEX server_metric_samples_event
+ON server_metric_samples(event_id);
+
+CREATE TABLE server_documents (
+    kind TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    canonical_json TEXT NOT NULL,
+    PRIMARY KEY(kind, content_hash)
+);
+
+CREATE TABLE server_document_observations (
+    kind TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+	event_id TEXT,
+	PRIMARY KEY(kind, observed_at),
+	FOREIGN KEY(kind, content_hash) REFERENCES server_documents(kind, content_hash),
+	FOREIGN KEY(event_id) REFERENCES activity_events(id)
+);
+CREATE INDEX server_document_observations_kind_time
+ON server_document_observations(kind, observed_at);
+CREATE INDEX server_document_observations_event
+ON server_document_observations(event_id);
+
+CREATE TABLE server_observation_state (
+	kind TEXT NOT NULL PRIMARY KEY CHECK(kind IN ('metrics','info','settings')),
+	observed_at TEXT NOT NULL,
+	server_fps INTEGER,
+	current_player_num INTEGER,
+	server_frame_time REAL,
+	max_player_num INTEGER,
+	uptime_seconds INTEGER,
+	base_camp_num INTEGER,
+	game_days INTEGER,
+	content_hash TEXT,
+	CHECK(
+		(kind='metrics' AND content_hash IS NULL
+		 AND server_fps IS NOT NULL AND current_player_num IS NOT NULL
+		 AND server_frame_time IS NOT NULL AND max_player_num IS NOT NULL
+		 AND uptime_seconds IS NOT NULL AND base_camp_num IS NOT NULL AND game_days IS NOT NULL)
+		OR
+		(kind IN ('info','settings') AND content_hash IS NOT NULL
+		 AND server_fps IS NULL AND current_player_num IS NULL
+		 AND server_frame_time IS NULL AND max_player_num IS NULL
+		 AND uptime_seconds IS NULL AND base_camp_num IS NULL AND game_days IS NULL)
+	),
+	FOREIGN KEY(kind, content_hash) REFERENCES server_documents(kind, content_hash)
+);
+
+CREATE TABLE sensitive_access_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    range_start TEXT,
+    range_end TEXT,
+    outcome TEXT NOT NULL,
+    requested_at TEXT NOT NULL
+);
+CREATE INDEX sensitive_audit_actor_time
+ON sensitive_access_audit(actor, requested_at);
+`
+
+const schemaV10 = `
+CREATE TABLE player_private_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    ip TEXT NOT NULL,
+    ping REAL NOT NULL,
+    level INTEGER NOT NULL,
+    building_count INTEGER NOT NULL,
+    source_ref TEXT NOT NULL,
+    UNIQUE(user_id, observed_at)
+);
+CREATE INDEX player_private_samples_user_time
+ON player_private_samples(user_id, observed_at);
+CREATE INDEX player_private_samples_retention
+ON player_private_samples(observed_at, id);
+`
+
+const schemaV11 = `
+CREATE INDEX player_sessions_user_last_observed
+ON player_sessions(user_id, last_observed_at);
+`

@@ -141,6 +141,45 @@ export type AnalyticsActivity = {
   player: PlayerActivity | null;
 };
 
+export type TimelineEvent = {
+  id: string;
+  event_type: string;
+  occurred_at: string;
+  observed_at: string;
+  source: 'palworld_rest' | 'guard' | 'save_snapshot';
+  confidence: 'observed' | 'snapshot_derived';
+  summary: string;
+  data?: Record<string, unknown>;
+};
+
+export type TrajectorySample = {
+  user_id: string;
+  segment_id: string;
+  observed_at: string;
+  x: number;
+  y: number;
+  ping: number;
+  level: number;
+  source_ref: string;
+};
+
+export type PlayerPrivateSample = {
+  user_id: string;
+  observed_at: string;
+  ip: string;
+  ping: number;
+  level: number;
+  building_count: number;
+  source_ref: string;
+};
+
+export type PlayerTimelineResponse = {
+  user_id: string;
+  events: TimelineEvent[];
+  trajectories: TrajectorySample[];
+  private_samples: PlayerPrivateSample[];
+};
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -203,6 +242,11 @@ export function getAnalyticsActivity(range: '7d' | '30d', userID?: string, signa
   if (userID !== undefined) query.set('user_id', userID);
   if (!includeConcurrency) query.set('include_concurrency', 'false');
   return getJSON<AnalyticsActivity>(`/api/v1/analytics/activity?${query}`, signal);
+}
+
+export function getPlayerTimeline(userID: string, start: string, end: string, limit = 500, signal?: AbortSignal) {
+  const query = new URLSearchParams({ start, end, limit: String(limit) });
+  return getJSON<PlayerTimelineResponse>(`/api/v1/admin/players/${encodeURIComponent(userID)}/timeline?${query}`, signal);
 }
 
 export function getPolicies(signal?: AbortSignal) {

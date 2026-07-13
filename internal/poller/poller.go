@@ -3,9 +3,12 @@ package poller
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"text/template"
 	"time"
@@ -32,20 +35,53 @@ type Analytics interface {
 	SetLocation(*time.Location) error
 }
 
-type Poller struct {
-	client           Client
-	guard            Guard
-	analytics        Analytics
-	interval         time.Duration
-	announceTemplate *template.Template
-	kickTemplate     *template.Template
-	now              func() time.Time
-	cycleMu          sync.RWMutex
-	mu               sync.RWMutex
-	status           domain.PollStatus
+type PlayerObserver interface {
+	Observe(context.Context, time.Time, []domain.Player, string) error
 }
 
-func New(client Client, guardService Guard, analytics Analytics, interval time.Duration, announceText, kickText string, now func() time.Time) (*Poller, error) {
+type Option func(*Poller)
+
+func WithPlayerObserver(observer PlayerObserver) Option {
+	return func(p *Poller) { p.playerObserver = observer }
+}
+
+func WithCorrelationIDGenerator(generator func() string) Option {
+	return func(p *Poller) {
+		if generator != nil {
+			p.correlationID = func() (string, error) { return generator(), nil }
+		}
+	}
+}
+
+type Poller struct {
+	client                 Client
+	guard                  Guard
+	analytics              Analytics
+	playerObserver         PlayerObserver
+	serverReader           ServerReader
+	serverRecorder         ServerObservationRecorder
+	interval               time.Duration
+	announceTemplate       *template.Template
+	kickTemplate           *template.Template
+	now                    func() time.Time
+	correlationID          func() (string, error)
+	cycleMu                sync.Mutex
+	mu                     sync.RWMutex
+	status                 domain.PollStatus
+	serverSampleSignals    chan struct{}
+	serverSampleDone       chan struct{}
+	serverSampleTimeout    time.Duration
+	serverMetadataInterval time.Duration
+	serverSampleMu         sync.Mutex
+	lastInfoAttempt        time.Time
+	lastSettingsAttempt    time.Time
+	serverWorkerMu         sync.Mutex
+	serverWorkerRunning    bool
+	serverSamplePending    bool
+	latestServerSample     time.Time
+}
+
+func New(client Client, guardService Guard, analytics Analytics, interval time.Duration, announceText, kickText string, now func() time.Time, options ...Option) (*Poller, error) {
 	announce, err := template.New("announce").Option("missingkey=error").Parse(announceText)
 	if err != nil {
 		return nil, fmt.Errorf("parse announce template: %w", err)
@@ -54,13 +90,30 @@ func New(client Client, guardService Guard, analytics Analytics, interval time.D
 	if err != nil {
 		return nil, fmt.Errorf("parse kick template: %w", err)
 	}
-	return &Poller{
+	p := &Poller{
 		client: client, guard: guardService, analytics: analytics, interval: interval,
 		announceTemplate: announce, kickTemplate: kick, now: now,
-		status: domain.PollStatus{StartedAt: now().UTC(), ConfigVersion: 1},
-	}, nil
+		status:                 domain.PollStatus{StartedAt: now().UTC(), ConfigVersion: 1},
+		serverSampleSignals:    make(chan struct{}, 1),
+		serverSampleDone:       make(chan struct{}, 1),
+		serverSampleTimeout:    DefaultServerObservationTimeout,
+		serverMetadataInterval: DefaultServerMetadataInterval,
+	}
+	p.correlationID = newCorrelationID
+	for _, option := range options {
+		if option != nil {
+			option(p)
+		}
+	}
+	if (p.serverReader == nil) != (p.serverRecorder == nil) {
+		return nil, fmt.Errorf("configure server observations: reader and recorder must both be provided")
+	}
+	return p, nil
 }
 
+// Run owns the optional server sampler lifecycle and must only be called once
+// at a time for a Poller. It starts the sampler before the immediate player
+// cycle and cancels and joins it before returning.
 func (p *Poller) Run(ctx context.Context) {
 	slog.Info("poller started", "interval_ms", p.interval.Milliseconds())
 	select {
@@ -68,6 +121,8 @@ func (p *Poller) Run(ctx context.Context) {
 		return
 	default:
 	}
+	_, stopSampler := p.startServerSampler(ctx)
+	defer stopSampler()
 	p.runScheduledCycle()
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
@@ -90,10 +145,18 @@ func (p *Poller) runScheduledCycle() {
 	}
 }
 
+// RunOnce executes the critical player path. A standalone call does not start
+// optional server sampling; it only dispatches a sample when Run (or the
+// package-private test lifecycle) already owns an active sampler worker.
 func (p *Poller) RunOnce(ctx context.Context) error {
-	p.cycleMu.RLock()
-	defer p.cycleMu.RUnlock()
+	// cycleMu is exclusive so direct callers cannot overlap player observation,
+	// Guard state transitions, or enforcement side effects.
+	p.cycleMu.Lock()
 	now := p.now().UTC()
+	defer func() {
+		p.cycleMu.Unlock()
+		p.enqueueServerSample(now)
+	}()
 	p.mu.RLock()
 	announceTemplate := p.announceTemplate
 	kickTemplate := p.kickTemplate
@@ -108,11 +171,37 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 		return err
 	}
 	slog.Info("poll listed players", "online_count", len(players))
+	correlationID := ""
+	if p.playerObserver != nil {
+		correlationID, err = p.correlationID()
+		correlationID = strings.TrimSpace(correlationID)
+		if err != nil || correlationID == "" {
+			if err == nil {
+				err = fmt.Errorf("empty ID")
+			}
+			err = fmt.Errorf("generate player poll correlation ID: %w", err)
+			p.guard.PollFailed()
+			p.setError(err)
+			slog.Error("poll player observation failed", "online_count", len(players), "error", err)
+			return err
+		}
+	}
 	if err := p.analytics.Observe(ctx, now, players); err != nil {
 		p.guard.PollFailed()
 		p.setError(err)
 		slog.Error("poll analytics observation failed", "online_count", len(players), "error", err)
 		return err
+	}
+	// The correlation ID is validated before either persistence stream. After
+	// that gate, Analytics persists independently, while the business player
+	// observation gates Guard continuity and enforcement.
+	if p.playerObserver != nil {
+		if err := p.playerObserver.Observe(ctx, now, players, correlationID); err != nil {
+			p.guard.PollFailed()
+			p.setError(err)
+			slog.Error("poll player observation failed", "online_count", len(players), "error", err)
+			return err
+		}
 	}
 	decisions, err := p.guard.Observe(ctx, now, players)
 	if err != nil {
@@ -186,6 +275,14 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func newCorrelationID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("read crypto random bytes: %w", err)
+	}
+	return hex.EncodeToString(value[:]), nil
 }
 
 func (p *Poller) UpdateTemplates(announceText, kickText string) error {

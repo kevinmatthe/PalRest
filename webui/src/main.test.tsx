@@ -17,12 +17,21 @@ vi.mock('./components/AnalyticsDashboard', () => ({
 vi.mock('./components/PolicyManager', () => ({
   PolicyManager: ({ onBack }: { onBack: () => void }) => <section><h2>Policy manager</h2><button onClick={onBack}>Back to dashboard</button></section>,
 }));
+vi.mock('./components/PlayerTimeline', () => ({
+  PlayerTimeline: ({ refreshKey }: { refreshKey: number }) => <div>Player timeline token {refreshKey}</div>,
+}));
 
 const admin = { enabled: true, authenticated: true, passkey: false };
 const policies = {
   version: 1, source: 'database' as const, timezone: 'Asia/Shanghai', overrides: {},
   default: { enabled: true, strategy: 'fixed', period: 'daily', reset_at: '00:00', limit_ms: 3_600_000, warning_before_ms: [] },
 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
 
 beforeEach(() => {
   vi.mocked(api.getHealth).mockResolvedValue({ status: 'healthy', sqlite: 'available' });
@@ -95,5 +104,57 @@ describe('App analytics navigation and refresh ownership', () => {
     await act(async () => { vi.advanceTimersByTime(10_000); await Promise.resolve(); });
     expect(screen.getByText('Analytics dashboard token 1')).toBeInTheDocument();
     expect(screen.getByText('common unavailable')).toBeInTheDocument();
+  });
+});
+
+describe('administrator timeline navigation', () => {
+  it('only exposes Timeline to an authenticated administrator and loads it only when active', async () => {
+    const { unmount } = render(<App />);
+    const timeline = await screen.findByRole('button', { name: 'Timeline' });
+    expect(screen.queryByText(/Player timeline token/)).not.toBeInTheDocument();
+    fireEvent.click(timeline);
+    expect(timeline).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByText(/Player timeline token/)).toBeInTheDocument();
+    unmount();
+
+    vi.mocked(api.getAdminSession).mockResolvedValueOnce({ ...admin, authenticated: false });
+    render(<App />);
+    await screen.findByRole('button', { name: 'Overview' });
+    expect(screen.queryByRole('button', { name: 'Timeline' })).not.toBeInTheDocument();
+  });
+
+  it('returns to Overview if a refreshed session loses authentication', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Timeline' }));
+    expect(screen.getByText(/Player timeline token/)).toBeInTheDocument();
+    vi.mocked(api.getAdminSession).mockResolvedValueOnce({ ...admin, authenticated: false });
+    fireEvent.click(screen.getByTitle('Refresh now'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Overview' })).toHaveAttribute('aria-current', 'page'));
+    expect(screen.queryByText(/Player timeline token/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Timeline' })).not.toBeInTheDocument();
+  });
+
+  it('does not refresh private timeline data until the session refresh confirms authentication', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Timeline' }));
+    const current = screen.getByText(/Player timeline token/).textContent;
+    const session = deferred<api.AdminSession>();
+    vi.mocked(api.getAdminSession).mockReturnValueOnce(session.promise);
+    fireEvent.click(screen.getByTitle('Refresh now'));
+    expect(screen.getByText(current ?? '')).toBeInTheDocument();
+    session.resolve({ ...admin, authenticated: false });
+    await waitFor(() => expect(screen.queryByText(/Player timeline token/)).not.toBeInTheDocument());
+  });
+
+  it('removes private timeline access when auth is lost even if another common request fails', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Timeline' }));
+    expect(screen.getByText(/Player timeline token/)).toBeInTheDocument();
+    vi.mocked(api.getAdminSession).mockResolvedValueOnce({ ...admin, authenticated: false });
+    vi.mocked(api.getHealth).mockRejectedValueOnce(new Error('health offline'));
+    fireEvent.click(screen.getByTitle('Refresh now'));
+    await waitFor(() => expect(screen.queryByText(/Player timeline token/)).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Timeline' })).not.toBeInTheDocument();
+    expect(screen.getByText('health offline')).toBeInTheDocument();
   });
 });

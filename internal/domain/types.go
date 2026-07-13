@@ -3,11 +3,38 @@ package domain
 import "time"
 
 type Player struct {
-	UserID      string    `json:"user_id"`
-	PlayerID    string    `json:"player_id"`
-	Name        string    `json:"name"`
-	AccountName string    `json:"account_name"`
-	LastOnline  time.Time `json:"last_online"`
+	UserID        string    `json:"user_id"`
+	PlayerID      string    `json:"player_id"`
+	Name          string    `json:"name"`
+	AccountName   string    `json:"account_name"`
+	LastOnline    time.Time `json:"last_online"`
+	IP            string    `json:"-"`
+	Ping          float64   `json:"-"`
+	LocationX     float64   `json:"-"`
+	LocationY     float64   `json:"-"`
+	Level         int       `json:"-"`
+	BuildingCount int       `json:"-"`
+}
+
+type ServerMetrics struct {
+	ServerFPS        int     `json:"serverfps"`
+	CurrentPlayerNum int     `json:"currentplayernum"`
+	ServerFrameTime  float64 `json:"serverframetime"`
+	MaxPlayerNum     int     `json:"maxplayernum"`
+	UptimeSeconds    int64   `json:"uptime"`
+	BaseCampNum      int     `json:"basecampnum"`
+	Days             int     `json:"days"`
+}
+
+type ServerInfo struct {
+	Version     string `json:"version"`
+	ServerName  string `json:"servername"`
+	Description string `json:"description"`
+	WorldGUID   string `json:"worldguid"`
+}
+
+type ServerSettings struct {
+	Values map[string]any
 }
 
 type ResolvedPolicy struct {

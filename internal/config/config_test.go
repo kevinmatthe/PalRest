@@ -117,6 +117,65 @@ func TestParseValidConfig(t *testing.T) {
 	}
 }
 
+func TestParseUsesObservationDefaultsWhenOmitted(t *testing.T) {
+	cfg, err := Parse([]byte(validConfig), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Observation.ServerDocumentInterval.Duration != 5*time.Minute ||
+		cfg.Observation.TrajectoryMinDistance != 100 ||
+		cfg.Observation.TrajectoryMaxInterval.Duration != 5*time.Minute ||
+		cfg.Observation.RawRetention.Duration != 90*24*time.Hour {
+		t.Fatalf("observation defaults=%+v", cfg.Observation)
+	}
+}
+
+func TestParseAcceptsExplicitObservationSettings(t *testing.T) {
+	input := validConfig + `observation:
+  server_document_interval: 7m
+  trajectory_min_distance: 42.5
+  trajectory_max_interval: 3m
+  raw_retention: 30d
+`
+	cfg, err := Parse([]byte(input), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Observation.ServerDocumentInterval.Duration != 7*time.Minute ||
+		cfg.Observation.TrajectoryMinDistance != 42.5 ||
+		cfg.Observation.TrajectoryMaxInterval.Duration != 3*time.Minute ||
+		cfg.Observation.RawRetention.Duration != 30*24*time.Hour {
+		t.Fatalf("observation=%+v", cfg.Observation)
+	}
+}
+
+func TestParseRejectsInvalidObservationSettings(t *testing.T) {
+	tests := map[string]string{
+		"zero server document interval": "server_document_interval: 0s",
+		"zero trajectory max interval":  "trajectory_max_interval: 0s",
+		"zero raw retention":            "raw_retention: 0s",
+		"negative trajectory distance":  "trajectory_min_distance: -1",
+		"nan trajectory distance":       "trajectory_min_distance: .nan",
+		"infinite trajectory distance":  "trajectory_min_distance: .inf",
+	}
+	for name, setting := range tests {
+		t.Run(name, func(t *testing.T) {
+			input := validConfig + "observation:\n  " + setting + "\n"
+			if _, err := Parse([]byte(input), env); err == nil || !strings.Contains(err.Error(), "observation.") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestParseRejectsUnknownObservationSetting(t *testing.T) {
+	input := validConfig + "observation:\n  trajectory_min_distnace: 100\n"
+	_, err := Parse([]byte(input), env)
+	if err == nil || !strings.Contains(err.Error(), "trajectory_min_distnace") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestParseRejectsUnknownField(t *testing.T) {
 	_, err := Parse([]byte(validConfig+"unknown: true\n"), env)
 	if err == nil || !strings.Contains(err.Error(), "field unknown not found") {
@@ -160,5 +219,9 @@ func TestExampleConfigIsValidAndDisabled(t *testing.T) {
 	}
 	if cfg.Policy.Default.Enabled {
 		t.Fatal("sample policy must default to disabled")
+	}
+	if cfg.Observation.ServerDocumentInterval.Duration != 5*time.Minute || cfg.Observation.TrajectoryMinDistance != 100 ||
+		cfg.Observation.TrajectoryMaxInterval.Duration != 5*time.Minute || cfg.Observation.RawRetention.Duration != 90*24*time.Hour {
+		t.Fatalf("sample observation=%+v", cfg.Observation)
 	}
 }

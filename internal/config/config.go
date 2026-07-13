@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -19,7 +21,7 @@ type Duration struct {
 }
 
 func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
-	value, err := time.ParseDuration(node.Value)
+	value, err := parseDuration(node.Value)
 	if err != nil {
 		return fmt.Errorf("invalid duration %q: %w", node.Value, err)
 	}
@@ -32,7 +34,7 @@ func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 func (d *Duration) UnmarshalJSON(data []byte) error {
 	var text string
 	if err := json.Unmarshal(data, &text); err == nil {
-		parsed, parseErr := time.ParseDuration(text)
+		parsed, parseErr := parseDuration(text)
 		if parseErr != nil {
 			return fmt.Errorf("invalid duration %q: %w", text, parseErr)
 		}
@@ -47,6 +49,21 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func parseDuration(value string) (time.Duration, error) {
+	if strings.HasSuffix(value, "d") {
+		days, err := strconv.ParseFloat(strings.TrimSuffix(value, "d"), 64)
+		if err != nil || math.IsNaN(days) || math.IsInf(days, 0) {
+			return 0, fmt.Errorf("time: invalid duration %q", value)
+		}
+		hours := days * 24
+		if hours > float64(time.Duration(1<<63-1))/float64(time.Hour) || hours < float64(time.Duration(-1<<63))/float64(time.Hour) {
+			return 0, fmt.Errorf("time: invalid duration %q", value)
+		}
+		return time.Duration(hours * float64(time.Hour)), nil
+	}
+	return time.ParseDuration(value)
+}
+
 func (d Duration) MarshalJSON() ([]byte, error) {
 	return json.Marshal(d.String())
 }
@@ -58,6 +75,7 @@ type Config struct {
 	Enforcement Enforcement `yaml:"enforcement" json:"enforcement"`
 	HTTP        HTTP        `yaml:"http" json:"http"`
 	Storage     Storage     `yaml:"storage" json:"storage"`
+	Observation Observation `yaml:"observation" json:"observation"`
 	password    string
 	adminUser   string
 	adminPass   string
@@ -176,6 +194,13 @@ type Storage struct {
 	Path string `yaml:"path" json:"path"`
 }
 
+type Observation struct {
+	ServerDocumentInterval Duration `yaml:"server_document_interval" json:"server_document_interval"`
+	TrajectoryMinDistance  float64  `yaml:"trajectory_min_distance" json:"trajectory_min_distance"`
+	TrajectoryMaxInterval  Duration `yaml:"trajectory_max_interval" json:"trajectory_max_interval"`
+	RawRetention           Duration `yaml:"raw_retention" json:"raw_retention"`
+}
+
 func (c Config) Password() string { return c.password }
 
 func (c Config) AdminEnabled() bool { return c.adminUser != "" && c.adminPass != "" }
@@ -243,6 +268,12 @@ func defaults() Config {
 		},
 		HTTP:    HTTP{Listen: "0.0.0.0:8080"},
 		Storage: Storage{Path: "/data/guard.db"},
+		Observation: Observation{
+			ServerDocumentInterval: Duration{5 * time.Minute},
+			TrajectoryMinDistance:  100,
+			TrajectoryMaxInterval:  Duration{5 * time.Minute},
+			RawRetention:           Duration{90 * 24 * time.Hour},
+		},
 	}
 }
 
@@ -307,6 +338,18 @@ func (c *Config) validate(lookup func(string) (string, bool)) error {
 	}
 	if c.HTTP.Listen == "" || c.Storage.Path == "" {
 		return fmt.Errorf("http.listen and storage.path are required")
+	}
+	if c.Observation.ServerDocumentInterval.Duration <= 0 {
+		return fmt.Errorf("observation.server_document_interval must be positive")
+	}
+	if c.Observation.TrajectoryMaxInterval.Duration <= 0 {
+		return fmt.Errorf("observation.trajectory_max_interval must be positive")
+	}
+	if c.Observation.RawRetention.Duration <= 0 {
+		return fmt.Errorf("observation.raw_retention must be positive")
+	}
+	if c.Observation.TrajectoryMinDistance < 0 || math.IsNaN(c.Observation.TrajectoryMinDistance) || math.IsInf(c.Observation.TrajectoryMinDistance, 0) {
+		return fmt.Errorf("observation.trajectory_min_distance must be nonnegative and finite")
 	}
 	if c.HTTP.AdminUsernameEnv != "" || c.HTTP.AdminPasswordEnv != "" {
 		if c.HTTP.AdminUsernameEnv == "" || c.HTTP.AdminPasswordEnv == "" {

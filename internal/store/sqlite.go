@@ -14,9 +14,13 @@ import (
 )
 
 var ErrNotFound = errors.New("not found")
+var ErrObservationConflict = errors.New("server observation baseline conflict")
 
 type Repository struct {
 	db *sql.DB
+	// beforeSensitiveTimelineAudit is a narrow deterministic test seam for
+	// failures between a completed sensitive read and its audit write.
+	beforeSensitiveTimelineAudit func()
 }
 
 type Tx struct {
@@ -169,6 +173,30 @@ func (r *Repository) migrate(ctx context.Context) error {
 			return fmt.Errorf("apply migration 8: %w", err)
 		}
 		if err := recordMigration(ctx, tx, 8); err != nil {
+			return err
+		}
+	}
+	if version < 9 {
+		if _, err := tx.ExecContext(ctx, schemaV9); err != nil {
+			return fmt.Errorf("apply migration 9: %w", err)
+		}
+		if err := recordMigration(ctx, tx, 9); err != nil {
+			return err
+		}
+	}
+	if version < 10 {
+		if _, err := tx.ExecContext(ctx, schemaV10); err != nil {
+			return fmt.Errorf("apply migration 10: %w", err)
+		}
+		if err := recordMigration(ctx, tx, 10); err != nil {
+			return err
+		}
+	}
+	if version < 11 {
+		if _, err := tx.ExecContext(ctx, schemaV11); err != nil {
+			return fmt.Errorf("apply migration 11: %w", err)
+		}
+		if err := recordMigration(ctx, tx, 11); err != nil {
 			return err
 		}
 	}
