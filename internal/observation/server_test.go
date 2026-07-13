@@ -173,6 +173,73 @@ func TestServerMetricFailuresAndEventFailuresDoNotAdvanceBaseline(t *testing.T) 
 	}
 }
 
+func TestServerMetricsRetryPendingRestartBeforeProcessingNewerSample(t *testing.T) {
+	eventErr := errors.New("event failed")
+	recorder := &serverRecorderFake{eventErrors: []error{eventErr, nil}}
+	service := newServerService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+
+	if err := service.RecordMetrics(t.Context(), base, domain.ServerMetrics{UptimeSeconds: 100, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordMetrics(t.Context(), base.Add(time.Minute), domain.ServerMetrics{UptimeSeconds: 1, ServerFrameTime: 1}); !errors.Is(err, eventErr) {
+		t.Fatalf("restart err=%v", err)
+	}
+	if err := service.RecordMetrics(t.Context(), base.Add(2*time.Minute), domain.ServerMetrics{UptimeSeconds: 2, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordMetrics(t.Context(), base.Add(3*time.Minute), domain.ServerMetrics{UptimeSeconds: 3, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.metricsCalls) != 4 {
+		t.Fatalf("metric calls=%#v", recorder.metricsCalls)
+	}
+	for index, at := range []time.Time{base, base.Add(time.Minute), base.Add(2 * time.Minute), base.Add(3 * time.Minute)} {
+		if recorder.metricsCalls[index].at != at {
+			t.Fatalf("metric call %d at=%s want=%s", index, recorder.metricsCalls[index].at, at)
+		}
+	}
+	if len(recorder.writes) != 2 {
+		t.Fatalf("event attempts=%#v", recorder.writes)
+	}
+	failed, retried := recorder.writes[0].Events[0], recorder.writes[1].Events[0]
+	if failed.ID != retried.ID || failed.CorrelationID != retried.CorrelationID || failed.OccurredAt != base.Add(time.Minute) || retried.OccurredAt != base.Add(time.Minute) {
+		t.Fatalf("failed=%+v retried=%+v", failed, retried)
+	}
+}
+
+func TestServerMetricsKeepPendingRestartWhenRepeatedRetryFails(t *testing.T) {
+	firstErr := errors.New("first event failure")
+	secondErr := errors.New("second event failure")
+	recorder := &serverRecorderFake{eventErrors: []error{firstErr, secondErr, nil}}
+	service := newServerService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+
+	if err := service.RecordMetrics(t.Context(), base, domain.ServerMetrics{UptimeSeconds: 100, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordMetrics(t.Context(), base.Add(time.Minute), domain.ServerMetrics{UptimeSeconds: 1, ServerFrameTime: 1}); !errors.Is(err, firstErr) {
+		t.Fatalf("first err=%v", err)
+	}
+	if err := service.RecordMetrics(t.Context(), base.Add(2*time.Minute), domain.ServerMetrics{UptimeSeconds: 2, ServerFrameTime: 1}); !errors.Is(err, secondErr) {
+		t.Fatalf("second err=%v", err)
+	}
+	if len(recorder.metricsCalls) != 2 {
+		t.Fatalf("new sample persisted while pending retry failed: %#v", recorder.metricsCalls)
+	}
+	if err := service.RecordMetrics(t.Context(), base.Add(3*time.Minute), domain.ServerMetrics{UptimeSeconds: 3, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.metricsCalls) != 3 || recorder.metricsCalls[2].at != base.Add(3*time.Minute) {
+		t.Fatalf("metric calls=%#v", recorder.metricsCalls)
+	}
+	for index := 1; index < len(recorder.writes); index++ {
+		if recorder.writes[index].Events[0].ID != recorder.writes[0].Events[0].ID {
+			t.Fatalf("pending event ID changed across retries: %#v", recorder.writes)
+		}
+	}
+}
+
 func TestServerInfoCanonicalDocumentAndVersionChangeRetry(t *testing.T) {
 	eventErr := errors.New("event failed")
 	recorder := &serverRecorderFake{eventErrors: []error{eventErr, nil}, inserted: []bool{true, true, false}}
@@ -239,6 +306,40 @@ func TestServerInfoDocumentFailureDoesNotEstablishBaseline(t *testing.T) {
 	}
 }
 
+func TestServerInfoRetriesPendingVersionEventBeforeProcessingNewerDocument(t *testing.T) {
+	eventErr := errors.New("event failed")
+	recorder := &serverRecorderFake{eventErrors: []error{eventErr, nil, nil}}
+	service := newServerService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+
+	for index, version := range []string{"v1", "v2"} {
+		err := service.RecordInfo(t.Context(), base.Add(time.Duration(index)*time.Minute), domain.ServerInfo{Version: version})
+		if index == 1 {
+			if !errors.Is(err, eventErr) {
+				t.Fatalf("change err=%v", err)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := service.RecordInfo(t.Context(), base.Add(2*time.Minute), domain.ServerInfo{Version: "v3"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordInfo(t.Context(), base.Add(3*time.Minute), domain.ServerInfo{Version: "v3", ServerName: "renamed"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.documentCalls) != 4 {
+		t.Fatalf("document calls=%#v", recorder.documentCalls)
+	}
+	if len(recorder.writes) != 3 {
+		t.Fatalf("event attempts=%#v", recorder.writes)
+	}
+	failed, retried, newer := recorder.writes[0].Events[0], recorder.writes[1].Events[0], recorder.writes[2].Events[0]
+	if failed.ID != retried.ID || failed.OccurredAt != base.Add(time.Minute) || retried.OccurredAt != base.Add(time.Minute) || newer.OccurredAt != base.Add(2*time.Minute) {
+		t.Fatalf("failed=%+v retried=%+v newer=%+v", failed, retried, newer)
+	}
+}
+
 func TestServerSettingsCanonicalizationIsStableAndDoesNotMutateInput(t *testing.T) {
 	recorder := &serverRecorderFake{}
 	service := newServerService(recorder)
@@ -302,6 +403,39 @@ func TestServerSettingsChangeEventContainsOnlyHashesAndSafeSummary(t *testing.T)
 		if payload["old_hash"] == "" || payload["new_hash"] == "" || payload["summary"] != "server settings changed" {
 			t.Fatalf("payload=%v", payload)
 		}
+	}
+}
+
+func TestServerSettingsRetriesPendingEventBeforeProcessingNewerDocument(t *testing.T) {
+	eventErr := errors.New("event failed")
+	recorder := &serverRecorderFake{eventErrors: []error{eventErr, nil, nil}}
+	service := newServerService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+
+	settings := func(value string) domain.ServerSettings {
+		return domain.ServerSettings{Values: map[string]any{"value": value}}
+	}
+	if err := service.RecordSettings(t.Context(), base, settings("one")); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordSettings(t.Context(), base.Add(time.Minute), settings("two")); !errors.Is(err, eventErr) {
+		t.Fatalf("change err=%v", err)
+	}
+	if err := service.RecordSettings(t.Context(), base.Add(2*time.Minute), settings("three")); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordSettings(t.Context(), base.Add(3*time.Minute), settings("three")); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.documentCalls) != 4 {
+		t.Fatalf("document calls=%#v", recorder.documentCalls)
+	}
+	if len(recorder.writes) != 3 {
+		t.Fatalf("event attempts=%#v", recorder.writes)
+	}
+	failed, retried, newer := recorder.writes[0].Events[0], recorder.writes[1].Events[0], recorder.writes[2].Events[0]
+	if failed.ID != retried.ID || failed.OccurredAt != base.Add(time.Minute) || retried.OccurredAt != base.Add(time.Minute) || newer.OccurredAt != base.Add(2*time.Minute) {
+		t.Fatalf("failed=%+v retried=%+v newer=%+v", failed, retried, newer)
 	}
 }
 

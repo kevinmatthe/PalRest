@@ -60,6 +60,7 @@ type serverMetricBaseline struct {
 type pendingMetricEvent struct {
 	at      time.Time
 	metrics domain.ServerMetrics
+	event   store.ActivityEvent
 }
 
 type serverDocumentBaseline struct {
@@ -74,6 +75,7 @@ type pendingDocumentEvent struct {
 	hash      string
 	version   string
 	eventType string
+	event     store.ActivityEvent
 }
 
 func NewServer(repository ServerRepository, idGenerator func() string) *ServerService {
@@ -106,15 +108,19 @@ func (s *ServerService) RecordMetrics(ctx context.Context, at time.Time, metrics
 	defer s.metricsMu.Unlock()
 
 	if s.pendingMetric != nil {
-		if !at.Equal(s.pendingMetric.at) || !reflect.DeepEqual(metrics, s.pendingMetric.metrics) {
-			return fmt.Errorf("record observed server metrics: event for %s is pending retry", s.pendingMetric.at.Format(time.RFC3339Nano))
+		pendingAt := s.pendingMetric.at
+		if at.Before(pendingAt) {
+			return fmt.Errorf("record observed server metrics: observation time %s is before pending event at %s", at.Format(time.RFC3339Nano), pendingAt.Format(time.RFC3339Nano))
 		}
-		if err := s.recordRestartEvent(ctx, at, metrics.UptimeSeconds, s.metrics.uptime); err != nil {
+		if at.Equal(pendingAt) && !reflect.DeepEqual(metrics, s.pendingMetric.metrics) {
+			return fmt.Errorf("record observed server metrics: retry at %s does not match persisted metrics", at.Format(time.RFC3339Nano))
+		}
+		if err := s.finishPendingMetric(ctx); err != nil {
 			return err
 		}
-		s.metrics = serverMetricBaseline{valid: true, at: at, uptime: metrics.UptimeSeconds}
-		s.pendingMetric = nil
-		return nil
+		if at.Equal(pendingAt) {
+			return nil
+		}
 	}
 	if s.metrics.valid && !at.After(s.metrics.at) {
 		return fmt.Errorf("record observed server metrics: observation time %s must be after %s", at.Format(time.RFC3339Nano), s.metrics.at.Format(time.RFC3339Nano))
@@ -123,12 +129,30 @@ func (s *ServerService) RecordMetrics(ctx context.Context, at time.Time, metrics
 		return fmt.Errorf("record observed server metrics: %w", err)
 	}
 	if s.metrics.valid && metrics.UptimeSeconds < s.metrics.uptime {
-		if err := s.recordRestartEvent(ctx, at, metrics.UptimeSeconds, s.metrics.uptime); err != nil {
-			s.pendingMetric = &pendingMetricEvent{at: at, metrics: metrics}
+		s.pendingMetric = &pendingMetricEvent{at: at, metrics: metrics}
+		if err := s.finishPendingMetric(ctx); err != nil {
 			return err
 		}
+		return nil
 	}
 	s.metrics = serverMetricBaseline{valid: true, at: at, uptime: metrics.UptimeSeconds}
+	return nil
+}
+
+func (s *ServerService) finishPendingMetric(ctx context.Context) error {
+	pending := s.pendingMetric
+	if pending.event.ID == "" {
+		event, err := s.newRestartEvent(pending.at, pending.metrics.UptimeSeconds, s.metrics.uptime)
+		if err != nil {
+			return err
+		}
+		pending.event = event
+	}
+	if err := s.recordEvent(ctx, pending.event); err != nil {
+		return err
+	}
+	s.metrics = serverMetricBaseline{valid: true, at: pending.at, uptime: pending.metrics.UptimeSeconds}
+	s.pendingMetric = nil
 	return nil
 }
 
@@ -159,15 +183,18 @@ func (s *ServerService) recordDocument(ctx context.Context, kind string, at time
 	at = at.UTC()
 	if *pending != nil {
 		attempt := *pending
-		if !at.Equal(attempt.at) || hash != attempt.hash || version != attempt.version {
-			return fmt.Errorf("record observed server %s: event for %s is pending retry", kind, attempt.at.Format(time.RFC3339Nano))
+		if at.Before(attempt.at) {
+			return fmt.Errorf("record observed server %s: observation time %s is before pending event at %s", kind, at.Format(time.RFC3339Nano), attempt.at.Format(time.RFC3339Nano))
 		}
-		if err := s.recordDocumentEvent(ctx, attempt.eventType, attempt.at, baseline.hash, hash, baseline.version, version); err != nil {
+		if at.Equal(attempt.at) && (hash != attempt.hash || version != attempt.version) {
+			return fmt.Errorf("record observed server %s: retry at %s does not match persisted document", kind, at.Format(time.RFC3339Nano))
+		}
+		if err := s.finishPendingDocument(ctx, baseline, pending); err != nil {
 			return err
 		}
-		*baseline = serverDocumentBaseline{valid: true, at: at, hash: hash, version: version}
-		*pending = nil
-		return nil
+		if at.Equal(attempt.at) {
+			return nil
+		}
 	}
 	if baseline.valid && !at.After(baseline.at) {
 		return fmt.Errorf("record observed server %s: observation time %s must be after %s", kind, at.Format(time.RFC3339Nano), baseline.at.Format(time.RFC3339Nano))
@@ -190,27 +217,45 @@ func (s *ServerService) recordDocument(ctx context.Context, kind string, at time
 		}
 	}
 	if eventType != "" {
-		if err := s.recordDocumentEvent(ctx, eventType, at, baseline.hash, hash, baseline.version, version); err != nil {
-			*pending = &pendingDocumentEvent{at: at, hash: hash, version: version, eventType: eventType}
+		*pending = &pendingDocumentEvent{at: at, hash: hash, version: version, eventType: eventType}
+		if err := s.finishPendingDocument(ctx, baseline, pending); err != nil {
 			return err
 		}
+		return nil
 	}
 	*baseline = serverDocumentBaseline{valid: true, at: at, hash: hash, version: version}
 	return nil
 }
 
-func (s *ServerService) recordRestartEvent(ctx context.Context, at time.Time, newUptime, oldUptime int64) error {
+func (s *ServerService) finishPendingDocument(ctx context.Context, baseline *serverDocumentBaseline, pending **pendingDocumentEvent) error {
+	attempt := *pending
+	if attempt.event.ID == "" {
+		event, err := s.newDocumentEvent(attempt.eventType, attempt.at, baseline.hash, attempt.hash, baseline.version, attempt.version)
+		if err != nil {
+			return err
+		}
+		attempt.event = event
+	}
+	if err := s.recordEvent(ctx, attempt.event); err != nil {
+		return err
+	}
+	*baseline = serverDocumentBaseline{valid: true, at: attempt.at, hash: attempt.hash, version: attempt.version}
+	*pending = nil
+	return nil
+}
+
+func (s *ServerService) newRestartEvent(at time.Time, newUptime, oldUptime int64) (store.ActivityEvent, error) {
 	payload, err := json.Marshal(struct {
 		Old int64 `json:"old_uptime_seconds"`
 		New int64 `json:"new_uptime_seconds"`
 	}{Old: oldUptime, New: newUptime})
 	if err != nil {
-		return fmt.Errorf("record observed server restart: encode payload: %w", err)
+		return store.ActivityEvent{}, fmt.Errorf("record observed server restart: encode payload: %w", err)
 	}
-	return s.recordEvent(ctx, "server_restarted", at, payload)
+	return s.newEvent("server_restarted", at, payload)
 }
 
-func (s *ServerService) recordDocumentEvent(ctx context.Context, eventType string, at time.Time, oldHash, newHash, oldVersion, newVersion string) error {
+func (s *ServerService) newDocumentEvent(eventType string, at time.Time, oldHash, newHash, oldVersion, newVersion string) (store.ActivityEvent, error) {
 	var payload []byte
 	var err error
 	if eventType == "server_settings_changed" {
@@ -228,27 +273,33 @@ func (s *ServerService) recordDocumentEvent(ctx context.Context, eventType strin
 		}{OldHash: oldHash, NewHash: newHash, OldVersion: oldVersion, NewVersion: newVersion})
 	}
 	if err != nil {
-		return fmt.Errorf("record observed server document event: encode payload: %w", err)
+		return store.ActivityEvent{}, fmt.Errorf("record observed server document event: encode payload: %w", err)
 	}
-	return s.recordEvent(ctx, eventType, at, payload)
+	return s.newEvent(eventType, at, payload)
 }
 
-func (s *ServerService) recordEvent(ctx context.Context, eventType string, at time.Time, payload []byte) error {
+func (s *ServerService) newEvent(eventType string, at time.Time, payload []byte) (store.ActivityEvent, error) {
 	eventID, err := s.generateID("event")
 	if err != nil {
-		return err
+		return store.ActivityEvent{}, err
 	}
 	correlationID, err := s.generateID("correlation")
 	if err != nil {
-		return err
+		return store.ActivityEvent{}, err
 	}
-	event := store.ActivityEvent{
+	return store.ActivityEvent{
 		ID: eventID, EventType: eventType, SubjectType: "server", SubjectID: "server",
 		OccurredAt: at.UTC(), ObservedAt: at.UTC(), Source: "palworld_rest", SourceRef: correlationID,
 		CorrelationID: correlationID, Confidence: "observed", SchemaVersion: 1, PayloadJSON: string(payload),
-	}
+	}, nil
+}
+
+// Recorder errors are treated as definitive failures. The exact immutable
+// event (including its ID) is retained for retry; the current repository
+// contract does not expose a lookup that could prove an ambiguous commit.
+func (s *ServerService) recordEvent(ctx context.Context, event store.ActivityEvent) error {
 	if err := s.repository.RecordPlayerObservation(ctx, store.PlayerObservationWrite{Events: []store.ActivityEvent{event}}); err != nil {
-		return fmt.Errorf("record observed server event %q: %w", eventType, err)
+		return fmt.Errorf("record observed server event %q: %w", event.EventType, err)
 	}
 	return nil
 }
