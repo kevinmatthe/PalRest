@@ -18,8 +18,8 @@ type LogItem =
 type LogRow = { item: LogItem; separator: string };
 
 const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
-const EVIDENCE_GAP_MS = 15 * 60 * 1000;
 const KNOWN_EVENTS = new Set(['player_joined', 'player_left', 'player_attribute_changed']);
+const LOCAL_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
 
 function localInputValue(date: Date) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -31,10 +31,31 @@ function defaultRange() {
   return { start: localInputValue(new Date(end.getTime() - 24 * 60 * 60 * 1000)), end: localInputValue(end) };
 }
 
+export function parseLocalDateTime(value: string): { date?: Date; error?: string } {
+  const match = LOCAL_DATE_TIME.exec(value);
+  if (!match) return { error: 'Enter a valid local date and time.' };
+  const [, yearText, monthText, dayText, hourText, minuteText] = match;
+  const parts = [yearText, monthText, dayText, hourText, minuteText].map(Number);
+  const [year, month, day, hour, minute] = parts;
+  if (year < 1000 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) return { error: 'Enter a valid local date and time.' };
+  const date = new Date(year, month - 1, day, hour, minute, 0, 0);
+  const matchesWallTime = (candidate: Date) => candidate.getFullYear() === year && candidate.getMonth() === month - 1 && candidate.getDate() === day && candidate.getHours() === hour && candidate.getMinutes() === minute;
+  if (!matchesWallTime(date)) return { error: 'This local time does not exist because the clock changes then.' };
+  for (let offsetMinutes = -180; offsetMinutes <= 180; offsetMinutes += 1) {
+    if (offsetMinutes === 0) continue;
+    const candidate = new Date(date.getTime() + offsetMinutes * 60_000);
+    if (matchesWallTime(candidate)) return { error: 'This local time is ambiguous because the clock repeats it. Choose another time.' };
+  }
+  return { date };
+}
+
 function validateRange(start: string, end: string) {
-  const startMS = new Date(start).getTime();
-  const endMS = new Date(end).getTime();
-  if (!Number.isFinite(startMS) || !Number.isFinite(endMS)) return 'Enter a valid start and end time.';
+  const parsedStart = parseLocalDateTime(start);
+  const parsedEnd = parseLocalDateTime(end);
+  if (parsedStart.error) return `Start: ${parsedStart.error}`;
+  if (parsedEnd.error) return `End: ${parsedEnd.error}`;
+  const startMS = parsedStart.date!.getTime();
+  const endMS = parsedEnd.date!.getTime();
   if (endMS <= startMS) return 'End must be after start.';
   if (endMS - startMS > MAX_RANGE_MS) return 'The selected range cannot exceed 31 days.';
   return '';
@@ -42,9 +63,9 @@ function validateRange(start: string, end: string) {
 
 function mergeTimeline(data: PlayerTimelineResponse): LogItem[] {
   const merged: LogItem[] = [];
-  data.events.forEach((item, index) => merged.push({ kind: 'event', at: item.occurred_at, key: `event:${item.id || index}`, item }));
-  data.trajectories.forEach((item, index) => merged.push({ kind: 'trajectory', at: item.observed_at, key: `trajectory:${item.segment_id}:${item.observed_at}:${index}`, item }));
-  data.private_samples.forEach((item, index) => merged.push({ kind: 'private', at: item.observed_at, key: `private:${item.observed_at}:${item.source_ref}:${index}`, item }));
+  data.events.forEach((item) => merged.push({ kind: 'event', at: item.occurred_at, key: `event:${item.id}`, item }));
+  data.trajectories.forEach((item) => merged.push({ kind: 'trajectory', at: item.observed_at, key: `trajectory:${item.user_id}:${item.segment_id}:${item.observed_at}:${item.source_ref}`, item }));
+  data.private_samples.forEach((item) => merged.push({ kind: 'private', at: item.observed_at, key: `private:${item.user_id}:${item.observed_at}:${item.source_ref}`, item }));
   return merged.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.key.localeCompare(b.key));
 }
 
@@ -55,8 +76,6 @@ function annotateTrajectoryEvidence(items: LogItem[]): LogRow[] {
     if (item.kind === 'trajectory') {
       if (previousTrajectory && item.item.segment_id !== previousTrajectory.segment_id) {
         separator = 'New observation segment — no path inferred';
-      } else if (previousTrajectory && Date.parse(item.item.observed_at) - Date.parse(previousTrajectory.observed_at) > EVIDENCE_GAP_MS) {
-        separator = 'Observation gap — no path inferred';
       }
       previousTrajectory = item.item;
     }
@@ -76,8 +95,8 @@ export function PlayerTimeline({ players, refreshKey }: Props) {
   const visiblePlayers = useMemo(() => {
     const term = search.trim().toLowerCase();
     if (!term) return players;
-    return players.filter((player) => [player.name, player.account_name, player.user_id, player.player_id].some((value) => value.toLowerCase().includes(term)));
-  }, [players, search]);
+    return players.filter((player) => player.user_id === selectedID || [player.name, player.account_name, player.user_id, player.player_id].some((value) => value.toLowerCase().includes(term)));
+  }, [players, search, selectedID]);
 
   useEffect(() => {
     const id = ++requestID.current;
@@ -91,7 +110,9 @@ export function PlayerTimeline({ players, refreshKey }: Props) {
     }
     const controller = new AbortController();
     setState({ kind: 'loading' });
-    void getPlayerTimeline(selectedID, new Date(start).toISOString(), new Date(end).toISOString(), 500, controller.signal)
+    const parsedStart = parseLocalDateTime(start).date!;
+    const parsedEnd = parseLocalDateTime(end).date!;
+    void getPlayerTimeline(selectedID, parsedStart.toISOString(), parsedEnd.toISOString(), 500, controller.signal)
       .then((data) => {
         if (!controller.signal.aborted && requestID.current === id) setState({ kind: 'ready', data });
       })
@@ -105,6 +126,7 @@ export function PlayerTimeline({ players, refreshKey }: Props) {
 
   const items = useMemo(() => state.kind === 'ready' ? mergeTimeline(state.data) : [], [state]);
   const rows = useMemo(() => annotateTrajectoryEvidence(items), [items]);
+  const mayBeTruncated = state.kind === 'ready' && [state.data.events, state.data.trajectories, state.data.private_samples].some((source) => source.length >= 500);
 
   return (
     <section className="timeline-recorder" aria-labelledby="timeline-heading">
@@ -139,6 +161,7 @@ export function PlayerTimeline({ players, refreshKey }: Props) {
           {state.kind === 'not-found' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> This player is no longer known to the observation store.</div> : null}
           {state.kind === 'error' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> {state.message}</div> : null}
           {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="No observations recorded in this range." /> : null}
+          {mayBeTruncated ? <div className="timeline-alert timeline-alert--info" role="status"><AlertTriangle size={18} /> Evidence may be truncated because a source reached the 500-record response limit.</div> : null}
           {state.kind === 'ready' && items.length > 0 ? <ol className="timeline-spine" aria-label="Chronological observations">
             {rows.map(({ item, separator }) => <TimelineEntry key={item.key} item={item} separator={separator} />)}
           </ol> : null}
@@ -164,7 +187,7 @@ function EventDetail({ event }: { event: TimelineEvent }) {
   const known = KNOWN_EVENTS.has(event.event_type) && event.summary !== 'unsupported event payload';
   const occurredDiffers = event.observed_at !== event.occurred_at;
   return <div className="timeline-detail">
-    <div className="timeline-title-row"><strong>{known ? event.summary : 'Unsupported event'}</strong><SourceBadge source={event.source} /><span className="confidence-badge">{titleCase(event.confidence)}</span></div>
+    <div className="timeline-title-row"><strong>{known ? titleCase(event.event_type) : 'Unsupported event'}</strong><SourceBadge source={event.source} /><span className="confidence-badge">{titleCase(event.confidence)}</span></div>
     {occurredDiffers ? <dl className="telemetry timeline-times"><div><dt>Occurred</dt><dd>{formatExactDateTime(event.occurred_at)}</dd></div><div><dt>Observed</dt><dd>{formatExactDateTime(event.observed_at)}</dd></div></dl> : null}
   </div>;
 }

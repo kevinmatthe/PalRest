@@ -145,4 +145,16 @@ describe('administrator timeline navigation', () => {
     session.resolve({ ...admin, authenticated: false });
     await waitFor(() => expect(screen.queryByText(/Player timeline token/)).not.toBeInTheDocument());
   });
+
+  it('removes private timeline access when auth is lost even if another common request fails', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Timeline' }));
+    expect(screen.getByText(/Player timeline token/)).toBeInTheDocument();
+    vi.mocked(api.getAdminSession).mockResolvedValueOnce({ ...admin, authenticated: false });
+    vi.mocked(api.getHealth).mockRejectedValueOnce(new Error('health offline'));
+    fireEvent.click(screen.getByTitle('Refresh now'));
+    await waitFor(() => expect(screen.queryByText(/Player timeline token/)).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Timeline' })).not.toBeInTheDocument();
+    expect(screen.getByText('health offline')).toBeInTheDocument();
+  });
 });

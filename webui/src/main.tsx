@@ -73,13 +73,19 @@ export function App() {
       controller = new AbortController();
       const requestController = controller;
       setState((current) => ({ kind: 'loading', data: current.data }));
+      const adminRequest = getAdminSession(requestController.signal).then((admin) => {
+        if (!mounted || requestController.signal.aborted || admin.authenticated) return admin;
+        setView('dashboard');
+        setState((current) => current.data ? { ...current, data: { ...current.data, admin } } : current);
+        return admin;
+      });
       try {
         const [health, status, playersResponse, policies, admin] = await Promise.all([
           getHealth(requestController.signal),
           getStatus(requestController.signal),
           getPlayers(requestController.signal),
           getPolicies(requestController.signal),
-          getAdminSession(requestController.signal),
+          adminRequest,
         ]);
         if (!mounted || requestController.signal.aborted) {
           return;
