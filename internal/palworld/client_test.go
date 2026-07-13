@@ -85,6 +85,107 @@ func TestReadOnlyEndpointsDecodeOfficialSchemas(t *testing.T) {
 	}
 }
 
+func TestReadOnlyEndpointsRejectNonObjectTopLevelJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		call func(*Client) error
+	}{
+		{name: "players", path: "/players", call: func(client *Client) error {
+			_, err := client.ListPlayers(context.Background())
+			return err
+		}},
+		{name: "metrics", path: "/metrics", call: func(client *Client) error {
+			_, err := client.Metrics(context.Background())
+			return err
+		}},
+		{name: "info", path: "/info", call: func(client *Client) error {
+			_, err := client.Info(context.Background())
+			return err
+		}},
+		{name: "settings", path: "/settings", call: func(client *Client) error {
+			_, err := client.Settings(context.Background())
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, payload := range []string{"null", "[]"} {
+				t.Run(payload, func(t *testing.T) {
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.URL.Path != test.path {
+							t.Errorf("path=%s, want %s", r.URL.Path, test.path)
+						}
+						_, _ = w.Write([]byte(payload))
+					}))
+					defer server.Close()
+					if err := test.call(New(server.URL, "secret", time.Second)); err == nil {
+						t.Fatal("expected top-level schema error")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestReadOnlyEndpointRejectsResponseOverOneMiB(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"description":"` + strings.Repeat("x", maxResponseBytes) + `"}`))
+	}))
+	defer server.Close()
+	client := New(server.URL, "secret", time.Second)
+	_, err := client.Info(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err=%v, want response size error", err)
+	}
+}
+
+func TestReadOnlyEndpointRejectsTrailingJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"serverfps":58}{"serverfps":59}`))
+	}))
+	defer server.Close()
+	client := New(server.URL, "secret", time.Second)
+	if _, err := client.Metrics(context.Background()); err == nil {
+		t.Fatal("expected trailing JSON error")
+	}
+}
+
+func TestPlayerSensitiveObservationFieldsDoNotMarshal(t *testing.T) {
+	player := domain.Player{
+		UserID: "steam_1", PlayerID: "ABC", Name: "Kevin", AccountName: "kevin",
+		IP: "192.0.2.1", Ping: 28.5, LocationX: 123.25, LocationY: -99.5, Level: 41, BuildingCount: 119,
+	}
+	encoded, err := json.Marshal(player)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(encoded, &values); err != nil {
+		t.Fatal(err)
+	}
+	allowed := map[string]bool{
+		"user_id": true, "player_id": true, "name": true, "account_name": true, "last_online": true,
+	}
+	for key := range values {
+		if !allowed[key] {
+			t.Errorf("unexpected field %q serialized in %s", key, encoded)
+		}
+	}
+	for _, key := range []string{"ip", "ping", "location_x", "location_y", "level", "building_count"} {
+		if _, ok := values[key]; ok {
+			t.Errorf("sensitive field %q serialized in %s", key, encoded)
+		}
+	}
+	for key, want := range map[string]string{
+		"user_id": "steam_1", "player_id": "ABC", "name": "Kevin", "account_name": "kevin",
+	} {
+		if values[key] != want {
+			t.Errorf("%s=%v, want %q", key, values[key], want)
+		}
+	}
+}
+
 func TestListPlayersUsesBasicAuthAndDecodesPlayers(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		username, password, ok := r.BasicAuth()

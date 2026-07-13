@@ -109,6 +109,10 @@ func (c *Client) getJSON(ctx context.Context, path string, destination any, useN
 	if len(body) > maxResponseBytes {
 		return fmt.Errorf("Palworld response %s exceeds %d bytes", path, maxResponseBytes)
 	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return fmt.Errorf("decode Palworld response %s: expected top-level JSON object", path)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if useNumber {
 		decoder.UseNumber()
