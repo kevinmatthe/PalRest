@@ -102,6 +102,7 @@ type Config struct {
 	HTTP        HTTP        `yaml:"http" json:"http"`
 	Storage     Storage     `yaml:"storage" json:"storage"`
 	Observation Observation `yaml:"observation" json:"observation"`
+	Save        Save        `yaml:"save" json:"save"`
 	password    string
 	adminUser   string
 	adminPass   string
@@ -228,6 +229,13 @@ type Observation struct {
 	RawRetention                  Duration `yaml:"raw_retention" json:"raw_retention"`
 }
 
+type Save struct {
+	Enabled       bool     `yaml:"enabled" json:"enabled"`
+	Path          string   `yaml:"path,omitempty" json:"path,omitempty"`
+	WorkerCommand string   `yaml:"worker_command,omitempty" json:"worker_command,omitempty"`
+	WorkerTimeout Duration `yaml:"worker_timeout,omitempty" json:"worker_timeout,omitempty"`
+}
+
 func (c Config) Password() string { return c.password }
 
 func (c Config) AdminEnabled() bool { return c.adminUser != "" && c.adminPass != "" }
@@ -301,6 +309,10 @@ func defaults() Config {
 			TrajectoryPingChangeThreshold: 10,
 			TrajectoryMaxInterval:         Duration{5 * time.Minute},
 			RawRetention:                  Duration{90 * 24 * time.Hour},
+		},
+		Save: Save{
+			WorkerCommand: "palrest-save-worker",
+			WorkerTimeout: Duration{30 * time.Second},
 		},
 	}
 }
@@ -381,6 +393,17 @@ func (c *Config) validate(lookup func(string) (string, bool)) error {
 	}
 	if c.Observation.TrajectoryPingChangeThreshold <= 0 || math.IsNaN(c.Observation.TrajectoryPingChangeThreshold) || math.IsInf(c.Observation.TrajectoryPingChangeThreshold, 0) {
 		return fmt.Errorf("observation.trajectory_ping_change_threshold must be positive and finite")
+	}
+	if c.Save.WorkerTimeout.Duration <= 0 {
+		return fmt.Errorf("save.worker_timeout must be positive")
+	}
+	if c.Save.Enabled {
+		if strings.TrimSpace(c.Save.Path) == "" {
+			return fmt.Errorf("save.path is required when save.enabled is true")
+		}
+		if strings.TrimSpace(c.Save.WorkerCommand) == "" {
+			return fmt.Errorf("save.worker_command is required when save.enabled is true")
+		}
 	}
 	if c.HTTP.AdminUsernameEnv != "" || c.HTTP.AdminPasswordEnv != "" {
 		if c.HTTP.AdminUsernameEnv == "" || c.HTTP.AdminPasswordEnv == "" {

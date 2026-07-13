@@ -23,6 +23,14 @@ observation:
 # Player IP addresses are stored only in private samples for authenticated
 # administrator timeline queries. They are never returned by public endpoints.
 
+# Optional save parsing. This is off by default and runs an external parser
+# worker, so Guard accounting is independent from save parser failures.
+save:
+  enabled: false
+  path: /data/pal-saves/Level.sav
+  worker_command: palrest-save-worker
+  worker_timeout: 30s
+
 # Optional bootstrap defaults. They are used only when the database has no
 # policy document; later edits are made in WebUI and stored in SQLite.
 policy:

@@ -196,6 +196,48 @@ func TestParseUsesObservationDefaultsWhenOmitted(t *testing.T) {
 	}
 }
 
+func TestParseUsesSaveDefaultsWhenOmitted(t *testing.T) {
+	cfg, err := Parse([]byte(validConfig), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Save.Enabled || cfg.Save.WorkerCommand != "palrest-save-worker" || cfg.Save.WorkerTimeout.Duration != 30*time.Second {
+		t.Fatalf("save defaults=%+v", cfg.Save)
+	}
+}
+
+func TestParseAcceptsExplicitSaveSettings(t *testing.T) {
+	input := validConfig + `save:
+  enabled: true
+  path: /data/pal-saves/Level.sav
+  worker_command: /usr/local/bin/palrest-save-worker
+  worker_timeout: 45s
+`
+	cfg, err := Parse([]byte(input), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Save.Enabled || cfg.Save.Path != "/data/pal-saves/Level.sav" || cfg.Save.WorkerCommand != "/usr/local/bin/palrest-save-worker" || cfg.Save.WorkerTimeout.Duration != 45*time.Second {
+		t.Fatalf("save=%+v", cfg.Save)
+	}
+}
+
+func TestParseRejectsInvalidSaveSettings(t *testing.T) {
+	tests := map[string]string{
+		"enabled without path":    "enabled: true\n  worker_command: palrest-save-worker\n  worker_timeout: 30s",
+		"enabled without command": "enabled: true\n  path: /data/pal-saves/Level.sav\n  worker_command: \"\"\n  worker_timeout: 30s",
+		"zero timeout":            "enabled: false\n  worker_timeout: 0s",
+	}
+	for name, setting := range tests {
+		t.Run(name, func(t *testing.T) {
+			input := validConfig + "save:\n  " + setting + "\n"
+			if _, err := Parse([]byte(input), env); err == nil || !strings.Contains(err.Error(), "save.") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestParseAcceptsExplicitObservationSettings(t *testing.T) {
 	input := validConfig + `observation:
   server_document_interval: 7m

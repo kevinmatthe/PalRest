@@ -9,15 +9,17 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
-	_ "modernc.org/sqlite"
+	"gorm.io/gorm"
 )
 
 var ErrNotFound = errors.New("not found")
 var ErrObservationConflict = errors.New("server observation baseline conflict")
 
 type Repository struct {
-	db *sql.DB
+	db   *sql.DB
+	gorm *gorm.DB
 	// beforeSensitiveTimelineAudit is a narrow deterministic test seam for
 	// failures between a completed sensitive read and its audit write.
 	beforeSensitiveTimelineAudit func()
@@ -77,7 +79,12 @@ func Open(ctx context.Context, path string) (*Repository, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	repo := &Repository{db: db}
+	gormDB, err := gorm.Open(sqlite.Dialector{Conn: db}, &gorm.Config{})
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open gorm sqlite: %w", err)
+	}
+	repo := &Repository{db: db, gorm: gormDB}
 	if err := repo.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -219,6 +226,9 @@ func (r *Repository) migrate(ctx context.Context) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
+	}
+	if err := r.migrateSaveModels(ctx); err != nil {
+		return err
 	}
 	return nil
 }

@@ -63,6 +63,10 @@ type ObservationQueries interface {
 	ReadServerDocuments(context.Context, string, string, int, *store.ServerDocumentCursor) (store.ServerDocumentPage, error)
 }
 
+type SaveImporter interface {
+	Import(context.Context, string) (store.SaveImportResult, error)
+}
+
 type Server struct {
 	health          Health
 	status          Status
@@ -74,29 +78,37 @@ type Server struct {
 	resetter        Resetter
 	adminStore      AdminStore
 	observations    ObservationQueries
+	saveImporter    SaveImporter
 	auth            *adminAuth
 	config          func() config.Config
 	handler         http.Handler
 	now             func() time.Time
 }
 
-func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQueries, analyticsOnline AnalyticsOnline, policies Policies, resetter Resetter, adminStore AdminStore, adminUser, adminPass string, configFn func() config.Config, updater ...PolicyUpdater) *Server {
+func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQueries, analyticsOnline AnalyticsOnline, policies Policies, resetter Resetter, adminStore AdminStore, adminUser, adminPass string, configFn func() config.Config, options ...any) *Server {
 	var auth *adminAuth
 	if adminUser != "" || adminPass != "" {
 		auth = newAdminAuth(adminUser, adminPass)
 	}
 	policyUpdater := PolicyUpdater(directPolicyUpdater{analytics: analyticsOnline})
-	if len(updater) != 0 {
-		policyUpdater = updater[0]
+	var saveImporter SaveImporter
+	for _, option := range options {
+		switch value := option.(type) {
+		case PolicyUpdater:
+			policyUpdater = value
+		case SaveImporter:
+			saveImporter = value
+		}
 	}
 	observations, _ := adminStore.(ObservationQueries)
-	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, observations: observations, auth: auth, config: configFn, now: time.Now}
+	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, observations: observations, saveImporter: saveImporter, auth: auth, config: configFn, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.healthz)
 	mux.HandleFunc("GET /readyz", server.readyz)
 	mux.HandleFunc("GET /api/v1/admin/session", server.getAdminSession)
 	mux.HandleFunc("POST /api/v1/admin/login", server.login)
 	mux.HandleFunc("POST /api/v1/admin/logout", server.logout)
+	mux.HandleFunc("POST /api/v1/admin/save/import", server.importSaveSnapshot)
 	mux.HandleFunc("GET /api/v1/admin/players/{userID}/timeline", server.getAdminPlayerTimeline)
 	mux.HandleFunc("GET /api/v1/admin/server/metrics", server.getAdminServerMetrics)
 	mux.HandleFunc("GET /api/v1/admin/server/documents", server.getAdminServerDocuments)

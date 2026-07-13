@@ -36,6 +36,19 @@ type fakeAdminStore struct{}
 
 func (fakeAdminStore) ResetPlayerPolicyState(context.Context, string) error { return nil }
 
+type fakeSaveImporter struct {
+	result store.SaveImportResult
+	err    error
+	path   string
+	calls  int
+}
+
+func (f *fakeSaveImporter) Import(_ context.Context, path string) (store.SaveImportResult, error) {
+	f.calls++
+	f.path = path
+	return f.result, f.err
+}
+
 type fakeSnapshots struct{ values []domain.PlayerSnapshot }
 
 func (f fakeSnapshots) AllSnapshots(context.Context) ([]domain.PlayerSnapshot, error) {
@@ -253,4 +266,45 @@ func TestAdminLoginUnlocksReset(t *testing.T) {
 	if reset.Code != http.StatusOK || !strings.Contains(reset.Body.String(), `"status":"reset"`) {
 		t.Fatalf("reset code=%d body=%s", reset.Code, reset.Body.String())
 	}
+}
+
+func TestAdminSaveImportRequiresAuthAndEnabledImporter(t *testing.T) {
+	cfg := config.Config{Version: 1}
+	server := New(fakeHealth{}, fakeStatus{}, fakeSnapshots{}, fakeAnalyticsQueries{}, fakeAnalyticsOnline{}, fakePolicies{}, fakeResetter{}, fakeAdminStore{}, "admin", "secret", func() config.Config { return cfg })
+	path := "/api/v1/admin/save/import"
+
+	unauthorized := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, path, nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized code=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+
+	disabled := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	req.AddCookie(adminCookie(t, server))
+	server.Handler().ServeHTTP(disabled, req)
+	if disabled.Code != http.StatusNotFound {
+		t.Fatalf("disabled code=%d body=%s", disabled.Code, disabled.Body.String())
+	}
+
+	importer := &fakeSaveImporter{result: store.SaveImportResult{ImportID: 7, Fingerprint: strings.Repeat("a", 64), Inserted: true}}
+	cfg.Save.Enabled = true
+	cfg.Save.Path = "/data/pal-saves/Level.sav"
+	server = New(fakeHealth{}, fakeStatus{}, fakeSnapshots{}, fakeAnalyticsQueries{}, fakeAnalyticsOnline{}, fakePolicies{}, fakeResetter{}, fakeAdminStore{}, "admin", "secret", func() config.Config { return cfg }, importer)
+	ok := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, path, nil)
+	req.AddCookie(adminCookie(t, server))
+	server.Handler().ServeHTTP(ok, req)
+	if ok.Code != http.StatusOK || importer.calls != 1 || importer.path != cfg.Save.Path || !strings.Contains(ok.Body.String(), `"import_id":7`) {
+		t.Fatalf("code=%d calls=%d path=%q body=%s", ok.Code, importer.calls, importer.path, ok.Body.String())
+	}
+}
+
+func adminCookie(t *testing.T, server *Server) *http.Cookie {
+	t.Helper()
+	token, ok := server.auth.login("admin", "secret")
+	if !ok {
+		t.Fatal("login failed")
+	}
+	return sessionCookie(token, 3600)
 }

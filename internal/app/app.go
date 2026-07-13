@@ -20,24 +20,27 @@ import (
 	"github.com/kevinmatt/palworld-playtime-guard/internal/palworld"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/policy"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/poller"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/saveworker"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
 	"go.yaml.in/yaml/v3"
 )
 
 type App struct {
-	configPath  string
-	configMu    sync.RWMutex
-	config      config.Config
-	repo        *store.Repository
-	policies    *policy.Service
-	guard       *guard.Service
-	analytics   *analytics.Service
-	poller      *poller.Poller
-	httpServer  *http.Server
-	pollerDone  chan struct{}
-	watcherDone chan struct{}
-	closeOnce   sync.Once
-	closeErr    error
+	configPath   string
+	configMu     sync.RWMutex
+	config       config.Config
+	repo         *store.Repository
+	policies     *policy.Service
+	guard        *guard.Service
+	analytics    *analytics.Service
+	poller       *poller.Poller
+	saveWorker   *saveworker.Runner
+	saveImporter *saveworker.Importer
+	httpServer   *http.Server
+	pollerDone   chan struct{}
+	watcherDone  chan struct{}
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 func New(configPath string) (*App, error) {
@@ -97,6 +100,16 @@ func New(configPath string) (*App, error) {
 		_ = repo.Close()
 		return nil, err
 	}
+	var saveRunner *saveworker.Runner
+	var saveImporter *saveworker.Importer
+	if cfg.Save.Enabled {
+		saveRunner, err = saveworker.New(cfg.Save.WorkerCommand, cfg.Save.WorkerTimeout.Duration)
+		if err != nil {
+			_ = repo.Close()
+			return nil, err
+		}
+		saveImporter = saveworker.NewImporter(saveRunner, repo, time.Now)
+	}
 	pollOptions := []poller.Option{
 		poller.WithPlayerObserver(playerObservations),
 		poller.WithServerObservations(client, serverObservations),
@@ -112,11 +125,15 @@ func New(configPath string) (*App, error) {
 		return nil, err
 	}
 	app := &App{
-		configPath: configPath, config: cfg, repo: repo, policies: policies, guard: guardService, analytics: analyticsService, poller: poll,
+		configPath: configPath, config: cfg, repo: repo, policies: policies, guard: guardService, analytics: analyticsService, poller: poll, saveWorker: saveRunner, saveImporter: saveImporter,
 		pollerDone: make(chan struct{}), watcherDone: make(chan struct{}),
 	}
 	adminUser, adminPass := cfg.AdminCredentials()
-	apiServer := api.New(repo, poll, guardService, repo, analyticsService, policies, guardService, repo, adminUser, adminPass, app.CurrentConfig, poll)
+	apiOptions := []any{poll}
+	if saveImporter != nil {
+		apiOptions = append(apiOptions, saveImporter)
+	}
+	apiServer := api.New(repo, poll, guardService, repo, analyticsService, policies, guardService, repo, adminUser, adminPass, app.CurrentConfig, apiOptions...)
 	app.httpServer = apiServer.HTTPServer(cfg.HTTP.Listen)
 	return app, nil
 }
