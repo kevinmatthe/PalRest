@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -23,12 +24,15 @@ type serverRecorderFake struct {
 	documentCalls []documentCall
 	writes        []store.PlayerObservationWrite
 
-	metricErrors   []error
-	documentErrors []error
-	eventErrors    []error
-	inserted       []bool
-	metricEntered  chan struct{}
-	metricRelease  chan struct{}
+	metricErrors    []error
+	documentErrors  []error
+	eventErrors     []error
+	inserted        []bool
+	metricEntered   chan struct{}
+	metricRelease   chan struct{}
+	latestMetricAt  time.Time
+	latestMetrics   domain.ServerMetrics
+	latestDocuments map[string]store.ServerDocumentSnapshot
 }
 
 type metricCall struct {
@@ -41,6 +45,80 @@ type documentCall struct {
 	at        time.Time
 	canonical []byte
 	hash      string
+}
+
+type atomicRepositorySpy struct {
+	delegate          *store.Repository
+	mu                sync.Mutex
+	metrics           []store.ServerMetricObservation
+	documents         []store.ServerDocumentObservation
+	metricAmbiguous   bool
+	documentAmbiguous map[string]bool
+}
+
+func (r *atomicRepositorySpy) RecordServerMetricObservation(ctx context.Context, write store.ServerMetricObservation) error {
+	r.mu.Lock()
+	r.metrics = append(r.metrics, write)
+	ambiguous := r.metricAmbiguous
+	r.metricAmbiguous = false
+	r.mu.Unlock()
+	if err := r.delegate.RecordServerMetricObservation(ctx, write); err != nil {
+		return err
+	}
+	if ambiguous {
+		return errors.New("ambiguous metric commit")
+	}
+	return nil
+}
+
+func (r *atomicRepositorySpy) LatestServerMetrics(ctx context.Context) (time.Time, domain.ServerMetrics, error) {
+	return r.delegate.LatestServerMetrics(ctx)
+}
+
+func (r *atomicRepositorySpy) RecordServerDocumentObservation(ctx context.Context, write store.ServerDocumentObservation) (bool, error) {
+	r.mu.Lock()
+	r.documents = append(r.documents, write)
+	ambiguous := r.documentAmbiguous != nil && r.documentAmbiguous[write.Kind]
+	if ambiguous {
+		r.documentAmbiguous[write.Kind] = false
+	}
+	r.mu.Unlock()
+	changed, err := r.delegate.RecordServerDocumentObservation(ctx, write)
+	if err != nil {
+		return false, err
+	}
+	if ambiguous {
+		return false, errors.New("ambiguous document commit")
+	}
+	return changed, nil
+}
+
+func (r *atomicRepositorySpy) LatestServerDocument(ctx context.Context, kind string) (store.ServerDocumentSnapshot, error) {
+	return r.delegate.LatestServerDocument(ctx, kind)
+}
+
+// Compatibility methods keep the RED test buildable against the pre-redesign
+// service interface. The redesigned service must use the atomic methods above.
+func (r *atomicRepositorySpy) RecordServerMetrics(ctx context.Context, at time.Time, metrics domain.ServerMetrics) error {
+	return r.delegate.RecordServerMetrics(ctx, at, metrics)
+}
+
+func (r *atomicRepositorySpy) RecordServerDocument(ctx context.Context, kind string, at time.Time, canonical []byte, hash string) (bool, error) {
+	return r.delegate.RecordServerDocument(ctx, kind, at, canonical, hash)
+}
+
+func (r *atomicRepositorySpy) RecordPlayerObservation(ctx context.Context, write store.PlayerObservationWrite) error {
+	return r.delegate.RecordPlayerObservation(ctx, write)
+}
+
+func openServerRepository(t *testing.T) (*store.Repository, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "guard.db")
+	repo, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return repo, path
 }
 
 func (r *serverRecorderFake) RecordServerMetrics(_ context.Context, at time.Time, metrics domain.ServerMetrics) error {
@@ -82,6 +160,66 @@ func (r *serverRecorderFake) RecordPlayerObservation(_ context.Context, write st
 	index := len(r.writes)
 	r.writes = append(r.writes, write)
 	return errorAt(r.eventErrors, index)
+}
+
+func (r *serverRecorderFake) RecordServerMetricObservation(ctx context.Context, write store.ServerMetricObservation) error {
+	if err := r.RecordServerMetrics(ctx, write.At, write.Metrics); err != nil {
+		return err
+	}
+	if write.Event != nil {
+		if err := r.RecordPlayerObservation(ctx, store.PlayerObservationWrite{Events: []store.ActivityEvent{*write.Event}}); err != nil {
+			return err
+		}
+	}
+	r.mu.Lock()
+	r.latestMetricAt = write.At.UTC()
+	r.latestMetrics = write.Metrics
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *serverRecorderFake) LatestServerMetrics(context.Context) (time.Time, domain.ServerMetrics, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.latestMetricAt.IsZero() {
+		return time.Time{}, domain.ServerMetrics{}, store.ErrNotFound
+	}
+	return r.latestMetricAt, r.latestMetrics, nil
+}
+
+func (r *serverRecorderFake) RecordServerDocumentObservation(ctx context.Context, write store.ServerDocumentObservation) (bool, error) {
+	if _, err := r.RecordServerDocument(ctx, write.Kind, write.At, write.Canonical, write.Hash); err != nil {
+		return false, err
+	}
+	if write.Event != nil {
+		if err := r.RecordPlayerObservation(ctx, store.PlayerObservationWrite{Events: []store.ActivityEvent{*write.Event}}); err != nil {
+			return false, err
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.latestDocuments == nil {
+		r.latestDocuments = make(map[string]store.ServerDocumentSnapshot)
+	}
+	previous, exists := r.latestDocuments[write.Kind]
+	if exists && previous.Hash == write.Hash {
+		return false, nil
+	}
+	r.latestDocuments[write.Kind] = store.ServerDocumentSnapshot{
+		Kind: write.Kind, At: write.At.UTC(), Hash: write.Hash, Canonical: append([]byte(nil), write.Canonical...),
+	}
+	return true, nil
+}
+
+func (r *serverRecorderFake) LatestServerDocument(_ context.Context, kind string) (store.ServerDocumentSnapshot, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	document, ok := r.latestDocuments[kind]
+	if !ok {
+		return store.ServerDocumentSnapshot{}, store.ErrNotFound
+	}
+	document.Canonical = append([]byte(nil), document.Canonical...)
+	return document, nil
 }
 
 func errorAt(errors []error, index int) error {
@@ -157,7 +295,7 @@ func TestServerMetricFailuresAndEventFailuresDoNotAdvanceBaseline(t *testing.T) 
 	if err := service.RecordMetrics(t.Context(), base.Add(time.Minute), domain.ServerMetrics{UptimeSeconds: 1, ServerFrameTime: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if len(recorder.metricsCalls) != 3 || len(recorder.writes) != 2 {
+	if len(recorder.metricsCalls) != 4 || len(recorder.writes) != 2 {
 		t.Fatalf("metrics=%d events=%d", len(recorder.metricsCalls), len(recorder.writes))
 	}
 	for _, write := range recorder.writes {
@@ -168,12 +306,12 @@ func TestServerMetricFailuresAndEventFailuresDoNotAdvanceBaseline(t *testing.T) 
 	if err := service.RecordMetrics(t.Context(), base.Add(30*time.Second), domain.ServerMetrics{UptimeSeconds: 200, ServerFrameTime: 1}); err == nil {
 		t.Fatal("expected older metric sample to be rejected")
 	}
-	if len(recorder.metricsCalls) != 3 {
+	if len(recorder.metricsCalls) != 4 {
 		t.Fatal("older sample reached repository")
 	}
 }
 
-func TestServerMetricsRetryPendingRestartBeforeProcessingNewerSample(t *testing.T) {
+func TestServerMetricsFailedAtomicRestartDoesNotBlockNewerSample(t *testing.T) {
 	eventErr := errors.New("event failed")
 	recorder := &serverRecorderFake{eventErrors: []error{eventErr, nil}}
 	service := newServerService(recorder)
@@ -203,12 +341,12 @@ func TestServerMetricsRetryPendingRestartBeforeProcessingNewerSample(t *testing.
 		t.Fatalf("event attempts=%#v", recorder.writes)
 	}
 	failed, retried := recorder.writes[0].Events[0], recorder.writes[1].Events[0]
-	if failed.ID != retried.ID || failed.CorrelationID != retried.CorrelationID || failed.OccurredAt != base.Add(time.Minute) || retried.OccurredAt != base.Add(time.Minute) {
+	if failed.ID == retried.ID || failed.OccurredAt != base.Add(time.Minute) || retried.OccurredAt != base.Add(2*time.Minute) {
 		t.Fatalf("failed=%+v retried=%+v", failed, retried)
 	}
 }
 
-func TestServerMetricsKeepPendingRestartWhenRepeatedRetryFails(t *testing.T) {
+func TestServerMetricsRepeatedAtomicFailuresDoNotAdvanceDurableBaseline(t *testing.T) {
 	firstErr := errors.New("first event failure")
 	secondErr := errors.New("second event failure")
 	recorder := &serverRecorderFake{eventErrors: []error{firstErr, secondErr, nil}}
@@ -224,18 +362,18 @@ func TestServerMetricsKeepPendingRestartWhenRepeatedRetryFails(t *testing.T) {
 	if err := service.RecordMetrics(t.Context(), base.Add(2*time.Minute), domain.ServerMetrics{UptimeSeconds: 2, ServerFrameTime: 1}); !errors.Is(err, secondErr) {
 		t.Fatalf("second err=%v", err)
 	}
-	if len(recorder.metricsCalls) != 2 {
+	if len(recorder.metricsCalls) != 3 {
 		t.Fatalf("new sample persisted while pending retry failed: %#v", recorder.metricsCalls)
 	}
 	if err := service.RecordMetrics(t.Context(), base.Add(3*time.Minute), domain.ServerMetrics{UptimeSeconds: 3, ServerFrameTime: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if len(recorder.metricsCalls) != 3 || recorder.metricsCalls[2].at != base.Add(3*time.Minute) {
+	if len(recorder.metricsCalls) != 4 || recorder.metricsCalls[3].at != base.Add(3*time.Minute) {
 		t.Fatalf("metric calls=%#v", recorder.metricsCalls)
 	}
-	for index := 1; index < len(recorder.writes); index++ {
-		if recorder.writes[index].Events[0].ID != recorder.writes[0].Events[0].ID {
-			t.Fatalf("pending event ID changed across retries: %#v", recorder.writes)
+	for index, at := range []time.Time{base.Add(time.Minute), base.Add(2 * time.Minute), base.Add(3 * time.Minute)} {
+		if recorder.writes[index].Events[0].OccurredAt != at {
+			t.Fatalf("event attempts=%#v", recorder.writes)
 		}
 	}
 }
@@ -258,7 +396,7 @@ func TestServerInfoCanonicalDocumentAndVersionChangeRetry(t *testing.T) {
 	if err := service.RecordInfo(t.Context(), base.Add(time.Minute), next); err != nil {
 		t.Fatal(err)
 	}
-	if len(recorder.documentCalls) != 2 {
+	if len(recorder.documentCalls) != 3 {
 		t.Fatalf("documents=%d", len(recorder.documentCalls))
 	}
 	if got := string(recorder.documentCalls[0].canonical); got != `{"version":"v1","servername":"server","description":"hello","worldguid":"world"}` {
@@ -306,7 +444,7 @@ func TestServerInfoDocumentFailureDoesNotEstablishBaseline(t *testing.T) {
 	}
 }
 
-func TestServerInfoRetriesPendingVersionEventBeforeProcessingNewerDocument(t *testing.T) {
+func TestServerInfoFailedAtomicChangeDoesNotBlockNewerDocument(t *testing.T) {
 	eventErr := errors.New("event failed")
 	recorder := &serverRecorderFake{eventErrors: []error{eventErr, nil, nil}}
 	service := newServerService(recorder)
@@ -331,12 +469,12 @@ func TestServerInfoRetriesPendingVersionEventBeforeProcessingNewerDocument(t *te
 	if len(recorder.documentCalls) != 4 {
 		t.Fatalf("document calls=%#v", recorder.documentCalls)
 	}
-	if len(recorder.writes) != 3 {
+	if len(recorder.writes) != 2 {
 		t.Fatalf("event attempts=%#v", recorder.writes)
 	}
-	failed, retried, newer := recorder.writes[0].Events[0], recorder.writes[1].Events[0], recorder.writes[2].Events[0]
-	if failed.ID != retried.ID || failed.OccurredAt != base.Add(time.Minute) || retried.OccurredAt != base.Add(time.Minute) || newer.OccurredAt != base.Add(2*time.Minute) {
-		t.Fatalf("failed=%+v retried=%+v newer=%+v", failed, retried, newer)
+	failed, newer := recorder.writes[0].Events[0], recorder.writes[1].Events[0]
+	if failed.ID == newer.ID || failed.OccurredAt != base.Add(time.Minute) || newer.OccurredAt != base.Add(2*time.Minute) || !strings.Contains(newer.PayloadJSON, `"old_version":"v1"`) {
+		t.Fatalf("failed=%+v newer=%+v", failed, newer)
 	}
 }
 
@@ -388,7 +526,7 @@ func TestServerSettingsChangeEventContainsOnlyHashesAndSafeSummary(t *testing.T)
 	if err := service.RecordSettings(t.Context(), base.Add(time.Minute), changed); err != nil {
 		t.Fatal(err)
 	}
-	if len(recorder.documentCalls) != 2 || len(recorder.writes) != 2 {
+	if len(recorder.documentCalls) != 3 || len(recorder.writes) != 2 {
 		t.Fatalf("docs=%d writes=%d", len(recorder.documentCalls), len(recorder.writes))
 	}
 	for _, write := range recorder.writes {
@@ -406,7 +544,7 @@ func TestServerSettingsChangeEventContainsOnlyHashesAndSafeSummary(t *testing.T)
 	}
 }
 
-func TestServerSettingsRetriesPendingEventBeforeProcessingNewerDocument(t *testing.T) {
+func TestServerSettingsFailedAtomicChangeDoesNotBlockNewerDocument(t *testing.T) {
 	eventErr := errors.New("event failed")
 	recorder := &serverRecorderFake{eventErrors: []error{eventErr, nil, nil}}
 	service := newServerService(recorder)
@@ -430,12 +568,12 @@ func TestServerSettingsRetriesPendingEventBeforeProcessingNewerDocument(t *testi
 	if len(recorder.documentCalls) != 4 {
 		t.Fatalf("document calls=%#v", recorder.documentCalls)
 	}
-	if len(recorder.writes) != 3 {
+	if len(recorder.writes) != 2 {
 		t.Fatalf("event attempts=%#v", recorder.writes)
 	}
-	failed, retried, newer := recorder.writes[0].Events[0], recorder.writes[1].Events[0], recorder.writes[2].Events[0]
-	if failed.ID != retried.ID || failed.OccurredAt != base.Add(time.Minute) || retried.OccurredAt != base.Add(time.Minute) || newer.OccurredAt != base.Add(2*time.Minute) {
-		t.Fatalf("failed=%+v retried=%+v newer=%+v", failed, retried, newer)
+	failed, newer := recorder.writes[0].Events[0], recorder.writes[1].Events[0]
+	if failed.ID == newer.ID || failed.OccurredAt != base.Add(time.Minute) || newer.OccurredAt != base.Add(2*time.Minute) {
+		t.Fatalf("failed=%+v newer=%+v", failed, newer)
 	}
 }
 
@@ -452,6 +590,69 @@ func TestServerSettingsRejectsNonFiniteValuesWithoutPersistence(t *testing.T) {
 				t.Fatal("invalid settings persisted")
 			}
 		})
+	}
+}
+
+func TestServerDocumentProcessBaselineRejectsOlderUnchangedSample(t *testing.T) {
+	recorder := &serverRecorderFake{}
+	service := newServerService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	settings := domain.ServerSettings{Values: map[string]any{"value": "A"}}
+	if err := service.RecordSettings(t.Context(), base, settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordSettings(t.Context(), base.Add(2*time.Minute), settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordSettings(t.Context(), base.Add(time.Minute), settings); err == nil {
+		t.Fatal("expected sample older than process baseline to fail")
+	}
+	if len(recorder.documentCalls) != 2 {
+		t.Fatalf("older sample reached repository: %#v", recorder.documentCalls)
+	}
+}
+
+func TestServerInfoAndSettingsEmitRecurrentTransitionsWithoutSecrets(t *testing.T) {
+	recorder := &serverRecorderFake{}
+	service := newServerService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	infoA := domain.ServerInfo{Version: "A", Description: "secret-a"}
+	infoB := domain.ServerInfo{Version: "B", Description: "secret-b"}
+	if err := service.RecordInfo(t.Context(), base, infoA); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordInfo(t.Context(), base.Add(time.Minute), infoB); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordInfo(t.Context(), base.Add(2*time.Minute), infoA); err != nil {
+		t.Fatal(err)
+	}
+	settingsA := domain.ServerSettings{Values: map[string]any{"password": "secret-a"}}
+	settingsB := domain.ServerSettings{Values: map[string]any{"password": "secret-b"}}
+	if err := service.RecordSettings(t.Context(), base, settingsA); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordSettings(t.Context(), base.Add(time.Minute), settingsB); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordSettings(t.Context(), base.Add(2*time.Minute), settingsA); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.writes) != 4 {
+		t.Fatalf("event writes=%#v", recorder.writes)
+	}
+	for index, write := range recorder.writes {
+		event := write.Events[0]
+		wantType := "server_version_changed"
+		if index >= 2 {
+			wantType = "server_settings_changed"
+		}
+		if event.EventType != wantType || strings.Contains(event.PayloadJSON, "secret") || strings.Contains(event.PayloadJSON, "password") || strings.Contains(event.PayloadJSON, "description") {
+			t.Fatalf("unsafe recurrent event=%+v", event)
+		}
+	}
+	if recorder.latestDocuments["info"].Hash != recorder.documentCalls[0].hash || recorder.latestDocuments["settings"].Hash != recorder.documentCalls[3].hash {
+		t.Fatalf("latest documents=%#v calls=%#v", recorder.latestDocuments, recorder.documentCalls)
 	}
 }
 
@@ -477,5 +678,126 @@ func TestServerRecordersSerializeConcurrentCallsAndRejectOlderTimestamps(t *test
 	}
 	if len(recorder.metricsCalls) != 1 || recorder.metricsCalls[0].at != newer {
 		t.Fatalf("calls=%#v", recorder.metricsCalls)
+	}
+}
+
+func TestServerServiceAcceptsExactRetryAfterAmbiguousAtomicMetricCommit(t *testing.T) {
+	repo, _ := openServerRepository(t)
+	defer repo.Close()
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	service := observation.NewServer(repo, observation.NewID)
+	if err := service.Restore(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordMetrics(t.Context(), base, domain.ServerMetrics{UptimeSeconds: 100, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	spy := &atomicRepositorySpy{delegate: repo, metricAmbiguous: true}
+	service = observation.NewServer(spy, func() string { return "stable-id" })
+	if err := service.Restore(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	restart := domain.ServerMetrics{UptimeSeconds: 1, ServerFrameTime: 1}
+	if err := service.RecordMetrics(t.Context(), base.Add(time.Minute), restart); err == nil {
+		t.Fatal("expected simulated ambiguous commit error")
+	}
+	if err := service.RecordMetrics(t.Context(), base.Add(time.Minute), restart); err != nil {
+		t.Fatalf("exact retry after ambiguous commit: %v", err)
+	}
+	if len(spy.metrics) != 1 || spy.metrics[0].Event == nil || spy.metrics[0].Event.EventType != "server_restarted" {
+		t.Fatalf("atomic writes=%#v", spy.metrics)
+	}
+	if err := repo.RecordServerMetricObservation(t.Context(), spy.metrics[0]); err != nil {
+		t.Fatalf("repository could not prove exact committed replay: %v", err)
+	}
+}
+
+func TestServerServiceAcceptsNewerCallAfterAmbiguousDocumentCommits(t *testing.T) {
+	repo, _ := openServerRepository(t)
+	defer repo.Close()
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	service := observation.NewServer(repo, observation.NewID)
+	if err := service.Restore(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordInfo(t.Context(), base, domain.ServerInfo{Version: "v1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordSettings(t.Context(), base, domain.ServerSettings{Values: map[string]any{"value": "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	spy := &atomicRepositorySpy{delegate: repo, documentAmbiguous: map[string]bool{"info": true, "settings": true}}
+	service = observation.NewServer(spy, observation.NewID)
+	if err := service.Restore(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordInfo(t.Context(), base.Add(time.Minute), domain.ServerInfo{Version: "v2"}); err == nil {
+		t.Fatal("expected ambiguous info commit")
+	}
+	if err := service.RecordInfo(t.Context(), base.Add(2*time.Minute), domain.ServerInfo{Version: "v3"}); err != nil {
+		t.Fatalf("newer info after ambiguous commit: %v", err)
+	}
+	if err := service.RecordSettings(t.Context(), base.Add(time.Minute), domain.ServerSettings{Values: map[string]any{"value": "B"}}); err == nil {
+		t.Fatal("expected ambiguous settings commit")
+	}
+	if err := service.RecordSettings(t.Context(), base.Add(2*time.Minute), domain.ServerSettings{Values: map[string]any{"value": "C"}}); err != nil {
+		t.Fatalf("newer settings after ambiguous commit: %v", err)
+	}
+	if len(spy.documents) != 4 {
+		t.Fatalf("document writes=%#v", spy.documents)
+	}
+	for _, write := range spy.documents {
+		if write.Event == nil {
+			t.Fatalf("transition missing atomic event: %+v", write)
+		}
+	}
+}
+
+func TestServerServiceRestoresAllBaselinesAcrossReopen(t *testing.T) {
+	repo, path := openServerRepository(t)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	first := observation.NewServer(repo, observation.NewID)
+	if err := first.Restore(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.RecordMetrics(t.Context(), base, domain.ServerMetrics{UptimeSeconds: 100, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.RecordInfo(t.Context(), base, domain.ServerInfo{Version: "v1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.RecordSettings(t.Context(), base, domain.ServerSettings{Values: map[string]any{"value": "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := store.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	spy := &atomicRepositorySpy{delegate: reopened}
+	second := observation.NewServer(spy, observation.NewID)
+	if err := second.Restore(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.RecordMetrics(t.Context(), base.Add(time.Minute), domain.ServerMetrics{UptimeSeconds: 1, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.RecordInfo(t.Context(), base.Add(time.Minute), domain.ServerInfo{Version: "v2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.RecordSettings(t.Context(), base.Add(time.Minute), domain.ServerSettings{Values: map[string]any{"value": "B"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(spy.metrics) != 1 || spy.metrics[0].Event == nil || spy.metrics[0].Event.EventType != "server_restarted" {
+		t.Fatalf("metric writes=%#v", spy.metrics)
+	}
+	wantTypes := map[string]string{"info": "server_version_changed", "settings": "server_settings_changed"}
+	for _, write := range spy.documents {
+		if write.Event == nil || write.Event.EventType != wantTypes[write.Kind] {
+			t.Fatalf("document write=%+v", write)
+		}
 	}
 }
