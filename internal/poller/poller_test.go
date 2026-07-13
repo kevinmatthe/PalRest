@@ -2,6 +2,7 @@ package poller
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"sync"
@@ -115,24 +116,20 @@ type fakeServerRecorder struct {
 	metricsCalls  int
 	infoCalls     int
 	settingsCalls int
-	ats           []time.Time
 }
 
 func (f *fakeServerRecorder) RecordMetrics(_ context.Context, at time.Time, _ domain.ServerMetrics) error {
 	f.metricsCalls++
-	f.ats = append(f.ats, at)
 	return f.metricsErr
 }
 
 func (f *fakeServerRecorder) RecordInfo(_ context.Context, at time.Time, _ domain.ServerInfo) error {
 	f.infoCalls++
-	f.ats = append(f.ats, at)
 	return f.infoErr
 }
 
 func (f *fakeServerRecorder) RecordSettings(_ context.Context, at time.Time, _ domain.ServerSettings) error {
 	f.settingsCalls++
-	f.ats = append(f.ats, at)
 	return f.settingsErr
 }
 
@@ -149,6 +146,13 @@ func (f *fakeAnalytics) SetLocation(location *time.Location) error {
 		*f.order = append(*f.order, "location")
 	}
 	return nil
+}
+
+func startSamplerForTest(t *testing.T, p *Poller) <-chan struct{} {
+	t.Helper()
+	completed, stop := p.startServerSampler(t.Context())
+	t.Cleanup(stop)
+	return completed
 }
 
 func TestRunOnceOrdersAnalyticsPlayerObservationThenGuard(t *testing.T) {
@@ -230,6 +234,46 @@ func TestDefaultCorrelationIDsAreNonemptyAndDistinct(t *testing.T) {
 	if len(observer.ids) != 2 || strings.TrimSpace(observer.ids[0]) == "" || observer.ids[0] == observer.ids[1] {
 		t.Fatalf("correlation IDs=%v", observer.ids)
 	}
+	decoded, err := hex.DecodeString(observer.ids[0])
+	if err != nil || len(decoded) != 16 {
+		t.Fatalf("correlation ID %q is not 128-bit hex: bytes=%d err=%v", observer.ids[0], len(decoded), err)
+	}
+}
+
+func TestEmptyCorrelationIDStopsBeforeAnalyticsPersistence(t *testing.T) {
+	analytics := &fakeAnalytics{}
+	observer := &fakePlayerObserver{}
+	guardService := &fakeGuard{}
+	p, err := New(&fakeClient{}, guardService, analytics, time.Minute, "warning", "kick", time.Now,
+		WithPlayerObserver(observer), WithCorrelationIDGenerator(func() string { return " " }))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.RunOnce(t.Context()); err == nil {
+		t.Fatal("expected empty correlation ID error")
+	}
+	if analytics.observed != 0 || observer.observed != 0 || guardService.observed != 0 {
+		t.Fatalf("analytics=%d player=%d guard=%d", analytics.observed, observer.observed, guardService.observed)
+	}
+}
+
+func TestCorrelationIDGenerationFailureStopsBeforeAnalyticsPersistence(t *testing.T) {
+	analytics := &fakeAnalytics{}
+	observer := &fakePlayerObserver{}
+	guardService := &fakeGuard{}
+	p, err := New(&fakeClient{}, guardService, analytics, time.Minute, "warning", "kick", time.Now, WithPlayerObserver(observer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.correlationID = func() (string, error) { return "", errors.New("random source unavailable") }
+
+	if err := p.RunOnce(t.Context()); err == nil {
+		t.Fatal("expected correlation ID generation error")
+	}
+	if analytics.observed != 0 || observer.observed != 0 || guardService.observed != 0 {
+		t.Fatalf("analytics=%d player=%d guard=%d", analytics.observed, observer.observed, guardService.observed)
+	}
 }
 
 func TestMetricsFailureDoesNotAffectSuccessfulPlayerPoll(t *testing.T) {
@@ -241,10 +285,12 @@ func TestMetricsFailureDoesNotAffectSuccessfulPlayerPoll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	completed := startSamplerForTest(t, p)
 
 	if err := p.RunOnce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	awaitSignal(t, completed, "server sample completion")
 	status := p.Status()
 	if guardService.observed != 1 || !status.LastSuccess.Equal(now) || status.LastError != "" {
 		t.Fatalf("guard=%d status=%+v", guardService.observed, status)
@@ -265,10 +311,12 @@ func TestPlayersFailureStillSamplesMetricsButSkipsCriticalObservers(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	completed := startSamplerForTest(t, p)
 
 	if err := p.RunOnce(t.Context()); err == nil {
 		t.Fatal("expected player poll error")
 	}
+	awaitSignal(t, completed, "server sample completion")
 	if analytics.observed != 0 || playerObserver.observed != 0 || guardService.observed != 0 {
 		t.Fatalf("analytics=%d player=%d guard=%d", analytics.observed, playerObserver.observed, guardService.observed)
 	}
@@ -285,12 +333,14 @@ func TestServerObservationCadenceUsesPollClock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	completed := startSamplerForTest(t, p)
 
 	for _, advance := range []time.Duration{0, time.Minute, 4 * time.Minute} {
 		now = now.Add(advance)
 		if err := p.RunOnce(t.Context()); err != nil {
 			t.Fatal(err)
 		}
+		awaitSignal(t, completed, "server sample completion")
 	}
 	if reader.metricsCalls != 3 || reader.infoCalls != 2 || reader.settingsCalls != 2 {
 		t.Fatalf("metrics=%d info=%d settings=%d", reader.metricsCalls, reader.infoCalls, reader.settingsCalls)
@@ -317,9 +367,11 @@ func TestInfoAndSettingsFailuresAreIsolated(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			completed := startSamplerForTest(t, p)
 			if err := p.RunOnce(t.Context()); err != nil {
 				t.Fatal(err)
 			}
+			awaitSignal(t, completed, "server sample completion")
 			if reader.infoCalls != 1 || reader.settingsCalls != 1 {
 				t.Fatalf("info=%d settings=%d", reader.infoCalls, reader.settingsCalls)
 			}
@@ -343,10 +395,12 @@ func TestOptionalRecorderFailuresDoNotAffectPlayerPoll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	completed := startSamplerForTest(t, p)
 
 	if err := p.RunOnce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	awaitSignal(t, completed, "server sample completion")
 	if guardService.observed != 1 || p.Status().LastError != "" {
 		t.Fatalf("guard=%d status=%+v", guardService.observed, p.Status())
 	}
@@ -503,6 +557,40 @@ func TestRunNeverOverlapsSlowCycles(t *testing.T) {
 	client.release <- struct{}{}
 	cancel()
 	<-done
+}
+
+func TestConcurrentRunOnceCallsAreSerialized(t *testing.T) {
+	client := &blockingClient{entered: make(chan struct{}, 2), release: make(chan struct{}, 2)}
+	p, err := New(client, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- p.RunOnce(t.Context()) }()
+	<-client.entered
+
+	secondStarted := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		secondDone <- p.RunOnce(t.Context())
+	}()
+	<-secondStarted
+	select {
+	case <-client.entered:
+		t.Fatal("concurrent RunOnce entered the player request")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	client.release <- struct{}{}
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	<-client.entered
+	client.release <- struct{}{}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRunAllowsActiveCycleToFinishAfterStop(t *testing.T) {
