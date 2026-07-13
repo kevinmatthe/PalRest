@@ -5,10 +5,85 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
 )
+
+func TestReadOnlyEndpointsDecodeOfficialSchemas(t *testing.T) {
+	fixtures := map[string]string{
+		"/players":  `{"players":[{"name":"Kevin","accountName":"kevin","playerId":"ABC","userId":"steam_1","ip":"192.0.2.1","ping":28.5,"location_x":123.25,"location_y":-99.5,"level":41,"building_count":119}]}`,
+		"/metrics":  `{"serverfps":58,"currentplayernum":1,"serverframetime":17.2,"maxplayernum":32,"uptime":3600,"basecampnum":2,"days":126}`,
+		"/info":     `{"version":"v0.7.2","servername":"Home","description":"Family","worldguid":"WORLD"}`,
+		"/settings": `{"Difficulty":"None","ExpRate":1.0,"ServerPlayerMaxNum":32,"RESTAPIEnabled":true,"Nested":{"Limit":12},"Modes":[1,2.5]}`,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method=%s, want GET", r.Method)
+		}
+		fixture, ok := fixtures[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fixture))
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "secret", time.Second)
+	ctx := context.Background()
+	players, err := client.ListPlayers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPlayers := []domain.Player{{
+		UserID: "steam_1", PlayerID: "ABC", Name: "Kevin", AccountName: "kevin",
+		IP: "192.0.2.1", Ping: 28.5, LocationX: 123.25, LocationY: -99.5, Level: 41, BuildingCount: 119,
+	}}
+	if !reflect.DeepEqual(players, wantPlayers) {
+		t.Fatalf("players=%#v, want %#v", players, wantPlayers)
+	}
+
+	metrics, err := client.Metrics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMetrics := domain.ServerMetrics{
+		ServerFPS: 58, CurrentPlayerNum: 1, ServerFrameTime: 17.2, MaxPlayerNum: 32,
+		UptimeSeconds: 3600, BaseCampNum: 2, Days: 126,
+	}
+	if metrics != wantMetrics {
+		t.Fatalf("metrics=%#v, want %#v", metrics, wantMetrics)
+	}
+
+	info, err := client.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInfo := domain.ServerInfo{
+		Version: "v0.7.2", ServerName: "Home", Description: "Family", WorldGUID: "WORLD",
+	}
+	if info != wantInfo {
+		t.Fatalf("info=%#v, want %#v", info, wantInfo)
+	}
+
+	settings, err := client.Settings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSettings := domain.ServerSettings{Values: map[string]any{
+		"Difficulty": "None", "ExpRate": 1.0, "ServerPlayerMaxNum": float64(32),
+		"RESTAPIEnabled": true, "Nested": map[string]any{"Limit": float64(12)},
+		"Modes": []any{float64(1), 2.5},
+	}}
+	if !reflect.DeepEqual(settings, wantSettings) {
+		t.Fatalf("settings=%#v, want %#v", settings, wantSettings)
+	}
+}
 
 func TestListPlayersUsesBasicAuthAndDecodesPlayers(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
