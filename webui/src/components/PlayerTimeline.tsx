@@ -18,7 +18,11 @@ type LogItem =
 type LogRow = { item: LogItem; separator: string };
 
 const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
-const KNOWN_EVENTS = new Set(['player_joined', 'player_left', 'player_attribute_changed']);
+const KNOWN_EVENTS = new Set([
+  'player_joined', 'player_left', 'player_attribute_changed',
+  'guard_warning_attempted', 'guard_warning_delivered', 'guard_warning_failed',
+  'enforcement_attempted', 'enforcement_succeeded', 'enforcement_failed',
+]);
 const LOCAL_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
 
 function localInputValue(date: Date) {

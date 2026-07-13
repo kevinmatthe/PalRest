@@ -2,8 +2,10 @@ package guard
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -522,6 +524,95 @@ func TestSnapshotRestoresWarningAndEnforcementFromRepository(t *testing.T) {
 	}
 	if snapshot.Enforcement.Status != "success" {
 		t.Fatalf("enforcement=%+v", snapshot.Enforcement)
+	}
+}
+
+func TestGuardResultsAtomicallyAppendUnifiedTimelineEvents(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 3*time.Hour)
+	h.observe(h.start, player())
+	warningAt := h.start.Add(91 * time.Minute)
+	warning := h.observe(warningAt, player()).Warnings[0]
+	secret := "https://admin:secret@example.invalid/private"
+	if err := h.service.RecordWarningResult(t.Context(), warning, errors.New(secret), warningAt); err != nil {
+		t.Fatal(err)
+	}
+	kickAt := h.start.Add(2 * time.Hour)
+	kick := h.observe(kickAt, player()).Kicks[0]
+	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err != nil {
+		t.Fatal(err)
+	}
+
+	timeline, err := h.repo.ReadSensitivePlayerTimeline(t.Context(), "test-admin", "steam_1", h.start, kickAt.Add(time.Second), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"guard_warning_attempted", "guard_warning_failed", "enforcement_attempted", "enforcement_succeeded"}
+	if len(timeline.Events) != len(want) {
+		t.Fatalf("events=%+v", timeline.Events)
+	}
+	for i, event := range timeline.Events {
+		if event.EventType != want[i] || event.Source != "guard" || event.SubjectID != "steam_1" || event.OccurredAt != event.ObservedAt {
+			t.Errorf("event[%d]=%+v", i, event)
+		}
+		if !json.Valid([]byte(event.PayloadJSON)) || strings.Contains(event.PayloadJSON, "secret") || strings.Contains(event.PayloadJSON, "example.invalid") {
+			t.Errorf("unsafe payload=%q", event.PayloadJSON)
+		}
+	}
+}
+
+func TestGuardUnifiedEventsAreIdempotentAndRollbackWithLegacyResult(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 3*time.Hour)
+	h.observe(h.start, player())
+	warningAt := h.start.Add(91 * time.Minute)
+	warning := h.observe(warningAt, player()).Warnings[0]
+	if err := h.service.RecordWarningResult(t.Context(), warning, nil, time.Time{}); err == nil {
+		t.Fatal("zero-time unified event should reject the whole result transaction")
+	}
+	warnings, err := h.repo.WarningEvents(t.Context(), warning.UserID, warning.Period.Key)
+	if err != nil || len(warnings) != 1 || warnings[0].Status != "pending" || warnings[0].Attempts != 0 {
+		t.Fatalf("warning rollback=%+v err=%v", warnings, err)
+	}
+	if err := h.service.RecordWarningResult(t.Context(), warning, nil, warningAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.RecordWarningResult(t.Context(), warning, nil, warningAt); err != nil {
+		t.Fatal(err)
+	}
+	warnings, err = h.repo.WarningEvents(t.Context(), warning.UserID, warning.Period.Key)
+	if err != nil || warnings[0].Attempts != 1 {
+		t.Fatalf("warning replay=%+v err=%v", warnings, err)
+	}
+	timeline, err := h.repo.ReadSensitivePlayerTimeline(t.Context(), "test-admin", warning.UserID, h.start, warningAt.Add(time.Second), 100)
+	if err != nil || len(timeline.Events) != 2 {
+		t.Fatalf("timeline=%+v err=%v", timeline.Events, err)
+	}
+}
+
+func TestKickUnifiedEventsAreIdempotentAndRollbackWithLegacyResult(t *testing.T) {
+	h := newHarness(t, time.Minute, 3*time.Hour)
+	h.observe(h.start, player())
+	kickAt := h.start.Add(time.Minute)
+	kick := h.observe(kickAt, player()).Kicks[0]
+	if err := h.service.RecordKickResult(t.Context(), kick, nil, time.Time{}); err == nil {
+		t.Fatal("zero-time unified event should reject the whole kick result transaction")
+	}
+	legacy, err := h.repo.EnforcementEventsForPolicy(t.Context(), kick.UserID, kick.Period.Key, kick.PolicyRevision)
+	if err != nil || len(legacy) != 0 {
+		t.Fatalf("kick rollback=%+v err=%v", legacy, err)
+	}
+	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err = h.repo.EnforcementEventsForPolicy(t.Context(), kick.UserID, kick.Period.Key, kick.PolicyRevision)
+	if err != nil || len(legacy) != 1 {
+		t.Fatalf("kick replay=%+v err=%v", legacy, err)
+	}
+	timeline, err := h.repo.ReadSensitivePlayerTimeline(t.Context(), "test-admin", kick.UserID, h.start, kickAt.Add(time.Second), 100)
+	if err != nil || len(timeline.Events) != 2 {
+		t.Fatalf("timeline=%+v err=%v", timeline.Events, err)
 	}
 }
 

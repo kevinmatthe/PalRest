@@ -414,6 +414,31 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, event.UserID, event.PeriodKey, event.Action, ev
 	return nil
 }
 
+// AppendActivityEvent adds an immutable business event inside the caller's
+// transaction. The boolean is false when the same stable event ID was already
+// committed, allowing action-result replays to remain idempotent.
+func (tx *Tx) AppendActivityEvent(event ActivityEvent) (bool, error) {
+	if err := validateActivityEvent(event); err != nil {
+		return false, fmt.Errorf("append activity event: %w", err)
+	}
+	result, err := tx.tx.Exec(`
+INSERT INTO activity_events(
+    id,event_type,subject_type,subject_id,occurred_at,observed_at,source,source_ref,
+    correlation_id,confidence,schema_version,payload_json
+) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, event.ID, event.EventType,
+		event.SubjectType, event.SubjectID, formatObservationTime(event.OccurredAt),
+		formatObservationTime(event.ObservedAt), event.Source, event.SourceRef,
+		event.CorrelationID, event.Confidence, event.SchemaVersion, event.PayloadJSON)
+	if err != nil {
+		return false, fmt.Errorf("append activity event %q: %w", event.ID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read activity event insert result: %w", err)
+	}
+	return rows == 1, nil
+}
+
 func (tx *Tx) EnforcementRetry(userID, periodKey, policyRevision string) (EnforcementRetry, error) {
 	rows, err := tx.tx.Query(`
 SELECT result, created_at FROM enforcement_events

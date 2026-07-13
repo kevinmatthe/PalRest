@@ -2,6 +2,8 @@ package observation
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -57,6 +59,15 @@ type eventPayload struct {
 	BuildingCount int    `json:"building_count,omitempty"`
 }
 
+type attributeChange struct {
+	Old any `json:"old"`
+	New any `json:"new"`
+}
+
+type attributeChangedPayload struct {
+	Changes map[string]attributeChange `json:"changes"`
+}
+
 func New(recorder Recorder, maxGap time.Duration, movementThreshold float64, maxSampleInterval, rawRetention time.Duration, idGenerator func() string) *Service {
 	if recorder == nil {
 		panic("observation: nil recorder")
@@ -106,6 +117,7 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 	write := store.PlayerObservationWrite{}
 	for _, player := range ordered {
 		previous, existed := s.online[player.UserID]
+		continuous := existed && at.Sub(previous.lastAt) <= s.maxGap
 		state := previous
 		state.player = player
 		state.lastAt = at
@@ -121,6 +133,16 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 			state.segmentID = ""
 			state.lastSampleAt = time.Time{}
 			state.lastPrivateAt = time.Time{}
+		}
+		if continuous {
+			event, changed, eventErr := s.playerAttributeChangedEvent(previous.player, player, at, correlationID)
+			if eventErr != nil {
+				s.mu.Unlock()
+				return eventErr
+			}
+			if changed {
+				write.Events = append(write.Events, event)
+			}
 		}
 
 		shouldPrivateSample := state.lastPrivateAt.IsZero() ||
@@ -210,6 +232,36 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		}
 	}
 	return nil
+}
+
+func (s *Service) playerAttributeChangedEvent(previous, current domain.Player, at time.Time, correlationID string) (store.ActivityEvent, bool, error) {
+	changes := make(map[string]attributeChange, 4)
+	if previous.PlayerID != "" && current.PlayerID != "" && previous.PlayerID != current.PlayerID {
+		changes["player_id"] = attributeChange{Old: previous.PlayerID, New: current.PlayerID}
+	}
+	if previous.Name != "" && current.Name != "" && previous.Name != current.Name {
+		changes["name"] = attributeChange{Old: previous.Name, New: current.Name}
+	}
+	if previous.Level != current.Level {
+		changes["level"] = attributeChange{Old: previous.Level, New: current.Level}
+	}
+	if previous.BuildingCount != current.BuildingCount {
+		changes["building_count"] = attributeChange{Old: previous.BuildingCount, New: current.BuildingCount}
+	}
+	if len(changes) == 0 {
+		return store.ActivityEvent{}, false, nil
+	}
+	payload, err := json.Marshal(attributeChangedPayload{Changes: changes})
+	if err != nil {
+		return store.ActivityEvent{}, false, fmt.Errorf("observe players: encode player_attribute_changed payload: %w", err)
+	}
+	digest := sha256.Sum256([]byte(current.UserID + "\x00" + at.UTC().Format(time.RFC3339Nano) + "\x00" + correlationID + "\x00" + string(payload)))
+	id := "player_attribute_changed_" + hex.EncodeToString(digest[:])
+	return store.ActivityEvent{
+		ID: id, EventType: "player_attribute_changed", SubjectType: "player", SubjectID: current.UserID,
+		OccurredAt: at, ObservedAt: at, Source: "palworld_rest", SourceRef: correlationID,
+		CorrelationID: correlationID, Confidence: "observed", SchemaVersion: 1, PayloadJSON: string(payload),
+	}, true, nil
 }
 
 func (s *Service) playerEvent(eventType string, player domain.Player, at time.Time, correlationID string) (store.ActivityEvent, error) {

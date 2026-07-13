@@ -100,6 +100,22 @@ describe('PlayerTimeline', () => {
     expect(screen.queryByText('future_event')).not.toBeInTheDocument();
   });
 
+  it('labels unified guard result and player attribute events', async () => {
+	vi.mocked(api.getPlayerTimeline).mockResolvedValue({
+	  ...empty,
+	  events: [
+		{ id: 'warning', event_type: 'guard_warning_failed', occurred_at: '2026-07-13T08:00:00Z', observed_at: '2026-07-13T08:00:00Z', source: 'guard', confidence: 'observed', summary: 'guard_warning_failed', data: { error_code: 'delivery_failed' } },
+		{ id: 'kick', event_type: 'enforcement_succeeded', occurred_at: '2026-07-13T08:01:00Z', observed_at: '2026-07-13T08:01:00Z', source: 'guard', confidence: 'observed', summary: 'enforcement_succeeded', data: { outcome: 'success' } },
+		{ id: 'attribute', event_type: 'player_attribute_changed', occurred_at: '2026-07-13T08:02:00Z', observed_at: '2026-07-13T08:02:00Z', source: 'palworld_rest', confidence: 'observed', summary: 'player_attribute_changed', data: { changes: { level: { old: 41, new: 42 } } } },
+	  ],
+	});
+	render(<PlayerTimeline players={players} refreshKey={0} />);
+	fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
+	expect(await screen.findByText('Guard Warning Failed')).toBeInTheDocument();
+	expect(screen.getByText('Enforcement Succeeded')).toBeInTheDocument();
+	expect(screen.getByText('Player Attribute Changed')).toBeInTheDocument();
+  });
+
   it('does not infer a gap from elapsed time when the authoritative segment is unchanged', async () => {
     vi.mocked(api.getPlayerTimeline).mockResolvedValue({
       ...empty,

@@ -132,6 +132,103 @@ func TestPrivateSamplesTrackSensitiveChangesWithoutPingChurn(t *testing.T) {
 	}
 }
 
+func TestConsecutiveObservationsDeriveKnownPlayerAttributeChanges(t *testing.T) {
+	recorder := &recorderFake{}
+	svc := newService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	before := player("u", 10, 10)
+	after := before
+	after.PlayerID = "pal-u-2"
+	after.Name = "renamed"
+	after.Level = 42
+	after.BuildingCount = 13
+	after.IP = "198.51.100.4"
+	after.Ping = 999
+
+	if err := svc.Observe(t.Context(), base, []domain.Player{before}, "poll-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Observe(t.Context(), base.Add(time.Minute), []domain.Player{after}, "poll-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	events := recorder.writes[1].Events
+	if len(events) != 1 || events[0].EventType != "player_attribute_changed" || events[0].SubjectID != "u" {
+		t.Fatalf("events=%+v", events)
+	}
+	var payload struct {
+		Changes map[string]struct {
+			Old any `json:"old"`
+			New any `json:"new"`
+		} `json:"changes"`
+	}
+	if err := json.Unmarshal([]byte(events[0].PayloadJSON), &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"player_id", "name", "level", "building_count"} {
+		if _, ok := payload.Changes[field]; !ok {
+			t.Errorf("missing change %q in %s", field, events[0].PayloadJSON)
+		}
+	}
+	if strings.Contains(events[0].PayloadJSON, before.IP) || strings.Contains(events[0].PayloadJSON, after.IP) || strings.Contains(events[0].PayloadJSON, "999") || len(payload.Changes) != 4 {
+		t.Fatalf("unsafe or unexpected payload=%s", events[0].PayloadJSON)
+	}
+}
+
+func TestAttributeChangesRequireContinuousKnownPriorObservation(t *testing.T) {
+	recorder := &recorderFake{}
+	svc := newService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	initial := player("u", 10, 10)
+	initial.Name = ""
+	if err := svc.Observe(t.Context(), base, []domain.Player{initial}, "poll-1"); err != nil {
+		t.Fatal(err)
+	}
+	known := initial
+	known.Name = "known"
+	if err := svc.Observe(t.Context(), base.Add(time.Minute), []domain.Player{known}, "poll-2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorder.writes[1].Events; len(got) != 0 {
+		t.Fatalf("unknown-to-known change=%+v", got)
+	}
+	changed := known
+	changed.Level++
+	if err := svc.Observe(t.Context(), base.Add(3*time.Minute), []domain.Player{changed}, "poll-3"); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorder.writes[2].Events; len(got) != 0 {
+		t.Fatalf("post-gap events=%+v", got)
+	}
+}
+
+func TestAttributeChangeEventIDIsStableAcrossReplay(t *testing.T) {
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	derive := func(prefix string) store.ActivityEvent {
+		recorder := &recorderFake{}
+		sequence := 0
+		svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, func() string {
+			sequence++
+			return fmt.Sprintf("%s-%d", prefix, sequence)
+		})
+		before := player("u", 0, 0)
+		before.IP = ""
+		after := before
+		after.Level++
+		if err := svc.Observe(t.Context(), base, []domain.Player{before}, "poll-1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.Observe(t.Context(), base.Add(time.Minute), []domain.Player{after}, "poll-2"); err != nil {
+			t.Fatal(err)
+		}
+		return recorder.writes[1].Events[0]
+	}
+	first, replay := derive("first"), derive("replay")
+	if first.ID != replay.ID || first.PayloadJSON != replay.PayloadJSON {
+		t.Fatalf("first=%+v replay=%+v", first, replay)
+	}
+}
+
 func TestMissingIPSkipsPrivateSampleWithoutBlockingObservationOrBaseline(t *testing.T) {
 	recorder := &recorderFake{}
 	svc := newService(recorder)

@@ -262,8 +262,84 @@ func safeEvent(event store.ActivityEvent) adminEventDTO {
 		result.Summary = "unsupported event payload"
 		return result
 	}
-	if event.EventType != "player_joined" && event.EventType != "player_left" && event.EventType != "player_attribute_changed" {
+	if event.EventType != "player_joined" && event.EventType != "player_left" && event.EventType != "player_attribute_changed" &&
+		event.EventType != "guard_warning_attempted" && event.EventType != "guard_warning_delivered" && event.EventType != "guard_warning_failed" &&
+		event.EventType != "enforcement_attempted" && event.EventType != "enforcement_succeeded" && event.EventType != "enforcement_failed" {
 		result.Summary = "event payload unavailable"
+		return result
+	}
+	if event.EventType == "player_attribute_changed" {
+		var payload struct {
+			Changes map[string]struct {
+				Old any `json:"old"`
+				New any `json:"new"`
+			} `json:"changes"`
+		}
+		if json.Unmarshal([]byte(event.PayloadJSON), &payload) != nil {
+			result.Summary = "invalid event payload"
+			return result
+		}
+		changes := make(map[string]any, len(payload.Changes))
+		for key, change := range payload.Changes {
+			switch key {
+			case "player_id", "name":
+				oldValue, oldOK := change.Old.(string)
+				newValue, newOK := change.New.(string)
+				if oldOK && newOK {
+					changes[key] = map[string]any{"old": oldValue, "new": newValue}
+				}
+			case "level", "building_count":
+				oldValue, oldOK := change.Old.(float64)
+				newValue, newOK := change.New.(float64)
+				if oldOK && newOK {
+					changes[key] = map[string]any{"old": oldValue, "new": newValue}
+				}
+			}
+		}
+		result.Data = map[string]any{"changes": changes}
+		return result
+	}
+	if strings.HasPrefix(event.EventType, "guard_warning_") || strings.HasPrefix(event.EventType, "enforcement_") {
+		var payload struct {
+			Action      string `json:"action"`
+			Attempt     int    `json:"attempt"`
+			PlayerName  string `json:"player_name"`
+			ThresholdMS int64  `json:"threshold_ms"`
+			Generation  int64  `json:"generation"`
+			ResetAt     string `json:"reset_at"`
+			Outcome     string `json:"outcome"`
+			ErrorCode   string `json:"error_code"`
+		}
+		if json.Unmarshal([]byte(event.PayloadJSON), &payload) != nil {
+			result.Summary = "invalid event payload"
+			return result
+		}
+		data := make(map[string]any)
+		if payload.Action != "" {
+			data["action"] = payload.Action
+		}
+		if payload.Attempt > 0 {
+			data["attempt"] = payload.Attempt
+		}
+		if payload.PlayerName != "" {
+			data["player_name"] = payload.PlayerName
+		}
+		if payload.ThresholdMS > 0 {
+			data["threshold_ms"] = payload.ThresholdMS
+		}
+		if payload.Generation > 0 {
+			data["generation"] = payload.Generation
+		}
+		if payload.ResetAt != "" {
+			data["reset_at"] = payload.ResetAt
+		}
+		if payload.Outcome != "" {
+			data["outcome"] = payload.Outcome
+		}
+		if payload.ErrorCode != "" {
+			data["error_code"] = payload.ErrorCode
+		}
+		result.Data = data
 		return result
 	}
 	var payload struct {

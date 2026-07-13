@@ -212,6 +212,31 @@ func TestAdminTimelineRequiresAuthAndReturnsOnlySafeDecodedEvents(t *testing.T) 
 	}
 }
 
+func TestSafeEventDecodesUnifiedGuardAndAttributeEventsWithoutUnknownFields(t *testing.T) {
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	tests := []struct {
+		eventType string
+		payload   string
+		wantKey   string
+	}{
+		{"guard_warning_failed", `{"action":"warning","outcome":"failure","error_code":"delivery_failed","password":"secret"}`, "error_code"},
+		{"enforcement_succeeded", `{"action":"kick","outcome":"success","generation":2,"token":"secret"}`, "generation"},
+		{"player_attribute_changed", `{"changes":{"name":{"old":"Kevin","new":"Avery"},"level":{"old":41,"new":42}},"ip":"192.0.2.1"}`, "changes"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.eventType, func(t *testing.T) {
+			got := safeEvent(store.ActivityEvent{ID: "e", EventType: tc.eventType, OccurredAt: at, ObservedAt: at, Source: "guard", Confidence: "observed", SchemaVersion: 1, PayloadJSON: tc.payload})
+			if got.Summary != tc.eventType || got.Data[tc.wantKey] == nil {
+				t.Fatalf("event=%+v", got)
+			}
+			encoded, err := json.Marshal(got)
+			if err != nil || strings.Contains(string(encoded), "secret") || strings.Contains(string(encoded), "192.0.2.1") {
+				t.Fatalf("encoded=%s err=%v", encoded, err)
+			}
+		})
+	}
+}
+
 func TestAdminServerObservationRoutesRequireAuthentication(t *testing.T) {
 	repo := &observationQueriesFake{}
 	server := timelineServer(repo)

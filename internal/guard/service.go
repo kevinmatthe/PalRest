@@ -2,6 +2,9 @@ package guard
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -257,7 +260,28 @@ func (s *Service) RecordWarningResult(ctx context.Context, decision WarningDecis
 			}
 			next = now.Add(delay)
 		}
-		return tx.UpdateWarningResult(decision.UserID, decision.Period.Key, decision.Threshold, status, errorSummary, next, now)
+		ref := guardEventRef("warning", decision.UserID, decision.Period.Key, fmt.Sprintf("%d", decision.Threshold.Milliseconds()), now)
+		attempted, err := appendGuardActivity(tx, ref, "01", "guard_warning_attempted", decision.UserID, now, map[string]any{
+			"action": "warning", "attempt": event.Attempts + 1, "player_name": decision.PlayerName,
+			"threshold_ms": decision.Threshold.Milliseconds(),
+		})
+		if err != nil || !attempted {
+			return err
+		}
+		if err := tx.UpdateWarningResult(decision.UserID, decision.Period.Key, decision.Threshold, status, errorSummary, next, now); err != nil {
+			return err
+		}
+		resultType := "guard_warning_delivered"
+		payload := map[string]any{
+			"action": "warning", "attempt": event.Attempts + 1, "outcome": status,
+			"player_name": decision.PlayerName, "threshold_ms": decision.Threshold.Milliseconds(),
+		}
+		if resultErr != nil {
+			resultType = "guard_warning_failed"
+			payload["error_code"] = "delivery_failed"
+		}
+		_, err = appendGuardActivity(tx, ref, "02", resultType, decision.UserID, now, payload)
+		return err
 	})
 }
 
@@ -563,10 +587,31 @@ func (s *Service) RecordKickResult(ctx context.Context, decision KickDecision, r
 		errorSummary = sanitizeError(resultErr)
 	}
 	err := s.repo.WithTx(ctx, func(tx *store.Tx) error {
-		return tx.AppendEnforcement(store.EnforcementEvent{
+		ref := guardEventRef("kick", decision.UserID, decision.Period.Key, fmt.Sprintf("%s|%d", decision.PolicyRevision, decision.Generation), now)
+		attempted, appendErr := appendGuardActivity(tx, ref, "01", "enforcement_attempted", decision.UserID, now, map[string]any{
+			"action": "kick", "generation": decision.Generation, "player_name": decision.PlayerName,
+			"reset_at": decision.ResetAt.UTC().Format(time.RFC3339Nano),
+		})
+		if appendErr != nil || !attempted {
+			return appendErr
+		}
+		if err := tx.AppendEnforcement(store.EnforcementEvent{
 			UserID: decision.UserID, PeriodKey: decision.Period.Key, Action: "kick", Result: result,
 			PolicyRevision: decision.PolicyRevision, Generation: decision.Generation, ErrorSummary: errorSummary, CreatedAt: now,
-		})
+		}); err != nil {
+			return err
+		}
+		resultType := "enforcement_succeeded"
+		payload := map[string]any{
+			"action": "kick", "generation": decision.Generation, "outcome": result,
+			"player_name": decision.PlayerName, "reset_at": decision.ResetAt.UTC().Format(time.RFC3339Nano),
+		}
+		if resultErr != nil {
+			resultType = "enforcement_failed"
+			payload["error_code"] = "kick_failed"
+		}
+		_, appendErr = appendGuardActivity(tx, ref, "02", resultType, decision.UserID, now, payload)
+		return appendErr
 	})
 	if err != nil {
 		return err
@@ -575,6 +620,23 @@ func (s *Service) RecordKickResult(ctx context.Context, decision KickDecision, r
 		s.kickedConnections[key] = true
 	}
 	return nil
+}
+
+func guardEventRef(action, userID, periodKey, discriminator string, at time.Time) string {
+	sum := sha256.Sum256([]byte(action + "\x00" + userID + "\x00" + periodKey + "\x00" + discriminator + "\x00" + at.UTC().Format(time.RFC3339Nano)))
+	return "guard_action_" + hex.EncodeToString(sum[:])
+}
+
+func appendGuardActivity(tx *store.Tx, ref, order, eventType, userID string, at time.Time, payloadValue map[string]any) (bool, error) {
+	payload, err := json.Marshal(payloadValue)
+	if err != nil {
+		return false, fmt.Errorf("encode guard activity event: %w", err)
+	}
+	return tx.AppendActivityEvent(store.ActivityEvent{
+		ID: ref + "_" + order, EventType: eventType, SubjectType: "player", SubjectID: userID,
+		OccurredAt: at, ObservedAt: at, Source: "guard", SourceRef: ref, CorrelationID: ref,
+		Confidence: "observed", SchemaVersion: 1, PayloadJSON: string(payload),
+	})
 }
 
 func (s *Service) retryDelay(attempts int) time.Duration {
