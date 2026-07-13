@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { AlertTriangle, Compass, Crosshair, Map as MapIcon, Radio, Route, Search, ShieldAlert } from 'lucide-react';
 import { ApiError, getPlayerTimeline, type Player, type PlayerTimelineResponse, type TimelineEvent } from '../api';
 
@@ -16,12 +18,15 @@ type LogItem =
   | { kind: 'private'; at: string; key: string; item: PlayerTimelineResponse['private_samples'][number] };
 type LogRow = { item: LogItem; separator: string };
 type TrajectorySample = PlayerTimelineResponse['trajectories'][number];
-type MapPoint = { key: string; sample: TrajectorySample; x: number; y: number };
+type MapPoint = { key: string; sample: TrajectorySample; latLng: L.LatLngExpression };
 type MapBounds = { minX: number; maxX: number; minY: number; maxY: number };
 
 const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
-const PALWORLD_BOUNDS: MapBounds = { minX: -500000, maxX: 500000, minY: -500000, maxY: 500000 };
-const PALWORLD_MAP_IMAGE = '/palworld-map/world.png';
+// Same Leaflet CRS.Simple coordinate transform used by zaigie/palworld-server-tool.
+// LAND_SCAPE order in the reference repo is [maxX, maxY, minX, minY].
+const PALWORLD_LANDSCAPE = [349400, 724400, -1099400, -724400] as const;
+const PALWORLD_TILE_URL = 'https://palworld.gg/images/tiles/{z}/{x}/{y}.png';
+const PALWORLD_TILE_BOUNDS: L.LatLngBoundsExpression = [[0, 0], [-256, 256]];
 const KNOWN_EVENTS = new Set([
   'player_joined', 'player_left', 'player_attribute_changed',
   'guard_warning_attempted', 'guard_warning_delivered', 'guard_warning_failed',
@@ -145,8 +150,12 @@ function projectSample(sample: TrajectorySample, bounds: MapBounds): { x: number
   return { x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) };
 }
 
-function projectWorldSample(sample: TrajectorySample): { x: number; y: number } {
-  return projectSample(sample, PALWORLD_BOUNDS);
+function projectWorldSample(sample: TrajectorySample): L.LatLngExpression {
+  const [maxX, maxY, minX, minY] = PALWORLD_LANDSCAPE;
+  if (sample.x >= -256 && sample.x <= 256) return [sample.x, sample.y];
+  const x = -256 + (256 * (sample.x - minX)) / (maxX - minX);
+  const y = (256 * (sample.y - minY)) / (maxY - minY);
+  return [x, y];
 }
 
 function splitRouteSegments(points: MapPoint[]) {
@@ -333,12 +342,15 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
 }
 
 function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: { activeIndex: number; items: LogItem[]; loading: boolean; onCursorChange: (index: number) => void; selected: boolean }) {
+  const mapElementRef = useRef<HTMLDivElement>(null);
+  const leafletRef = useRef<L.Map | null>(null);
+  const overlayLayerRef = useRef<L.LayerGroup | null>(null);
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
   const samples = useMemo(() => trajectorySamples(items), [items]);
   const [mapAvailable, setMapAvailable] = useState(true);
   const points = useMemo<MapPoint[]>(() => {
     return samples.map((sample) => {
-      const position = projectWorldSample(sample);
-      return { ...position, key: `${sample.segment_id}:${sample.observed_at}:${sample.source_ref}`, sample };
+      return { key: `${sample.segment_id}:${sample.observed_at}:${sample.source_ref}`, latLng: projectWorldSample(sample), sample };
     });
   }, [samples]);
   const segments = useMemo(() => splitRouteSegments(points), [points]);
@@ -350,6 +362,78 @@ function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: 
   const cursorLeft = activeItem ? timelinePercent(activeItem.at, startMS, endMS) : 0;
   const activeLabel = activeItem ? activeItem.kind === 'event' ? `光标：${eventLabel(activeItem.item.event_type)}` : activeItem.kind === 'trajectory' ? '光标：位置采样' : '光标：私有玩家采样' : selected ? '等待观察记录' : '未选择玩家';
 
+  useEffect(() => {
+    if (!mapElementRef.current || leafletRef.current) return;
+    const map = L.map(mapElementRef.current, {
+      attributionControl: false,
+      crs: L.CRS.Simple,
+      center: [-128, 128],
+      maxBounds: PALWORLD_TILE_BOUNDS,
+      maxBoundsViscosity: 0.8,
+      minZoom: 0,
+      maxZoom: 6,
+      zoom: 2,
+      zoomControl: true,
+    });
+    const tileLayer = L.tileLayer(PALWORLD_TILE_URL, {
+      bounds: PALWORLD_TILE_BOUNDS,
+      maxNativeZoom: 6,
+      minNativeZoom: 0,
+      noWrap: true,
+      tileSize: 256,
+    });
+    tileLayer.on('tileerror', () => setMapAvailable(false));
+    tileLayer.addTo(map);
+    map.fitBounds(PALWORLD_TILE_BOUNDS);
+    const overlay = L.layerGroup().addTo(map);
+    leafletRef.current = map;
+    tileLayerRef.current = tileLayer;
+    overlayLayerRef.current = overlay;
+    return () => {
+      map.remove();
+      leafletRef.current = null;
+      tileLayerRef.current = null;
+      overlayLayerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = leafletRef.current;
+    const overlay = overlayLayerRef.current;
+    if (!map || !overlay) return;
+    overlay.clearLayers();
+    segments.forEach((segment) => {
+      if (segment.length > 1) {
+        L.polyline(segment.map((point) => point.latLng), {
+          color: '#0f7285',
+          opacity: 0.88,
+          weight: 4,
+          lineCap: 'round',
+          lineJoin: 'round',
+        }).addTo(overlay);
+      }
+    });
+    points.forEach((point) => {
+      L.circleMarker(point.latLng, {
+        radius: 4,
+        color: '#0f7285',
+        fillColor: '#fffdf7',
+        fillOpacity: 1,
+        weight: 2,
+      }).addTo(overlay);
+    });
+    if (activePoint) {
+      L.circleMarker(activePoint, {
+        radius: 8,
+        color: '#8d5a0f',
+        fillColor: '#ca8519',
+        fillOpacity: 0.92,
+        weight: 3,
+      }).addTo(overlay);
+      map.panTo(activePoint, { animate: false });
+    }
+  }, [activePoint, points, segments]);
+
   return <section className="timeline-map-panel" aria-label="地图回放">
     <div className="timeline-map-header">
       <div>
@@ -359,15 +443,8 @@ function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: 
       <span className="timeline-map-count"><Route size={15} /> {samples.length} 个坐标</span>
     </div>
     <div className="timeline-map-surface">
-      {mapAvailable ? <img alt="Palworld 完整游戏地图" className="timeline-real-map" src={PALWORLD_MAP_IMAGE} onError={() => setMapAvailable(false)} /> : <div className="timeline-map-missing" role="status">缺少真实地图资源：请将参考仓库中的 Palworld 地图图片放到 <code>webui/public/palworld-map/world.png</code></div>}
-      <svg aria-label="轨迹覆盖层" className="timeline-world-map timeline-world-map--overlay" data-testid="timeline-map" preserveAspectRatio="xMidYMid meet" role="img" viewBox="0 0 100 100">
-        {segments.map((segment) => <polyline className="timeline-map-route" data-testid="timeline-map-route" key={segment[0].key} points={segment.map((point) => `${point.x},${point.y}`).join(' ')} />)}
-        {points.map((point) => <circle className="timeline-map-point" cx={point.x} cy={point.y} key={point.key} r="1.35" />)}
-        {activePoint ? <g className="timeline-map-active" data-testid="timeline-map-active">
-          <circle cx={activePoint.x} cy={activePoint.y} r="3.2" />
-          <circle cx={activePoint.x} cy={activePoint.y} r="1.2" />
-        </g> : null}
-      </svg>
+      <div aria-label="Palworld 完整游戏地图" className="timeline-leaflet-map" data-testid="timeline-map" ref={mapElementRef} role="img" />
+      {!mapAvailable ? <div className="timeline-map-missing" role="status">真实地图瓦片加载失败：当前使用参考仓库同款瓦片源 <code>https://palworld.gg/images/tiles/{"{z}"}/{"{x}"}/{"{y}"}.png</code></div> : null}
       {!points.length ? <div className="timeline-map-empty">{loading ? '正在加载轨迹证据。' : selected ? '当前时间范围没有位置样本，已显示完整地图。' : '选择玩家后叠加轨迹。'}</div> : null}
     </div>
     <div className="timeline-cursor">

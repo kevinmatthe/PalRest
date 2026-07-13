@@ -305,15 +305,10 @@ select:focus-visible {
 .timeline-map-header h3 { margin: 0; color: #14241f; font-size: 1rem; line-height: 1.3; overflow-wrap: anywhere; }
 .timeline-map-count { display: inline-flex; align-items: center; gap: 0.35rem; min-height: 2rem; padding: 0 0.55rem; border: 1px solid #b7c7be; border-radius: 0.35rem; color: #255a50; background: #eef7f3; font-size: 0.875rem; font-weight: 800; white-space: nowrap; }
 .timeline-map-surface { position: relative; display: grid; min-height: 18rem; overflow: hidden; border: 1px solid #9fb1a7; border-radius: 0.35rem; color: rgba(52, 73, 63, 0.55); background: #1b2f35; }
-.timeline-map-surface svg, .timeline-real-map { display: block; width: 100%; height: clamp(20rem, 54vw, 34rem); max-height: 72vh; }
-.timeline-real-map { object-fit: contain; background: #122226; }
-.timeline-world-map--overlay { position: absolute; inset: 0; pointer-events: none; }
+.timeline-leaflet-map { display: block; width: 100%; height: clamp(20rem, 54vw, 34rem); max-height: 72vh; background: #122226; }
+.timeline-leaflet-map .leaflet-control-zoom a { color: #1d2923; }
 .timeline-map-missing { display: grid; min-height: clamp(20rem, 54vw, 34rem); max-height: 72vh; place-items: center; padding: 1rem; color: #f7f5ed; background: #26343a; text-align: center; font-weight: 800; line-height: 1.6; }
 .timeline-map-missing code { color: #fff6dd; overflow-wrap: anywhere; }
-.timeline-map-route { fill: none; stroke: #176b7c; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.25; vector-effect: non-scaling-stroke; }
-.timeline-map-point { fill: #fffdf7; stroke: #176b7c; stroke-width: 0.6; vector-effect: non-scaling-stroke; }
-.timeline-map-active circle:first-child { fill: rgba(202, 133, 25, 0.22); stroke: #8d5a0f; stroke-width: 0.8; vector-effect: non-scaling-stroke; }
-.timeline-map-active circle:last-child { fill: #ca8519; stroke: #fffdf7; stroke-width: 0.55; vector-effect: non-scaling-stroke; }
 .timeline-map-empty { position: absolute; right: 1rem; bottom: 1rem; max-width: min(22rem, calc(100% - 2rem)); padding: 0.65rem 0.75rem; border: 1px solid rgba(151, 167, 157, 0.78); border-radius: 0.35rem; color: #2c4139; background: rgba(255, 255, 247, 0.86); font-weight: 800; line-height: 1.45; box-shadow: 0 0.45rem 1.4rem rgba(31, 47, 40, 0.14); }
 .timeline-cursor { display: grid; min-width: 0; gap: 0.5rem; }
 .timeline-cursor-track { position: relative; height: 1.5rem; border-radius: 999px; background: linear-gradient(90deg, #dce5de, #f7ead4); }

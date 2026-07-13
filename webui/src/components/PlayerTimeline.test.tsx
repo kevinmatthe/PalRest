@@ -165,13 +165,12 @@ describe('PlayerTimeline', () => {
     render(<PlayerTimeline players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
 
-    expect(await screen.findByRole('img', { name: /Palworld 完整游戏地图/i })).toHaveAttribute('src', '/palworld-map/world.png');
     const map = await screen.findByTestId('timeline-map');
     expect(map).toBeInTheDocument();
-    expect(map).toHaveAttribute('viewBox', '0 0 100 100');
+    expect(map).toHaveClass('timeline-leaflet-map');
     const mapReplay = screen.getByLabelText(/地图回放/i);
     expect(screen.getByText('2 个坐标')).toBeInTheDocument();
-    expect(screen.getAllByTestId('timeline-map-route')).toHaveLength(1);
+    expect(mapReplay.querySelector('.leaflet-container')).not.toBeNull();
     expect(screen.getByLabelText(/时间轴光标/i)).toHaveValue('0');
     expect(screen.getByText('100, 200')).toBeInTheDocument();
     expect(screen.getByText('180, 260')).toBeInTheDocument();
