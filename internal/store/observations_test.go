@@ -1,6 +1,8 @@
 package store
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"math"
 	"strings"
@@ -9,6 +11,18 @@ import (
 
 	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
 )
+
+func testDocumentObservation(kind string, at time.Time, canonical string, event *ActivityEvent) ServerDocumentObservation {
+	digest := sha256.Sum256([]byte(canonical))
+	return ServerDocumentObservation{
+		Kind: kind, At: at, Canonical: []byte(canonical), Hash: hex.EncodeToString(digest[:]), Event: event,
+	}
+}
+
+func testDocumentHash(canonical []byte) string {
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:])
+}
 
 func observationEvent(id, eventType, userID string, occurredAt time.Time) ActivityEvent {
 	return ActivityEvent{
@@ -101,6 +115,36 @@ func TestServerMetricObservationRollsBackEventAndMetricTogether(t *testing.T) {
 	}
 }
 
+func TestServerMetricObservationRejectsCASConflictWithoutWrites(t *testing.T) {
+	repo, _ := openTemp(t)
+	t1 := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	first := serverMetrics(100)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: t1, Metrics: first}); err != nil {
+		t.Fatal(err)
+	}
+	expected := &ServerMetricToken{Exists: true, At: t1, Metrics: first}
+	second := serverMetrics(80)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: t1.Add(time.Minute), Metrics: second, Expected: expected}); err != nil {
+		t.Fatal(err)
+	}
+	event := serverObservationEvent("must-rollback", "server_restarted", t1.Add(2*time.Minute), `{}`)
+	err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{
+		At: t1.Add(2 * time.Minute), Metrics: serverMetrics(1), Event: &event, Expected: expected,
+	})
+	if !errors.Is(err, ErrObservationConflict) {
+		t.Fatalf("err=%v want ErrObservationConflict", err)
+	}
+	for table, want := range map[string]int{"server_metric_samples": 2, "activity_events": 0} {
+		var count int
+		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != want {
+			t.Fatalf("%s count=%d want=%d", table, count, want)
+		}
+	}
+}
+
 func TestServerMetricObservationValidation(t *testing.T) {
 	valid := serverMetrics(1)
 	tests := map[string]func(*domain.ServerMetrics){
@@ -158,19 +202,19 @@ func TestLatestServerMetricsSurvivesReopen(t *testing.T) {
 func TestServerDocumentObservationRecordsRecurrentTransitions(t *testing.T) {
 	repo, _ := openTemp(t)
 	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
-	a := ServerDocumentObservation{Kind: "settings", At: base, Canonical: []byte(`{"value":"A"}`), Hash: "hash-a"}
+	a := testDocumentObservation("settings", base, `{"value":"A"}`, nil)
 	changed, err := repo.RecordServerDocumentObservation(t.Context(), a)
 	if err != nil || !changed {
 		t.Fatalf("first changed=%v err=%v", changed, err)
 	}
 	bEvent := serverObservationEvent("settings-b", "server_settings_changed", base.Add(time.Minute), `{"old_hash":"hash-a","new_hash":"hash-b","summary":"server settings changed"}`)
-	b := ServerDocumentObservation{Kind: "settings", At: base.Add(time.Minute), Canonical: []byte(`{"value":"B"}`), Hash: "hash-b", Event: &bEvent}
+	b := testDocumentObservation("settings", base.Add(time.Minute), `{"value":"B"}`, &bEvent)
 	changed, err = repo.RecordServerDocumentObservation(t.Context(), b)
 	if err != nil || !changed {
 		t.Fatalf("B changed=%v err=%v", changed, err)
 	}
 	aEvent := serverObservationEvent("settings-a", "server_settings_changed", base.Add(2*time.Minute), `{"old_hash":"hash-b","new_hash":"hash-a","summary":"server settings changed"}`)
-	aAgain := ServerDocumentObservation{Kind: "settings", At: base.Add(2 * time.Minute), Canonical: []byte(`{"value":"A"}`), Hash: "hash-a", Event: &aEvent}
+	aAgain := testDocumentObservation("settings", base.Add(2*time.Minute), `{"value":"A"}`, &aEvent)
 	changed, err = repo.RecordServerDocumentObservation(t.Context(), aAgain)
 	if err != nil || !changed {
 		t.Fatalf("A again changed=%v err=%v", changed, err)
@@ -194,7 +238,7 @@ func TestServerDocumentObservationRecordsRecurrentTransitions(t *testing.T) {
 		}
 	}
 	latest, err := repo.LatestServerDocument(t.Context(), "settings")
-	if err != nil || latest.At != aAgain.At || latest.Hash != "hash-a" || string(latest.Canonical) != `{"value":"A"}` || latest.Event == nil || *latest.Event != aEvent {
+	if err != nil || latest.At != unchanged.At || latest.Hash != a.Hash || string(latest.Canonical) != `{"value":"A"}` || latest.Event != nil {
 		t.Fatalf("latest=%+v err=%v", latest, err)
 	}
 }
@@ -203,7 +247,7 @@ func TestServerDocumentObservationRejectsReplayMismatchAndStale(t *testing.T) {
 	repo, _ := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
 	event := serverObservationEvent("info-change", "server_version_changed", at, `{}`)
-	write := ServerDocumentObservation{Kind: "info", At: at, Canonical: []byte(`{"version":"B"}`), Hash: "hash-b", Event: &event}
+	write := testDocumentObservation("info", at, `{"version":"B"}`, &event)
 	if _, err := repo.RecordServerDocumentObservation(t.Context(), write); err != nil {
 		t.Fatal(err)
 	}
@@ -232,11 +276,55 @@ func TestServerDocumentObservationRejectsReplayMismatchAndStale(t *testing.T) {
 	}
 }
 
+func TestServerDocumentObservationRejectsCallerHashMismatch(t *testing.T) {
+	repo, _ := openTemp(t)
+	write := ServerDocumentObservation{
+		Kind: "settings", At: time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC),
+		Canonical: []byte(`{"value":"A"}`), Hash: "caller-supplied-wrong-hash",
+	}
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), write); err == nil {
+		t.Fatal("expected canonical SHA-256 mismatch")
+	}
+	if _, err := repo.LatestServerDocument(t.Context(), "settings"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("hash mismatch changed durable state: %v", err)
+	}
+}
+
+func TestServerDocumentObservationRejectsCASConflictWithoutWrites(t *testing.T) {
+	repo, _ := openTemp(t)
+	t1 := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	a := testDocumentObservation("settings", t1, `{"value":"A"}`, nil)
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), a); err != nil {
+		t.Fatal(err)
+	}
+	expected := &ServerDocumentToken{Exists: true, At: t1, Hash: a.Hash}
+	b := testDocumentObservation("settings", t1.Add(time.Minute), `{"value":"B"}`, nil)
+	b.Expected = expected
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), b); err != nil {
+		t.Fatal(err)
+	}
+	event := serverObservationEvent("must-rollback-document", "server_settings_changed", t1.Add(2*time.Minute), `{}`)
+	c := testDocumentObservation("settings", t1.Add(2*time.Minute), `{"value":"C"}`, &event)
+	c.Expected = expected
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), c); !errors.Is(err, ErrObservationConflict) {
+		t.Fatalf("err=%v want ErrObservationConflict", err)
+	}
+	for table, want := range map[string]int{"server_documents": 2, "server_document_observations": 2, "activity_events": 0} {
+		var count int
+		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != want {
+			t.Fatalf("%s count=%d want=%d", table, count, want)
+		}
+	}
+}
+
 func TestLatestServerDocumentSurvivesReopen(t *testing.T) {
 	repo, path := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
 	event := serverObservationEvent("info-reopen", "server_version_changed", at, `{"old_version":"v0","new_version":"v1"}`)
-	write := ServerDocumentObservation{Kind: "info", At: at, Canonical: []byte(`{"version":"v1"}`), Hash: "hash-v1", Event: &event}
+	write := testDocumentObservation("info", at, `{"version":"v1"}`, &event)
 	if _, err := repo.RecordServerDocumentObservation(t.Context(), write); err != nil {
 		t.Fatal(err)
 	}
@@ -264,9 +352,7 @@ func TestObservationCleanupPreservesEventsLinkedToDurableServerObservations(t *t
 		t.Fatal(err)
 	}
 	documentEvent := serverObservationEvent("document-linked", "server_settings_changed", at, `{}`)
-	if _, err := repo.RecordServerDocumentObservation(t.Context(), ServerDocumentObservation{
-		Kind: "settings", At: at, Canonical: []byte(`{"value":"B"}`), Hash: "hash-b", Event: &documentEvent,
-	}); err != nil {
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), testDocumentObservation("settings", at, `{"value":"B"}`, &documentEvent)); err != nil {
 		t.Fatal(err)
 	}
 	ordinary := observationEvent("ordinary-old", "joined", "u", at)
@@ -296,6 +382,81 @@ func TestObservationCleanupPreservesEventsLinkedToDurableServerObservations(t *t
 	latest, err := repo.LatestServerDocument(t.Context(), "settings")
 	if err != nil || latest.Event == nil || *latest.Event != documentEvent {
 		t.Fatalf("latest=%+v err=%v", latest, err)
+	}
+}
+
+func TestUnchangedServerDocumentAdvancesDurableWatermark(t *testing.T) {
+	repo, path := openTemp(t)
+	t1 := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	t3 := t1.Add(2 * time.Minute)
+	a := testDocumentObservation("settings", t1, `{"value":"A"}`, nil)
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), a); err != nil {
+		t.Fatal(err)
+	}
+	unchanged := a
+	unchanged.At = t3
+	if changed, err := repo.RecordServerDocumentObservation(t.Context(), unchanged); err != nil || changed {
+		t.Fatalf("unchanged changed=%v err=%v", changed, err)
+	}
+	latest, err := repo.LatestServerDocument(t.Context(), "settings")
+	if err != nil || latest.At != t3 || latest.Hash != a.Hash {
+		t.Fatalf("latest=%+v err=%v", latest, err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	b := testDocumentObservation("settings", t1.Add(time.Minute), `{"value":"B"}`, nil)
+	if _, err := reopened.RecordServerDocumentObservation(t.Context(), b); err == nil {
+		t.Fatal("expected observation older than unchanged watermark to fail")
+	}
+}
+
+func TestServerObservationStateSurvivesRawCleanupAndReopen(t *testing.T) {
+	repo, path := openTemp(t)
+	at := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
+	metricEvent := serverObservationEvent("metric-retained-until-sample-cleanup", "server_restarted", at, `{}`)
+	metrics := serverMetrics(42)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at, Metrics: metrics, Event: &metricEvent}); err != nil {
+		t.Fatal(err)
+	}
+	documentEvent := serverObservationEvent("document-occurrence-event", "server_settings_changed", at, `{}`)
+	document := testDocumentObservation("settings", at, `{"value":"A"}`, &documentEvent)
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), document); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := at.Add(100 * 24 * time.Hour)
+	for range 2 {
+		if _, err := repo.CleanupRawObservations(t.Context(), cutoff, 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	metricSnapshot, err := reopened.LatestServerMetricObservation(t.Context())
+	if err != nil || metricSnapshot.At != at || metricSnapshot.Metrics != metrics {
+		t.Fatalf("metric snapshot=%+v err=%v", metricSnapshot, err)
+	}
+	documentSnapshot, err := reopened.LatestServerDocument(t.Context(), "settings")
+	if err != nil || documentSnapshot.At != at || documentSnapshot.Hash != document.Hash || documentSnapshot.Event == nil || *documentSnapshot.Event != documentEvent {
+		t.Fatalf("document snapshot=%+v err=%v", documentSnapshot, err)
+	}
+	var metricEventCount int
+	if err := reopened.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM activity_events WHERE id=?`, metricEvent.ID).Scan(&metricEventCount); err != nil {
+		t.Fatal(err)
+	}
+	if metricEventCount != 0 {
+		t.Fatalf("raw metric event count=%d want=0", metricEventCount)
 	}
 }
 
@@ -508,7 +669,7 @@ func TestObservationFixedWidthMetricTimesRejectOutOfOrderFraction(t *testing.T) 
 func TestObservationDocumentsAndAuditUseFixedWidthTimes(t *testing.T) {
 	repo, _ := openTemp(t)
 	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
-	if _, err := repo.RecordServerDocument(t.Context(), "info", base.Add(100*time.Millisecond), []byte(`{}`), "h"); err != nil {
+	if _, err := repo.RecordServerDocument(t.Context(), "info", base.Add(100*time.Millisecond), []byte(`{}`), testDocumentHash([]byte(`{}`))); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "missing", base, base.Add(time.Second), 10); !errors.Is(err, ErrNotFound) {
@@ -532,11 +693,13 @@ func TestObservationDocumentsAndAuditUseFixedWidthTimes(t *testing.T) {
 func TestObservationRecordServerDocumentDeduplicatesCanonicalHash(t *testing.T) {
 	repo, _ := openTemp(t)
 	now := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
-	inserted, err := repo.RecordServerDocument(t.Context(), "info", now, []byte(`{"name":"server"}`), "sha256:one")
+	canonical := []byte(`{"name":"server"}`)
+	hash := testDocumentHash(canonical)
+	inserted, err := repo.RecordServerDocument(t.Context(), "info", now, canonical, hash)
 	if err != nil || !inserted {
 		t.Fatalf("inserted=%v err=%v", inserted, err)
 	}
-	inserted, err = repo.RecordServerDocument(t.Context(), "info", now.Add(time.Minute), []byte(`{"name":"server"}`), "sha256:one")
+	inserted, err = repo.RecordServerDocument(t.Context(), "info", now.Add(time.Minute), canonical, hash)
 	if err != nil || inserted {
 		t.Fatalf("duplicate inserted=%v err=%v", inserted, err)
 	}
@@ -689,7 +852,7 @@ func TestObservationCleanupIsBoundedAndPreservesProtectedRows(t *testing.T) {
 	if err := repo.RecordServerMetrics(ctx, newAt, domain.ServerMetrics{ServerFrameTime: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.RecordServerDocument(ctx, "info", now, []byte(`{}`), "h"); err != nil {
+	if _, err := repo.RecordServerDocument(ctx, "info", now, []byte(`{}`), testDocumentHash([]byte(`{}`))); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := repo.ReadSensitivePlayerTimeline(ctx, "admin", "missing", now, cutoff, 10); !errors.Is(err, ErrNotFound) {

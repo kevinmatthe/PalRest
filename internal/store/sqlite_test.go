@@ -333,6 +333,7 @@ DROP TABLE activity_events;
 DROP TABLE trajectory_samples;
 DROP TABLE server_metric_samples;
 DROP TABLE server_document_observations;
+DROP TABLE server_observation_state;
 DROP TABLE server_documents;
 DROP TABLE sensitive_access_audit;
 DELETE FROM schema_migrations WHERE version>=8`); err != nil {
@@ -374,6 +375,7 @@ DROP TABLE activity_events;
 DROP TABLE trajectory_samples;
 DROP TABLE server_metric_samples;
 DROP TABLE server_document_observations;
+DROP TABLE server_observation_state;
 DROP TABLE server_documents;
 DROP TABLE sensitive_access_audit;
 DELETE FROM schema_migrations WHERE version>=8`); err != nil {

@@ -14,6 +14,7 @@ import (
 )
 
 var ErrNotFound = errors.New("not found")
+var ErrObservationConflict = errors.New("server observation baseline conflict")
 
 type Repository struct {
 	db *sql.DB

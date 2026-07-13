@@ -149,6 +149,9 @@ func (r *Repository) RecordServerDocument(ctx context.Context, kind string, at t
 	if strings.TrimSpace(hash) == "" {
 		return false, fmt.Errorf("record server document: hash is empty")
 	}
+	if hash != serverDocumentHash(canonical) {
+		return false, fmt.Errorf("record server document: hash does not match canonical content")
+	}
 	if !validJSONObject(canonical) {
 		return false, fmt.Errorf("record server document: canonical content must be a valid JSON object")
 	}

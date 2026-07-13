@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -188,8 +190,10 @@ func TestNewRestoresDurableServerBaselinesBeforePolling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	invalidCanonical := []byte(`{"version":5}`)
+	invalidDigest := sha256.Sum256(invalidCanonical)
 	invalidTypedInfo := store.ServerDocumentObservation{
-		Kind: "info", At: time.Now(), Canonical: []byte(`{"version":5}`), Hash: "invalid-info-type",
+		Kind: "info", At: time.Now(), Canonical: invalidCanonical, Hash: hex.EncodeToString(invalidDigest[:]),
 	}
 	if _, err := repo.RecordServerDocumentObservation(t.Context(), invalidTypedInfo); err != nil {
 		t.Fatal(err)
