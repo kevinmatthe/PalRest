@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"text/template"
 	"time"
 
@@ -32,20 +34,65 @@ type Analytics interface {
 	SetLocation(*time.Location) error
 }
 
-type Poller struct {
-	client           Client
-	guard            Guard
-	analytics        Analytics
-	interval         time.Duration
-	announceTemplate *template.Template
-	kickTemplate     *template.Template
-	now              func() time.Time
-	cycleMu          sync.RWMutex
-	mu               sync.RWMutex
-	status           domain.PollStatus
+type PlayerObserver interface {
+	Observe(context.Context, time.Time, []domain.Player, string) error
 }
 
-func New(client Client, guardService Guard, analytics Analytics, interval time.Duration, announceText, kickText string, now func() time.Time) (*Poller, error) {
+type ServerReader interface {
+	Metrics(context.Context) (domain.ServerMetrics, error)
+	Info(context.Context) (domain.ServerInfo, error)
+	Settings(context.Context) (domain.ServerSettings, error)
+}
+
+type ServerObservationRecorder interface {
+	RecordMetrics(context.Context, time.Time, domain.ServerMetrics) error
+	RecordInfo(context.Context, time.Time, domain.ServerInfo) error
+	RecordSettings(context.Context, time.Time, domain.ServerSettings) error
+}
+
+type Option func(*Poller)
+
+func WithPlayerObserver(observer PlayerObserver) Option {
+	return func(p *Poller) { p.playerObserver = observer }
+}
+
+func WithServerObservations(reader ServerReader, recorder ServerObservationRecorder) Option {
+	return func(p *Poller) {
+		p.serverReader = reader
+		p.serverRecorder = recorder
+	}
+}
+
+func WithCorrelationIDGenerator(generator func() string) Option {
+	return func(p *Poller) {
+		if generator != nil {
+			p.correlationID = generator
+		}
+	}
+}
+
+var pollIDSequence atomic.Uint64
+
+type Poller struct {
+	client              Client
+	guard               Guard
+	analytics           Analytics
+	playerObserver      PlayerObserver
+	serverReader        ServerReader
+	serverRecorder      ServerObservationRecorder
+	interval            time.Duration
+	announceTemplate    *template.Template
+	kickTemplate        *template.Template
+	now                 func() time.Time
+	correlationID       func() string
+	cycleMu             sync.RWMutex
+	mu                  sync.RWMutex
+	status              domain.PollStatus
+	lastInfoAttempt     time.Time
+	lastSettingsAttempt time.Time
+}
+
+func New(client Client, guardService Guard, analytics Analytics, interval time.Duration, announceText, kickText string, now func() time.Time, options ...Option) (*Poller, error) {
 	announce, err := template.New("announce").Option("missingkey=error").Parse(announceText)
 	if err != nil {
 		return nil, fmt.Errorf("parse announce template: %w", err)
@@ -54,11 +101,20 @@ func New(client Client, guardService Guard, analytics Analytics, interval time.D
 	if err != nil {
 		return nil, fmt.Errorf("parse kick template: %w", err)
 	}
-	return &Poller{
+	p := &Poller{
 		client: client, guard: guardService, analytics: analytics, interval: interval,
 		announceTemplate: announce, kickTemplate: kick, now: now,
 		status: domain.PollStatus{StartedAt: now().UTC(), ConfigVersion: 1},
-	}, nil
+	}
+	p.correlationID = func() string {
+		return fmt.Sprintf("poll-%d-%d", now().UTC().UnixNano(), pollIDSequence.Add(1))
+	}
+	for _, option := range options {
+		if option != nil {
+			option(p)
+		}
+	}
+	return p, nil
 }
 
 func (p *Poller) Run(ctx context.Context) {
@@ -94,6 +150,7 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 	p.cycleMu.RLock()
 	defer p.cycleMu.RUnlock()
 	now := p.now().UTC()
+	defer p.sampleServerObservations(ctx, now)
 	p.mu.RLock()
 	announceTemplate := p.announceTemplate
 	kickTemplate := p.kickTemplate
@@ -113,6 +170,24 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 		p.setError(err)
 		slog.Error("poll analytics observation failed", "online_count", len(players), "error", err)
 		return err
+	}
+	// Analytics remains an independent persistence stream, while the business
+	// player observation is a gate for Guard continuity and enforcement.
+	if p.playerObserver != nil {
+		correlationID := strings.TrimSpace(p.correlationID())
+		if correlationID == "" {
+			err := fmt.Errorf("generate player poll correlation ID: empty ID")
+			p.guard.PollFailed()
+			p.setError(err)
+			slog.Error("poll player observation failed", "online_count", len(players), "error", err)
+			return err
+		}
+		if err := p.playerObserver.Observe(ctx, now, players, correlationID); err != nil {
+			p.guard.PollFailed()
+			p.setError(err)
+			slog.Error("poll player observation failed", "online_count", len(players), "error", err)
+			return err
+		}
 	}
 	decisions, err := p.guard.Observe(ctx, now, players)
 	if err != nil {
@@ -186,6 +261,56 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+const serverMetadataInterval = 5 * time.Minute
+
+func (p *Poller) sampleServerObservations(ctx context.Context, at time.Time) {
+	if p.serverReader == nil || p.serverRecorder == nil {
+		return
+	}
+	metrics, err := p.serverReader.Metrics(ctx)
+	if err != nil {
+		logOptionalObservationError("metrics", "read", err)
+	} else if err := p.serverRecorder.RecordMetrics(ctx, at, metrics); err != nil {
+		logOptionalObservationError("metrics", "record", err)
+	}
+
+	infoDue, settingsDue := p.serverMetadataDue(at)
+	if infoDue {
+		info, err := p.serverReader.Info(ctx)
+		if err != nil {
+			logOptionalObservationError("info", "read", err)
+		} else if err := p.serverRecorder.RecordInfo(ctx, at, info); err != nil {
+			logOptionalObservationError("info", "record", err)
+		}
+	}
+	if settingsDue {
+		settings, err := p.serverReader.Settings(ctx)
+		if err != nil {
+			logOptionalObservationError("settings", "read", err)
+		} else if err := p.serverRecorder.RecordSettings(ctx, at, settings); err != nil {
+			logOptionalObservationError("settings", "record", err)
+		}
+	}
+}
+
+func (p *Poller) serverMetadataDue(at time.Time) (info, settings bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	info = p.lastInfoAttempt.IsZero() || at.Sub(p.lastInfoAttempt) >= serverMetadataInterval
+	settings = p.lastSettingsAttempt.IsZero() || at.Sub(p.lastSettingsAttempt) >= serverMetadataInterval
+	if info {
+		p.lastInfoAttempt = at
+	}
+	if settings {
+		p.lastSettingsAttempt = at
+	}
+	return info, settings
+}
+
+func logOptionalObservationError(stream, operation string, err error) {
+	slog.Warn("optional server observation failed", "stream", stream, "operation", operation, "error", err)
 }
 
 func (p *Poller) UpdateTemplates(announceText, kickText string) error {
