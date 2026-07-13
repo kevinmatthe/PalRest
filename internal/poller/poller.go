@@ -54,30 +54,31 @@ func WithCorrelationIDGenerator(generator func() string) Option {
 }
 
 type Poller struct {
-	client              Client
-	guard               Guard
-	analytics           Analytics
-	playerObserver      PlayerObserver
-	serverReader        ServerReader
-	serverRecorder      ServerObservationRecorder
-	interval            time.Duration
-	announceTemplate    *template.Template
-	kickTemplate        *template.Template
-	now                 func() time.Time
-	correlationID       func() (string, error)
-	cycleMu             sync.Mutex
-	mu                  sync.RWMutex
-	status              domain.PollStatus
-	serverSampleSignals chan struct{}
-	serverSampleDone    chan struct{}
-	serverSampleTimeout time.Duration
-	serverSampleMu      sync.Mutex
-	lastInfoAttempt     time.Time
-	lastSettingsAttempt time.Time
-	serverWorkerMu      sync.Mutex
-	serverWorkerRunning bool
-	serverSamplePending bool
-	latestServerSample  time.Time
+	client                 Client
+	guard                  Guard
+	analytics              Analytics
+	playerObserver         PlayerObserver
+	serverReader           ServerReader
+	serverRecorder         ServerObservationRecorder
+	interval               time.Duration
+	announceTemplate       *template.Template
+	kickTemplate           *template.Template
+	now                    func() time.Time
+	correlationID          func() (string, error)
+	cycleMu                sync.Mutex
+	mu                     sync.RWMutex
+	status                 domain.PollStatus
+	serverSampleSignals    chan struct{}
+	serverSampleDone       chan struct{}
+	serverSampleTimeout    time.Duration
+	serverMetadataInterval time.Duration
+	serverSampleMu         sync.Mutex
+	lastInfoAttempt        time.Time
+	lastSettingsAttempt    time.Time
+	serverWorkerMu         sync.Mutex
+	serverWorkerRunning    bool
+	serverSamplePending    bool
+	latestServerSample     time.Time
 }
 
 func New(client Client, guardService Guard, analytics Analytics, interval time.Duration, announceText, kickText string, now func() time.Time, options ...Option) (*Poller, error) {
@@ -92,10 +93,11 @@ func New(client Client, guardService Guard, analytics Analytics, interval time.D
 	p := &Poller{
 		client: client, guard: guardService, analytics: analytics, interval: interval,
 		announceTemplate: announce, kickTemplate: kick, now: now,
-		status:              domain.PollStatus{StartedAt: now().UTC(), ConfigVersion: 1},
-		serverSampleSignals: make(chan struct{}, 1),
-		serverSampleDone:    make(chan struct{}, 1),
-		serverSampleTimeout: defaultServerObservationTimeout,
+		status:                 domain.PollStatus{StartedAt: now().UTC(), ConfigVersion: 1},
+		serverSampleSignals:    make(chan struct{}, 1),
+		serverSampleDone:       make(chan struct{}, 1),
+		serverSampleTimeout:    defaultServerObservationTimeout,
+		serverMetadataInterval: serverMetadataInterval,
 	}
 	p.correlationID = newCorrelationID
 	for _, option := range options {

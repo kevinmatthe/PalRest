@@ -356,6 +356,17 @@ func TestSamplerCoalescesToNewestTimestampAndEvaluatesMetadataCadenceFromIt(t *t
 	}
 }
 
+func TestServerMetadataIntervalOptionOverridesDefaultCadence(t *testing.T) {
+	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now,
+		WithServerObservations(&fakeServerReader{}, &fakeServerRecorder{}), WithServerMetadataInterval(17*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.serverMetadataInterval != 17*time.Minute {
+		t.Fatalf("metadata interval=%s", p.serverMetadataInterval)
+	}
+}
+
 type contextBlockingRecorder struct {
 	metricsStarted chan struct{}
 	metricsStopped chan struct{}

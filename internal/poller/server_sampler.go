@@ -41,6 +41,14 @@ func WithServerObservationTimeout(timeout time.Duration) Option {
 	}
 }
 
+func WithServerMetadataInterval(interval time.Duration) Option {
+	return func(p *Poller) {
+		if interval > 0 {
+			p.serverMetadataInterval = interval
+		}
+	}
+}
+
 // startServerSampler owns the only optional sampling worker. A one-slot input
 // queue coalesces player ticks while its current bounded sampling cycle runs.
 func (p *Poller) startServerSampler(ctx context.Context) (<-chan struct{}, func()) {
@@ -194,8 +202,8 @@ func (p *Poller) sampleSettings(parent context.Context, at time.Time) {
 func (p *Poller) serverMetadataDue(at time.Time) (info, settings bool) {
 	p.serverSampleMu.Lock()
 	defer p.serverSampleMu.Unlock()
-	info = p.lastInfoAttempt.IsZero() || at.Sub(p.lastInfoAttempt) >= serverMetadataInterval
-	settings = p.lastSettingsAttempt.IsZero() || at.Sub(p.lastSettingsAttempt) >= serverMetadataInterval
+	info = p.lastInfoAttempt.IsZero() || at.Sub(p.lastInfoAttempt) >= p.serverMetadataInterval
+	settings = p.lastSettingsAttempt.IsZero() || at.Sub(p.lastSettingsAttempt) >= p.serverMetadataInterval
 	if info {
 		p.lastInfoAttempt = at
 	}

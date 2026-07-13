@@ -16,6 +16,7 @@ import (
 	"github.com/kevinmatt/palworld-playtime-guard/internal/api"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/config"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/guard"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/observation"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/palworld"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/policy"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/poller"
@@ -89,7 +90,19 @@ func New(configPath string) (*App, error) {
 	}
 	guardService := guard.New(repo, policies, cfg.Server.MaxObservationGap.Duration, cfg.Enforcement.KickRetryInitial.Duration, cfg.Enforcement.KickRetryMax.Duration)
 	client := palworld.New(cfg.Server.BaseURL, cfg.Password(), cfg.Server.RequestTimeout.Duration)
-	poll, err := poller.New(client, guardService, analyticsService, cfg.Server.PollInterval.Duration, cfg.Enforcement.AnnounceMessage, cfg.Enforcement.KickMessage, time.Now)
+	playerObservations := observation.New(repo, cfg.Server.MaxObservationGap.Duration, observation.DefaultMovementThreshold,
+		observation.DefaultMaxSampleInterval, observation.DefaultRawObservationRetention, observation.NewID)
+	serverObservations := observation.NewServer(repo, observation.NewID)
+	serverTimeout := cfg.Server.RequestTimeout.Duration
+	if serverTimeout > observation.DefaultServerObservationTimeout {
+		serverTimeout = observation.DefaultServerObservationTimeout
+	}
+	poll, err := poller.New(client, guardService, analyticsService, cfg.Server.PollInterval.Duration, cfg.Enforcement.AnnounceMessage, cfg.Enforcement.KickMessage, time.Now,
+		poller.WithPlayerObserver(playerObservations),
+		poller.WithServerObservations(client, serverObservations),
+		poller.WithServerObservationTimeout(serverTimeout),
+		poller.WithServerMetadataInterval(observation.DefaultServerDocumentInterval),
+	)
 	if err != nil {
 		_ = repo.Close()
 		return nil, err

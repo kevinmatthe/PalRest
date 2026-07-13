@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -76,6 +78,84 @@ func TestNewLoadsDisabledConfiguration(t *testing.T) {
 	}
 	if application.CurrentConfig().Policy.Default.Enabled {
 		t.Fatal("expected disabled policy")
+	}
+}
+
+func TestNewWiresUnifiedPlayerAndServerObservations(t *testing.T) {
+	requests := make(chan string, 20)
+	palworld := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.URL.Path
+		switch r.URL.Path {
+		case "/v1/api/players":
+			_, _ = w.Write([]byte(`{"players":[{"name":"One","playerId":"pal-1","userId":"u1","location_x":10,"location_y":20,"level":3}]}`))
+		case "/v1/api/metrics":
+			_, _ = w.Write([]byte(`{"serverfps":60,"currentplayernum":1,"serverframetime":1,"maxplayernum":32,"uptime":100,"basecampnum":1,"days":2}`))
+		case "/v1/api/info":
+			_, _ = w.Write([]byte(`{"version":"v1","servername":"server","description":"hello","worldguid":"world"}`))
+		case "/v1/api/settings":
+			_, _ = w.Write([]byte(`{"Difficulty":"Normal"}`))
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	t.Cleanup(palworld.Close)
+	t.Setenv("ADMIN_PASSWORD", "secret")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "guard.db")
+	configPath := filepath.Join(dir, "config.yaml")
+	configData := strings.Replace(appConfig(palworld.URL+"/v1/api", dbPath, "127.0.0.1:0", false), "poll_interval: 20ms", "poll_interval: 1s", 1)
+	configData = strings.Replace(configData, "max_observation_gap: 100ms", "max_observation_gap: 2s", 1)
+	if err := os.WriteFile(configPath, []byte(configData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		application.poller.Run(ctx)
+		close(done)
+	}()
+
+	seen := map[string]bool{}
+	deadline := time.After(2 * time.Second)
+	for !(seen["/v1/api/players"] && seen["/v1/api/metrics"] && seen["/v1/api/info"] && seen["/v1/api/settings"]) {
+		select {
+		case path := <-requests:
+			seen[path] = true
+		case <-deadline:
+			cancel()
+			<-done
+			t.Fatalf("timed out waiting for wired observation requests: %v", seen)
+		}
+	}
+	// Let the independent sampler finish its repository writes before stopping.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
+
+	events, samples, err := application.repo.ReadSensitivePlayerTimeline(t.Context(), "test", "u1", time.Now().Add(-time.Minute), time.Now().Add(time.Minute), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].EventType != "player_joined" || len(samples) != 1 {
+		t.Fatalf("events=%+v samples=%+v", events, samples)
+	}
+	if err := application.repo.RecordServerMetrics(t.Context(), time.Unix(1, 0), domain.ServerMetrics{ServerFrameTime: 1}); err == nil {
+		t.Fatal("expected old metric to be rejected after wired sampler persisted a sample")
+	}
+	canonicalInfo := []byte(`{"version":"v1","servername":"server","description":"hello","worldguid":"world"}`)
+	hash := sha256.Sum256(canonicalInfo)
+	inserted, err := application.repo.RecordServerDocument(t.Context(), "info", time.Now(), canonicalInfo, hex.EncodeToString(hash[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted {
+		t.Fatal("wired sampler did not persist the canonical info document")
 	}
 }
 
