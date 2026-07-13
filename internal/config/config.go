@@ -45,23 +45,49 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &ms); err != nil {
 		return fmt.Errorf("duration must be a Go duration string or milliseconds")
 	}
+	if ms > int64(time.Duration(1<<63-1))/int64(time.Millisecond) || ms < int64(time.Duration(-1<<63))/int64(time.Millisecond) {
+		return fmt.Errorf("duration milliseconds %d overflow time.Duration", ms)
+	}
 	d.Duration = time.Duration(ms) * time.Millisecond
 	return nil
 }
 
 func parseDuration(value string) (time.Duration, error) {
 	if strings.HasSuffix(value, "d") {
-		days, err := strconv.ParseFloat(strings.TrimSuffix(value, "d"), 64)
-		if err != nil || math.IsNaN(days) || math.IsInf(days, 0) {
+		text := strings.TrimSuffix(value, "d")
+		if !signedDecimalInteger(text) {
 			return 0, fmt.Errorf("time: invalid duration %q", value)
 		}
-		hours := days * 24
-		if hours > float64(time.Duration(1<<63-1))/float64(time.Hour) || hours < float64(time.Duration(-1<<63))/float64(time.Hour) {
+		days, err := strconv.ParseInt(text, 10, 64)
+		if err != nil {
 			return 0, fmt.Errorf("time: invalid duration %q", value)
 		}
-		return time.Duration(hours * float64(time.Hour)), nil
+		const day = 24 * time.Hour
+		if days > int64(time.Duration(1<<63-1))/int64(day) || days < int64(time.Duration(-1<<63))/int64(day) {
+			return 0, fmt.Errorf("time: invalid duration %q", value)
+		}
+		return time.Duration(days) * day, nil
 	}
 	return time.ParseDuration(value)
+}
+
+func signedDecimalInteger(value string) bool {
+	if value == "" {
+		return false
+	}
+	start := 0
+	if value[0] == '+' || value[0] == '-' {
+		start = 1
+	}
+	if start == len(value) {
+		return false
+	}
+	for i := start; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (d Duration) MarshalJSON() ([]byte, error) {
@@ -195,10 +221,11 @@ type Storage struct {
 }
 
 type Observation struct {
-	ServerDocumentInterval Duration `yaml:"server_document_interval" json:"server_document_interval"`
-	TrajectoryMinDistance  float64  `yaml:"trajectory_min_distance" json:"trajectory_min_distance"`
-	TrajectoryMaxInterval  Duration `yaml:"trajectory_max_interval" json:"trajectory_max_interval"`
-	RawRetention           Duration `yaml:"raw_retention" json:"raw_retention"`
+	ServerDocumentInterval        Duration `yaml:"server_document_interval" json:"server_document_interval"`
+	TrajectoryMinDistance         float64  `yaml:"trajectory_min_distance" json:"trajectory_min_distance"`
+	TrajectoryPingChangeThreshold float64  `yaml:"trajectory_ping_change_threshold" json:"trajectory_ping_change_threshold"`
+	TrajectoryMaxInterval         Duration `yaml:"trajectory_max_interval" json:"trajectory_max_interval"`
+	RawRetention                  Duration `yaml:"raw_retention" json:"raw_retention"`
 }
 
 func (c Config) Password() string { return c.password }
@@ -269,10 +296,11 @@ func defaults() Config {
 		HTTP:    HTTP{Listen: "0.0.0.0:8080"},
 		Storage: Storage{Path: "/data/guard.db"},
 		Observation: Observation{
-			ServerDocumentInterval: Duration{5 * time.Minute},
-			TrajectoryMinDistance:  100,
-			TrajectoryMaxInterval:  Duration{5 * time.Minute},
-			RawRetention:           Duration{90 * 24 * time.Hour},
+			ServerDocumentInterval:        Duration{5 * time.Minute},
+			TrajectoryMinDistance:         100,
+			TrajectoryPingChangeThreshold: 10,
+			TrajectoryMaxInterval:         Duration{5 * time.Minute},
+			RawRetention:                  Duration{90 * 24 * time.Hour},
 		},
 	}
 }
@@ -350,6 +378,9 @@ func (c *Config) validate(lookup func(string) (string, bool)) error {
 	}
 	if c.Observation.TrajectoryMinDistance < 0 || math.IsNaN(c.Observation.TrajectoryMinDistance) || math.IsInf(c.Observation.TrajectoryMinDistance, 0) {
 		return fmt.Errorf("observation.trajectory_min_distance must be nonnegative and finite")
+	}
+	if c.Observation.TrajectoryPingChangeThreshold <= 0 || math.IsNaN(c.Observation.TrajectoryPingChangeThreshold) || math.IsInf(c.Observation.TrajectoryPingChangeThreshold, 0) {
+		return fmt.Errorf("observation.trajectory_ping_change_threshold must be positive and finite")
 	}
 	if c.HTTP.AdminUsernameEnv != "" || c.HTTP.AdminPasswordEnv != "" {
 		if c.HTTP.AdminUsernameEnv == "" || c.HTTP.AdminPasswordEnv == "" {

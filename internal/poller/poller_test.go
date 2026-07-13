@@ -69,9 +69,12 @@ type fakeAnalytics struct {
 type fakePlayerObserver struct {
 	err      error
 	observed int
+	failed   int
 	order    *[]string
 	ids      []string
 }
+
+func (f *fakePlayerObserver) PollFailed() { f.failed++ }
 
 func (f *fakePlayerObserver) Observe(_ context.Context, _ time.Time, _ []domain.Player, correlationID string) error {
 	f.observed++
@@ -209,11 +212,50 @@ func TestPlayerObservationFailureDoesNotAdvanceStatusOrRunGuard(t *testing.T) {
 	if guardService.failed != 1 {
 		t.Fatalf("guard failed calls=%d", guardService.failed)
 	}
-	if observer.observed != 2 {
-		t.Fatalf("player observations=%d", observer.observed)
+	if observer.observed != 2 || observer.failed != 1 {
+		t.Fatalf("player observations=%d failures=%d", observer.observed, observer.failed)
 	}
 	if status.LastError == "" || !status.LastSuccess.Equal(previous.LastSuccess) || status.OnlineCount != previous.OnlineCount {
 		t.Fatalf("previous=%+v status=%+v", previous, status)
+	}
+}
+
+func TestCriticalPlayerPathFailuresNotifyPlayerObserver(t *testing.T) {
+	now := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		set  func(*fakeClient, *fakeAnalytics) Option
+	}{
+		{"players", func(client *fakeClient, _ *fakeAnalytics) Option {
+			client.listErr = errors.New("players failed")
+			return nil
+		}},
+		{"correlation", func(_ *fakeClient, _ *fakeAnalytics) Option {
+			return WithCorrelationIDGenerator(func() string { return "" })
+		}},
+		{"analytics", func(_ *fakeClient, analytics *fakeAnalytics) Option {
+			analytics.err = errors.New("analytics failed")
+			return nil
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client, analytics, observer := &fakeClient{}, &fakeAnalytics{}, &fakePlayerObserver{}
+			options := []Option{WithPlayerObserver(observer)}
+			if option := tc.set(client, analytics); option != nil {
+				options = append(options, option)
+			}
+			p, err := New(client, &fakeGuard{}, analytics, time.Minute, "warning", "kick", func() time.Time { return now }, options...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.RunOnce(t.Context()); err == nil {
+				t.Fatal("expected failure")
+			}
+			if observer.failed != 1 || observer.observed != 0 {
+				t.Fatalf("observer=%+v", observer)
+			}
+		})
 	}
 }
 
@@ -281,7 +323,8 @@ func TestMetricsFailureDoesNotAffectSuccessfulPlayerPoll(t *testing.T) {
 	reader := &fakeServerReader{metricsErr: errors.New("metrics unavailable")}
 	recorder := &fakeServerRecorder{}
 	guardService := &fakeGuard{}
-	p, err := New(&fakeClient{players: []domain.Player{{UserID: "steam_1"}}}, guardService, &fakeAnalytics{}, time.Minute, "warning", "kick", func() time.Time { return now }, WithServerObservations(reader, recorder))
+	observer := &fakePlayerObserver{}
+	p, err := New(&fakeClient{players: []domain.Player{{UserID: "steam_1"}}}, guardService, &fakeAnalytics{}, time.Minute, "warning", "kick", func() time.Time { return now }, WithPlayerObserver(observer), WithServerObservations(reader, recorder))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,6 +340,9 @@ func TestMetricsFailureDoesNotAffectSuccessfulPlayerPoll(t *testing.T) {
 	}
 	if reader.metricsCalls != 1 || recorder.metricsCalls != 0 {
 		t.Fatalf("metrics reads=%d records=%d", reader.metricsCalls, recorder.metricsCalls)
+	}
+	if observer.observed != 1 || observer.failed != 0 {
+		t.Fatalf("optional sampler changed player continuity: observed=%d failed=%d", observer.observed, observer.failed)
 	}
 }
 

@@ -6,8 +6,14 @@ import (
 )
 
 func TestRedactJSONRejectsTrailingContent(t *testing.T) {
-	if _, err := RedactJSON([]byte(`{"password":"one"} {"password":"two"}`)); err == nil {
-		t.Fatal("expected trailing JSON to fail")
+	for _, input := range []string{
+		`{"password":"one"} {"password":"two"}`,
+		`{"password":"one"} invalid`,
+		`{"password":"one"}]`,
+	} {
+		if _, err := RedactJSON([]byte(input)); err == nil {
+			t.Fatalf("expected trailing content in %q to fail", input)
+		}
 	}
 }
 

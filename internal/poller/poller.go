@@ -37,6 +37,7 @@ type Analytics interface {
 
 type PlayerObserver interface {
 	Observe(context.Context, time.Time, []domain.Player, string) error
+	PollFailed()
 }
 
 type Option func(*Poller)
@@ -166,6 +167,7 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 	players, err := p.client.ListPlayers(ctx)
 	if err != nil {
 		p.guard.PollFailed()
+		p.playerPollFailed()
 		p.setError(err)
 		slog.Error("poll list players failed", "error", err)
 		return err
@@ -181,6 +183,7 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 			}
 			err = fmt.Errorf("generate player poll correlation ID: %w", err)
 			p.guard.PollFailed()
+			p.playerPollFailed()
 			p.setError(err)
 			slog.Error("poll player observation failed", "online_count", len(players), "error", err)
 			return err
@@ -188,6 +191,7 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 	}
 	if err := p.analytics.Observe(ctx, now, players); err != nil {
 		p.guard.PollFailed()
+		p.playerPollFailed()
 		p.setError(err)
 		slog.Error("poll analytics observation failed", "online_count", len(players), "error", err)
 		return err
@@ -198,6 +202,7 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 	if p.playerObserver != nil {
 		if err := p.playerObserver.Observe(ctx, now, players, correlationID); err != nil {
 			p.guard.PollFailed()
+			p.playerPollFailed()
 			p.setError(err)
 			slog.Error("poll player observation failed", "online_count", len(players), "error", err)
 			return err
@@ -275,6 +280,12 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (p *Poller) playerPollFailed() {
+	if p.playerObserver != nil {
+		p.playerObserver.PollFailed()
+	}
 }
 
 func newCorrelationID() (string, error) {

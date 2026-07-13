@@ -14,6 +14,9 @@ server:
 observation:
   server_document_interval: 5m
   trajectory_min_distance: 100
+  # Milliseconds accumulated from the last sampled known ping. Smaller jitter
+  # is ignored; unknown values (NaN/infinite/negative) are stored as 0.
+  trajectory_ping_change_threshold: 10
   trajectory_max_interval: 5m
   raw_retention: 90d
 

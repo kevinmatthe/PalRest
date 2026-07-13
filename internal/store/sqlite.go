@@ -200,6 +200,23 @@ func (r *Repository) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if version < 12 {
+		hasRuntimeEpoch, err := columnExists(ctx, tx, "trajectory_samples", "runtime_epoch")
+		if err != nil {
+			return err
+		}
+		if !hasRuntimeEpoch {
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE trajectory_samples ADD COLUMN runtime_epoch INTEGER NOT NULL DEFAULT 0 CHECK(runtime_epoch >= 0)`); err != nil {
+				return fmt.Errorf("apply migration 12 trajectory epoch: %w", err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, schemaV12); err != nil {
+			return fmt.Errorf("apply migration 12: %w", err)
+		}
+		if err := recordMigration(ctx, tx, 12); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}
@@ -412,6 +429,55 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, event.UserID, event.PeriodKey, event.Action, ev
 		return fmt.Errorf("append enforcement: %w", err)
 	}
 	return nil
+}
+
+func (tx *Tx) EnforcementEventExists(event EnforcementEvent) (bool, error) {
+	var count int
+	err := tx.tx.QueryRow(`
+SELECT COUNT(*) FROM enforcement_events
+WHERE user_id=? AND period_key=? AND action=? AND result=? AND policy_revision=?
+  AND generation=? AND error_summary=? AND created_at=?`, event.UserID, event.PeriodKey,
+		event.Action, event.Result, event.PolicyRevision, event.Generation, event.ErrorSummary,
+		formatTime(event.CreatedAt)).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("verify enforcement event replay: %w", err)
+	}
+	return count == 1, nil
+}
+
+// AppendActivityEvent adds an immutable business event inside the caller's
+// transaction. The boolean is false when the same stable event ID was already
+// committed, allowing action-result replays to remain idempotent.
+func (tx *Tx) AppendActivityEvent(event ActivityEvent) (bool, error) {
+	if err := validateActivityEvent(event); err != nil {
+		return false, fmt.Errorf("append activity event: %w", err)
+	}
+	result, err := tx.tx.Exec(`
+INSERT INTO activity_events(
+    id,event_type,subject_type,subject_id,occurred_at,observed_at,source,source_ref,
+    correlation_id,confidence,schema_version,payload_json
+) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, event.ID, event.EventType,
+		event.SubjectType, event.SubjectID, formatObservationTime(event.OccurredAt),
+		formatObservationTime(event.ObservedAt), event.Source, event.SourceRef,
+		event.CorrelationID, event.Confidence, event.SchemaVersion, event.PayloadJSON)
+	if err != nil {
+		return false, fmt.Errorf("append activity event %q: %w", event.ID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read activity event insert result: %w", err)
+	}
+	if rows == 1 {
+		return true, nil
+	}
+	stored, err := readStoredEvent(context.Background(), tx.tx, event.ID)
+	if err != nil {
+		return false, err
+	}
+	if !activityEventsEqual(*stored, event) {
+		return false, fmt.Errorf("activity event ID %q conflicts with different content", event.ID)
+	}
+	return false, nil
 }
 
 func (tx *Tx) EnforcementRetry(userID, periodKey, policyRevision string) (EnforcementRetry, error) {

@@ -21,6 +21,40 @@ type Client struct {
 	http     *http.Client
 }
 
+type playerPayload struct {
+	Name          *string  `json:"name"`
+	AccountName   *string  `json:"accountName"`
+	PlayerID      *string  `json:"playerId"`
+	UserID        *string  `json:"userId"`
+	IP            *string  `json:"ip"`
+	Ping          *float64 `json:"ping"`
+	LocationX     *float64 `json:"location_x"`
+	LocationY     *float64 `json:"location_y"`
+	Level         *int     `json:"level"`
+	BuildingCount *int     `json:"building_count"`
+}
+
+type playersPayload struct {
+	Players *[]playerPayload `json:"players"`
+}
+
+type metricsPayload struct {
+	ServerFPS        *int     `json:"serverfps"`
+	CurrentPlayerNum *int     `json:"currentplayernum"`
+	ServerFrameTime  *float64 `json:"serverframetime"`
+	MaxPlayerNum     *int     `json:"maxplayernum"`
+	UptimeSeconds    *int64   `json:"uptime"`
+	BaseCampNum      *int     `json:"basecampnum"`
+	Days             *int     `json:"days"`
+}
+
+type infoPayload struct {
+	Version     *string `json:"version"`
+	ServerName  *string `json:"servername"`
+	Description *string `json:"description"`
+	WorldGUID   *string `json:"worldguid"`
+}
+
 func New(baseURL, password string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL:  strings.TrimRight(baseURL, "/"),
@@ -30,51 +64,106 @@ func New(baseURL, password string, timeout time.Duration) *Client {
 }
 
 func (c *Client) ListPlayers(ctx context.Context) ([]domain.Player, error) {
-	var payload struct {
-		Players []struct {
-			Name          string  `json:"name"`
-			AccountName   string  `json:"accountName"`
-			PlayerID      string  `json:"playerId"`
-			UserID        string  `json:"userId"`
-			IP            string  `json:"ip"`
-			Ping          float64 `json:"ping"`
-			LocationX     float64 `json:"location_x"`
-			LocationY     float64 `json:"location_y"`
-			Level         int     `json:"level"`
-			BuildingCount int     `json:"building_count"`
-		} `json:"players"`
-	}
+	var payload playersPayload
 	if err := c.getJSON(ctx, "/players", &payload, false); err != nil {
 		return nil, fmt.Errorf("list Palworld players: %w", err)
 	}
-	players := make([]domain.Player, 0, len(payload.Players))
-	for _, player := range payload.Players {
-		if player.UserID == "" {
-			return nil, fmt.Errorf("decode Palworld players: player has empty userId")
+	if payload.Players == nil {
+		return nil, fmt.Errorf("decode Palworld players: missing required field players")
+	}
+	players := make([]domain.Player, 0, len(*payload.Players))
+	for index, player := range *payload.Players {
+		missing := player.missingRequiredField()
+		if missing != "" {
+			return nil, fmt.Errorf("decode Palworld players: player %d missing required field %s", index, missing)
+		}
+		if *player.UserID == "" {
+			return nil, fmt.Errorf("decode Palworld players: player %d has empty userId", index)
 		}
 		players = append(players, domain.Player{
-			UserID: player.UserID, PlayerID: player.PlayerID, Name: player.Name, AccountName: player.AccountName,
-			IP: player.IP, Ping: player.Ping, LocationX: player.LocationX, LocationY: player.LocationY,
-			Level: player.Level, BuildingCount: player.BuildingCount,
+			UserID: *player.UserID, PlayerID: *player.PlayerID, Name: *player.Name, AccountName: *player.AccountName,
+			IP: *player.IP, Ping: *player.Ping, LocationX: *player.LocationX, LocationY: *player.LocationY,
+			Level: *player.Level, BuildingCount: *player.BuildingCount,
 		})
 	}
 	return players, nil
 }
 
 func (c *Client) Metrics(ctx context.Context) (domain.ServerMetrics, error) {
-	var metrics domain.ServerMetrics
-	if err := c.getJSON(ctx, "/metrics", &metrics, false); err != nil {
+	var payload metricsPayload
+	if err := c.getJSON(ctx, "/metrics", &payload, false); err != nil {
 		return domain.ServerMetrics{}, fmt.Errorf("get Palworld metrics: %w", err)
 	}
-	return metrics, nil
+	if missing := payload.missingRequiredField(); missing != "" {
+		return domain.ServerMetrics{}, fmt.Errorf("decode Palworld metrics: missing required field %s", missing)
+	}
+	return domain.ServerMetrics{
+		ServerFPS: *payload.ServerFPS, CurrentPlayerNum: *payload.CurrentPlayerNum,
+		ServerFrameTime: *payload.ServerFrameTime, MaxPlayerNum: *payload.MaxPlayerNum,
+		UptimeSeconds: *payload.UptimeSeconds, BaseCampNum: *payload.BaseCampNum, Days: *payload.Days,
+	}, nil
 }
 
 func (c *Client) Info(ctx context.Context) (domain.ServerInfo, error) {
-	var info domain.ServerInfo
-	if err := c.getJSON(ctx, "/info", &info, false); err != nil {
+	var payload infoPayload
+	if err := c.getJSON(ctx, "/info", &payload, false); err != nil {
 		return domain.ServerInfo{}, fmt.Errorf("get Palworld info: %w", err)
 	}
-	return info, nil
+	if missing := payload.missingRequiredField(); missing != "" {
+		return domain.ServerInfo{}, fmt.Errorf("decode Palworld info: missing required field %s", missing)
+	}
+	return domain.ServerInfo{
+		Version: *payload.Version, ServerName: *payload.ServerName,
+		Description: *payload.Description, WorldGUID: *payload.WorldGUID,
+	}, nil
+}
+
+func (p playerPayload) missingRequiredField() string {
+	for _, field := range []struct {
+		name    string
+		missing bool
+	}{
+		{"name", p.Name == nil}, {"accountName", p.AccountName == nil}, {"playerId", p.PlayerID == nil},
+		{"userId", p.UserID == nil}, {"ip", p.IP == nil}, {"ping", p.Ping == nil},
+		{"location_x", p.LocationX == nil}, {"location_y", p.LocationY == nil}, {"level", p.Level == nil},
+		{"building_count", p.BuildingCount == nil},
+	} {
+		if field.missing {
+			return field.name
+		}
+	}
+	return ""
+}
+
+func (p metricsPayload) missingRequiredField() string {
+	for _, field := range []struct {
+		name    string
+		missing bool
+	}{
+		{"serverfps", p.ServerFPS == nil}, {"currentplayernum", p.CurrentPlayerNum == nil},
+		{"serverframetime", p.ServerFrameTime == nil}, {"maxplayernum", p.MaxPlayerNum == nil},
+		{"uptime", p.UptimeSeconds == nil}, {"basecampnum", p.BaseCampNum == nil}, {"days", p.Days == nil},
+	} {
+		if field.missing {
+			return field.name
+		}
+	}
+	return ""
+}
+
+func (p infoPayload) missingRequiredField() string {
+	for _, field := range []struct {
+		name    string
+		missing bool
+	}{
+		{"version", p.Version == nil}, {"servername", p.ServerName == nil},
+		{"description", p.Description == nil}, {"worldguid", p.WorldGUID == nil},
+	} {
+		if field.missing {
+			return field.name
+		}
+	}
+	return ""
 }
 
 func (c *Client) Settings(ctx context.Context) (domain.ServerSettings, error) {

@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"time"
 
@@ -31,6 +33,34 @@ type ServerMetricSnapshot struct {
 	At      time.Time
 	Metrics domain.ServerMetrics
 	Event   *ActivityEvent
+}
+
+func (r *Repository) CurrentServerRuntime(ctx context.Context) (ServerRuntimeState, error) {
+	return scanServerRuntime(r.db.QueryRowContext(ctx, `SELECT epoch,restarted_at FROM server_runtime_state WHERE id=1`))
+}
+
+func currentServerRuntimeTx(ctx context.Context, tx *sql.Tx) (ServerRuntimeState, error) {
+	return scanServerRuntime(tx.QueryRowContext(ctx, `SELECT epoch,restarted_at FROM server_runtime_state WHERE id=1`))
+}
+
+func scanServerRuntime(row rowScanner) (ServerRuntimeState, error) {
+	var state ServerRuntimeState
+	var restartedAt sql.NullString
+	if err := row.Scan(&state.Epoch, &restartedAt); err != nil {
+		return ServerRuntimeState{}, err
+	}
+	if restartedAt.Valid {
+		at, err := parseTime(restartedAt.String)
+		if err != nil {
+			return ServerRuntimeState{}, fmt.Errorf("parse server runtime restart time: %w", err)
+		}
+		state.RestartedAt = at
+	}
+	return state, nil
+}
+
+func serverRuntimeStatesEqual(a, b ServerRuntimeState) bool {
+	return a.Epoch == b.Epoch && a.RestartedAt.UTC().Equal(b.RestartedAt.UTC())
 }
 
 type ServerDocumentObservation struct {
@@ -94,6 +124,9 @@ func (r *Repository) RecordServerMetricObservation(ctx context.Context, write Se
 		if !serverMetricTokenMatches(write.Expected, err == nil, latestAt, latestMetrics) {
 			return fmt.Errorf("record server metric observation: %w", ErrObservationConflict)
 		}
+		if err := validateServerMetricTransition(err == nil, latestMetrics.UptimeSeconds, write); err != nil {
+			return err
+		}
 
 		eventID, err := insertOptionalActivityEvent(ctx, tx.tx, write.Event)
 		if err != nil {
@@ -107,6 +140,18 @@ INSERT INTO server_metric_samples(
 			write.Metrics.ServerFrameTime, write.Metrics.MaxPlayerNum, write.Metrics.UptimeSeconds,
 			write.Metrics.BaseCampNum, write.Metrics.Days, eventID); err != nil {
 			return fmt.Errorf("record server metric observation: insert sample: %w", err)
+		}
+		if write.Event != nil && write.Event.EventType == "server_restarted" {
+			if _, err := tx.tx.ExecContext(ctx, `UPDATE server_runtime_state SET epoch=epoch+1,restarted_at=? WHERE id=1`, formatObservationTime(write.At)); err != nil {
+				return fmt.Errorf("record server metric observation: advance runtime epoch: %w", err)
+			}
+			var epoch int64
+			if err := tx.tx.QueryRowContext(ctx, `SELECT epoch FROM server_runtime_state WHERE id=1`).Scan(&epoch); err != nil {
+				return fmt.Errorf("record server metric observation: read advanced runtime epoch: %w", err)
+			}
+			if _, err := tx.tx.ExecContext(ctx, `UPDATE trajectory_samples SET runtime_epoch=? WHERE observed_at>=? AND runtime_epoch<?`, epoch, formatObservationTime(write.At), epoch); err != nil {
+				return fmt.Errorf("record server metric observation: repair trajectory runtime epoch: %w", err)
+			}
 		}
 		if _, err := tx.tx.ExecContext(ctx, `
 INSERT INTO server_observation_state(
@@ -125,6 +170,42 @@ ON CONFLICT(kind) DO UPDATE SET
 		}
 		return nil
 	})
+}
+
+func validateServerMetricTransition(latestExists bool, oldUptime int64, write ServerMetricObservation) error {
+	restarted := latestExists && write.Metrics.UptimeSeconds < oldUptime
+	if !restarted {
+		if write.Event != nil {
+			return fmt.Errorf("record server metric observation: event requires an authoritative uptime decrease")
+		}
+		return nil
+	}
+	if write.Event == nil {
+		return fmt.Errorf("record server metric observation: uptime decrease requires server_restarted event")
+	}
+	if write.Event.EventType != "server_restarted" {
+		return fmt.Errorf("record server metric observation: uptime decrease event must be server_restarted")
+	}
+	if write.Event.SubjectType != "server" || write.Event.SubjectID != "server" || write.Event.Source != "palworld_rest" ||
+		write.Event.Confidence != "observed" || write.Event.SchemaVersion != 1 || write.Event.SourceRef != write.Event.CorrelationID {
+		return fmt.Errorf("record server metric observation: server_restarted envelope does not match service contract")
+	}
+	var payload struct {
+		Old *int64 `json:"old_uptime_seconds"`
+		New *int64 `json:"new_uptime_seconds"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader([]byte(write.Event.PayloadJSON)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		return fmt.Errorf("record server metric observation: decode server_restarted payload: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("record server metric observation: server_restarted payload has trailing content")
+	}
+	if payload.Old == nil || payload.New == nil || *payload.Old != oldUptime || *payload.New != write.Metrics.UptimeSeconds {
+		return fmt.Errorf("record server metric observation: server_restarted payload does not match authoritative uptime transition")
+	}
+	return nil
 }
 
 func (r *Repository) LatestServerMetrics(ctx context.Context) (time.Time, domain.ServerMetrics, error) {

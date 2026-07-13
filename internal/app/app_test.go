@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -88,7 +89,7 @@ func TestNewWiresUnifiedPlayerAndServerObservations(t *testing.T) {
 		requests <- r.URL.Path
 		switch r.URL.Path {
 		case "/v1/api/players":
-			_, _ = w.Write([]byte(`{"players":[{"name":"One","playerId":"pal-1","userId":"u1","location_x":10,"location_y":20,"level":3}]}`))
+			_, _ = w.Write([]byte(`{"players":[{"name":"One","accountName":"one","playerId":"pal-1","userId":"u1","ip":"","ping":1,"location_x":10,"location_y":20,"level":3,"building_count":0}]}`))
 		case "/v1/api/metrics":
 			_, _ = w.Write([]byte(`{"serverfps":60,"currentplayernum":1,"serverframetime":1,"maxplayernum":32,"uptime":100,"basecampnum":1,"days":2}`))
 		case "/v1/api/info":
@@ -181,7 +182,7 @@ func TestNewUsesObservationSamplingConfiguration(t *testing.T) {
 		mu.Unlock()
 		switch r.URL.Path {
 		case "/v1/api/players":
-			_, _ = fmt.Fprintf(w, `{"players":[{"name":"One","playerId":"pal-1","userId":"u1","location_x":%d,"location_y":20}]}`, call)
+			_, _ = fmt.Fprintf(w, `{"players":[{"name":"One","accountName":"one","playerId":"pal-1","userId":"u1","ip":"127.0.0.1","ping":1,"location_x":%d,"location_y":20,"level":3,"building_count":0}]}`, call)
 		case "/v1/api/metrics":
 			_, _ = w.Write([]byte(`{"serverfps":60,"currentplayernum":1,"serverframetime":1,"maxplayernum":32,"uptime":100,"basecampnum":1,"days":2}`))
 		case "/v1/api/info":
@@ -418,11 +419,12 @@ func TestReloadRejectsStartupOnlySettings(t *testing.T) {
 func TestReloadRejectsObservationSettingsWithoutChangingPolicy(t *testing.T) {
 	application, path := newTestApp(t)
 	before := application.policies.Resolve("player")
+	beforeObservation := application.CurrentConfig().Observation
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed := string(data) + "\nobservation:\n  trajectory_min_distance: 25\n"
+	changed := string(data) + "\nobservation:\n  trajectory_ping_change_threshold: 25\n"
 	if err := os.WriteFile(path, []byte(changed), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -432,6 +434,12 @@ func TestReloadRejectsObservationSettingsWithoutChangingPolicy(t *testing.T) {
 	}
 	if after := application.policies.Resolve("player"); after.Revision != before.Revision {
 		t.Fatalf("observation reload changed stored policy: before=%+v after=%+v", before, after)
+	}
+	if after := application.CurrentConfig().Observation; !reflect.DeepEqual(after, beforeObservation) {
+		t.Fatalf("rejected reload changed observation config: before=%+v after=%+v", beforeObservation, after)
+	}
+	if reloadErr := application.poller.Status().ConfigReloadErr; reloadErr == "" {
+		t.Fatal("rejected observation reload did not update poll status")
 	}
 }
 

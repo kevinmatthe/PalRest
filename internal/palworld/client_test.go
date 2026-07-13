@@ -153,6 +153,120 @@ func TestReadOnlyEndpointsRejectNonObjectTopLevelJSON(t *testing.T) {
 	}
 }
 
+func TestReadOnlyEndpointsRequireOfficialFields(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		valid    map[string]any
+		required []string
+		call     func(*Client) error
+	}{
+		{
+			name: "players", path: "/players",
+			valid: map[string]any{"players": []any{map[string]any{
+				"name": "Kevin", "accountName": "kevin", "playerId": "ABC", "userId": "steam_1",
+				"ip": "192.0.2.1", "ping": 28.5, "location_x": 123.25, "location_y": -99.5,
+				"level": 41, "building_count": 119,
+			}}},
+			required: []string{"players"},
+			call: func(client *Client) error {
+				_, err := client.ListPlayers(t.Context())
+				return err
+			},
+		},
+		{
+			name: "metrics", path: "/metrics",
+			valid: map[string]any{
+				"serverfps": 58, "currentplayernum": 1, "serverframetime": 17.2, "maxplayernum": 32,
+				"uptime": 3600, "basecampnum": 2, "days": 126,
+			},
+			required: []string{"serverfps", "currentplayernum", "serverframetime", "maxplayernum", "uptime", "basecampnum", "days"},
+			call: func(client *Client) error {
+				_, err := client.Metrics(t.Context())
+				return err
+			},
+		},
+		{
+			name: "info", path: "/info",
+			valid: map[string]any{
+				"version": "v0.7.2", "servername": "Home", "description": "Family", "worldguid": "WORLD",
+			},
+			required: []string{"version", "servername", "description", "worldguid"},
+			call: func(client *Client) error {
+				_, err := client.Info(t.Context())
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			type invalidPayload struct {
+				value     any
+				wantError string
+			}
+			payloads := map[string]invalidPayload{
+				"empty object": {value: map[string]any{}, wantError: "decode Palworld " + test.name + ": missing required field " + test.required[0]},
+			}
+			for _, field := range test.required {
+				copy := cloneJSONMap(t, test.valid)
+				delete(copy, field)
+				payloads["missing "+field] = invalidPayload{
+					value: copy, wantError: "decode Palworld " + test.name + ": missing required field " + field,
+				}
+			}
+			if test.name == "players" {
+				payloads["null players"] = invalidPayload{
+					value: map[string]any{"players": nil}, wantError: "decode Palworld players: missing required field players",
+				}
+				playerFields := []string{"name", "accountName", "playerId", "userId", "ip", "ping", "location_x", "location_y", "level", "building_count"}
+				for _, field := range playerFields {
+					copy := cloneJSONMap(t, test.valid)
+					player := copy["players"].([]any)[0].(map[string]any)
+					delete(player, field)
+					payloads["player missing "+field] = invalidPayload{
+						value: copy, wantError: "decode Palworld players: player 0 missing required field " + field,
+					}
+				}
+				copy := cloneJSONMap(t, test.valid)
+				copy["players"].([]any)[0].(map[string]any)["userId"] = ""
+				payloads["player empty userId"] = invalidPayload{
+					value: copy, wantError: "decode Palworld players: player 0 has empty userId",
+				}
+			}
+
+			for name, invalid := range payloads {
+				t.Run(name, func(t *testing.T) {
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.URL.Path != test.path {
+							t.Errorf("path=%s, want %s", r.URL.Path, test.path)
+						}
+						_ = json.NewEncoder(w).Encode(invalid.value)
+					}))
+					defer server.Close()
+					err := test.call(New(server.URL, "secret", time.Second))
+					if err == nil || !strings.Contains(err.Error(), invalid.wantError) {
+						t.Fatalf("err=%v, want error containing %q", err, invalid.wantError)
+					}
+				})
+			}
+		})
+	}
+}
+
+func cloneJSONMap(t *testing.T, input map[string]any) map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
 func TestReadOnlyEndpointRejectsResponseOverOneMiB(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"description":"` + strings.Repeat("x", maxResponseBytes) + `"}`))
@@ -222,6 +336,7 @@ func TestListPlayersUsesBasicAuthAndDecodesPlayers(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"players": []map[string]any{{
 			"name": "Kevin", "accountName": "kevin", "playerId": "ABC", "userId": "steam_1", "ip": "127.0.0.1",
+			"ping": 0, "location_x": 0, "location_y": 0, "level": 0, "building_count": 0,
 		}}})
 	}))
 	defer server.Close()

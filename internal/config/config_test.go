@@ -1,12 +1,77 @@
 package config
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestDurationJSONMillisecondsRejectOverflow(t *testing.T) {
+	maxMilliseconds := int64(math.MaxInt64) / int64(time.Millisecond)
+	minMilliseconds := int64(math.MinInt64) / int64(time.Millisecond)
+	tests := []struct {
+		name    string
+		value   int64
+		want    time.Duration
+		wantErr bool
+	}{
+		{"maximum representable quotient", maxMilliseconds, time.Duration(maxMilliseconds) * time.Millisecond, false},
+		{"minimum representable quotient", minMilliseconds, time.Duration(minMilliseconds) * time.Millisecond, false},
+		{"above maximum", maxMilliseconds + 1, 0, true},
+		{"below minimum", minMilliseconds - 1, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var duration Duration
+			err := duration.UnmarshalJSON([]byte(fmt.Sprintf("%d", tt.value)))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("value=%d duration=%s", tt.value, duration.Duration)
+				}
+				return
+			}
+			if err != nil || duration.Duration != tt.want {
+				t.Fatalf("value=%d duration=%s want=%s err=%v", tt.value, duration.Duration, tt.want, err)
+			}
+		})
+	}
+}
+
+func TestDayDurationGrammarAndBounds(t *testing.T) {
+	tests := []struct {
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"106751d", 106751 * 24 * time.Hour, false},
+		{"106752d", 0, true},
+		{"-1d", -24 * time.Hour, false},
+		{"-106751d", -106751 * 24 * time.Hour, false},
+		{"-106752d", 0, true},
+		{"1.5d", 0, true},
+		{"1e2d", 0, true},
+		{"0x2d", 0, true},
+		{"1d2h", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			got, err := parseDuration(tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("duration=%s", got)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("duration=%s want=%s err=%v", got, tt.want, err)
+			}
+		})
+	}
+}
 
 const validConfig = `
 version: 1
@@ -124,6 +189,7 @@ func TestParseUsesObservationDefaultsWhenOmitted(t *testing.T) {
 	}
 	if cfg.Observation.ServerDocumentInterval.Duration != 5*time.Minute ||
 		cfg.Observation.TrajectoryMinDistance != 100 ||
+		cfg.Observation.TrajectoryPingChangeThreshold != 10 ||
 		cfg.Observation.TrajectoryMaxInterval.Duration != 5*time.Minute ||
 		cfg.Observation.RawRetention.Duration != 90*24*time.Hour {
 		t.Fatalf("observation defaults=%+v", cfg.Observation)
@@ -134,6 +200,7 @@ func TestParseAcceptsExplicitObservationSettings(t *testing.T) {
 	input := validConfig + `observation:
   server_document_interval: 7m
   trajectory_min_distance: 42.5
+  trajectory_ping_change_threshold: 12.5
   trajectory_max_interval: 3m
   raw_retention: 30d
 `
@@ -143,6 +210,7 @@ func TestParseAcceptsExplicitObservationSettings(t *testing.T) {
 	}
 	if cfg.Observation.ServerDocumentInterval.Duration != 7*time.Minute ||
 		cfg.Observation.TrajectoryMinDistance != 42.5 ||
+		cfg.Observation.TrajectoryPingChangeThreshold != 12.5 ||
 		cfg.Observation.TrajectoryMaxInterval.Duration != 3*time.Minute ||
 		cfg.Observation.RawRetention.Duration != 30*24*time.Hour {
 		t.Fatalf("observation=%+v", cfg.Observation)
@@ -154,9 +222,14 @@ func TestParseRejectsInvalidObservationSettings(t *testing.T) {
 		"zero server document interval": "server_document_interval: 0s",
 		"zero trajectory max interval":  "trajectory_max_interval: 0s",
 		"zero raw retention":            "raw_retention: 0s",
+		"negative day raw retention":    "raw_retention: -1d",
 		"negative trajectory distance":  "trajectory_min_distance: -1",
 		"nan trajectory distance":       "trajectory_min_distance: .nan",
 		"infinite trajectory distance":  "trajectory_min_distance: .inf",
+		"zero ping threshold":           "trajectory_ping_change_threshold: 0",
+		"negative ping threshold":       "trajectory_ping_change_threshold: -1",
+		"nan ping threshold":            "trajectory_ping_change_threshold: .nan",
+		"infinite ping threshold":       "trajectory_ping_change_threshold: .inf",
 	}
 	for name, setting := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -221,7 +294,7 @@ func TestExampleConfigIsValidAndDisabled(t *testing.T) {
 		t.Fatal("sample policy must default to disabled")
 	}
 	if cfg.Observation.ServerDocumentInterval.Duration != 5*time.Minute || cfg.Observation.TrajectoryMinDistance != 100 ||
-		cfg.Observation.TrajectoryMaxInterval.Duration != 5*time.Minute || cfg.Observation.RawRetention.Duration != 90*24*time.Hour {
+		cfg.Observation.TrajectoryPingChangeThreshold != 10 || cfg.Observation.TrajectoryMaxInterval.Duration != 5*time.Minute || cfg.Observation.RawRetention.Duration != 90*24*time.Hour {
 		t.Fatalf("sample observation=%+v", cfg.Observation)
 	}
 }

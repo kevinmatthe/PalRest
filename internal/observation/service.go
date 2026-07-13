@@ -2,7 +2,10 @@ package observation
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -26,27 +29,47 @@ type Recorder interface {
 	CleanupRawObservations(context.Context, time.Time, int) (int, error)
 }
 
+type runtimeRecorder interface {
+	CurrentServerRuntime(context.Context) (store.ServerRuntimeState, error)
+}
+
 type Service struct {
-	mu                sync.Mutex
-	recorder          Recorder
-	maxGap            time.Duration
-	movementThreshold float64
-	maxSampleInterval time.Duration
-	rawRetention      time.Duration
-	idGenerator       func() string
-	asOf              time.Time
-	online            map[string]playerState
-	lastCleanup       time.Time
+	mu                  sync.Mutex
+	recorder            Recorder
+	maxGap              time.Duration
+	movementThreshold   float64
+	pingChangeThreshold float64
+	maxSampleInterval   time.Duration
+	rawRetention        time.Duration
+	idGenerator         func() string
+	asOf                time.Time
+	online              map[string]playerState
+	lastCleanup         time.Time
+	continuityValid     bool
+	pending             *pendingObservation
+	runtime             store.ServerRuntimeState
+	runtimeKnown        bool
+}
+
+type pendingObservation struct {
+	write           store.PlayerObservationWrite
+	next            map[string]playerState
+	current         map[string]domain.Player
+	at              time.Time
+	correlationID   string
+	continuityValid bool
 }
 
 type playerState struct {
-	player        domain.Player
-	lastAt        time.Time
-	segmentID     string
-	lastSampleAt  time.Time
-	lastX         float64
-	lastY         float64
-	lastPrivateAt time.Time
+	player              domain.Player
+	lastAt              time.Time
+	segmentID           string
+	lastSampleAt        time.Time
+	lastX               float64
+	lastY               float64
+	lastSamplePing      float64
+	lastSamplePingKnown bool
+	lastPrivateAt       time.Time
 }
 
 type eventPayload struct {
@@ -57,7 +80,16 @@ type eventPayload struct {
 	BuildingCount int    `json:"building_count,omitempty"`
 }
 
-func New(recorder Recorder, maxGap time.Duration, movementThreshold float64, maxSampleInterval, rawRetention time.Duration, idGenerator func() string) *Service {
+type attributeChange struct {
+	Old any `json:"old"`
+	New any `json:"new"`
+}
+
+type attributeChangedPayload struct {
+	Changes map[string]attributeChange `json:"changes"`
+}
+
+func New(recorder Recorder, maxGap time.Duration, movementThreshold, pingChangeThreshold float64, maxSampleInterval, rawRetention time.Duration, idGenerator func() string) *Service {
 	if recorder == nil {
 		panic("observation: nil recorder")
 	}
@@ -66,6 +98,9 @@ func New(recorder Recorder, maxGap time.Duration, movementThreshold float64, max
 	}
 	if movementThreshold < 0 || math.IsNaN(movementThreshold) || math.IsInf(movementThreshold, 0) {
 		panic("observation: movement threshold must be nonnegative and finite")
+	}
+	if pingChangeThreshold <= 0 || math.IsNaN(pingChangeThreshold) || math.IsInf(pingChangeThreshold, 0) {
+		panic("observation: ping change threshold must be positive and finite")
 	}
 	if maxSampleInterval <= 0 {
 		panic("observation: max sample interval must be positive")
@@ -77,7 +112,7 @@ func New(recorder Recorder, maxGap time.Duration, movementThreshold float64, max
 		panic("observation: nil ID generator")
 	}
 	return &Service{
-		recorder: recorder, maxGap: maxGap, movementThreshold: movementThreshold,
+		recorder: recorder, maxGap: maxGap, movementThreshold: movementThreshold, pingChangeThreshold: pingChangeThreshold,
 		maxSampleInterval: maxSampleInterval, rawRetention: rawRetention,
 		idGenerator: idGenerator, online: make(map[string]playerState),
 	}
@@ -94,18 +129,73 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 	if err != nil {
 		return fmt.Errorf("observe players: %w", err)
 	}
-	at = at.UTC()
+	return s.observeNormalized(ctx, at.UTC(), current, ordered, correlationID, 0)
+}
+
+func (s *Service) observeNormalized(ctx context.Context, at time.Time, current map[string]domain.Player, ordered []domain.Player, correlationID string, attempt int) error {
+	runtime := store.ServerRuntimeState{}
+	if provider, ok := s.recorder.(runtimeRecorder); ok {
+		var err error
+		runtime, err = provider.CurrentServerRuntime(ctx)
+		if err != nil {
+			return fmt.Errorf("observe players: read server runtime: %w", err)
+		}
+	}
 
 	s.mu.Lock()
+	if s.pending != nil {
+		pending := s.pending
+		if err := s.recorder.RecordPlayerObservation(ctx, pending.write); err != nil {
+			if !errors.Is(err, store.ErrObservationConflict) {
+				s.mu.Unlock()
+				return err
+			}
+			// A runtime conflict after an ambiguous result proves the exact
+			// pending write did not commit (committed replays are accepted by
+			// the repository). Drop it and make the interval unknown before
+			// deriving the caller's observation against the current epoch.
+			s.pending = nil
+			s.continuityValid = false
+		} else {
+			s.online = pending.next
+			s.asOf = pending.at
+			s.continuityValid = pending.continuityValid
+			s.pending = nil
+			if at.Equal(pending.at) {
+				same := correlationID == pending.correlationID && playerMapsEqual(current, pending.current)
+				s.mu.Unlock()
+				if !same {
+					return fmt.Errorf("observe players: observation at %s differs from pending replay", at.Format(time.RFC3339Nano))
+				}
+				return nil
+			}
+		}
+	}
 	if !s.asOf.IsZero() && !at.After(s.asOf) {
 		s.mu.Unlock()
 		return fmt.Errorf("observe players: observation time %s must be after %s", at.Format(time.RFC3339Nano), s.asOf.Format(time.RFC3339Nano))
 	}
+	if !s.runtimeKnown {
+		s.runtime = runtime
+		s.runtimeKnown = true
+	} else if !serverRuntimeEqual(s.runtime, runtime) {
+		for userID, state := range s.online {
+			state.segmentID = ""
+			state.lastSampleAt = time.Time{}
+			state.lastX = 0
+			state.lastY = 0
+			state.lastSamplePing = 0
+			state.lastSamplePingKnown = false
+			s.online[userID] = state
+		}
+		s.runtime = runtime
+	}
 
 	next := make(map[string]playerState, len(current))
-	write := store.PlayerObservationWrite{}
+	write := store.PlayerObservationWrite{Runtime: &runtime}
 	for _, player := range ordered {
 		previous, existed := s.online[player.UserID]
+		continuous := existed && s.continuityValid && at.Sub(previous.lastAt) <= s.maxGap
 		state := previous
 		state.player = player
 		state.lastAt = at
@@ -117,20 +207,29 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 			}
 			write.Events = append(write.Events, event)
 			state = playerState{player: player, lastAt: at}
-		} else if at.Sub(previous.lastAt) > s.maxGap {
+		} else if !s.continuityValid || at.Sub(previous.lastAt) > s.maxGap {
 			state.segmentID = ""
 			state.lastSampleAt = time.Time{}
+			state.lastSamplePing = 0
+			state.lastSamplePingKnown = false
 			state.lastPrivateAt = time.Time{}
+		}
+		if continuous {
+			event, changed, eventErr := s.playerAttributeChangedEvent(previous.player, player, at, correlationID)
+			if eventErr != nil {
+				s.mu.Unlock()
+				return eventErr
+			}
+			if changed {
+				write.Events = append(write.Events, event)
+			}
 		}
 
 		shouldPrivateSample := state.lastPrivateAt.IsZero() ||
 			player.IP != previous.player.IP || player.Level != previous.player.Level ||
 			player.BuildingCount != previous.player.BuildingCount || at.Sub(state.lastPrivateAt) >= s.maxSampleInterval
 		if player.IP != "" && shouldPrivateSample {
-			ping := player.Ping
-			if math.IsNaN(ping) || math.IsInf(ping, 0) || ping < 0 {
-				ping = 0
-			}
+			ping, _ := normalizedPing(player.Ping)
 			write.PrivateSamples = append(write.PrivateSamples, store.PlayerPrivateSample{
 				UserID: player.UserID, ObservedAt: at, IP: player.IP, Ping: ping,
 				Level: player.Level, BuildingCount: player.BuildingCount, SourceRef: correlationID,
@@ -142,32 +241,40 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 			shouldSample := state.segmentID == ""
 			if !shouldSample {
 				distance := math.Hypot(player.LocationX-state.lastX, player.LocationY-state.lastY)
-				shouldSample = distance > s.movementThreshold || at.Sub(state.lastSampleAt) >= s.maxSampleInterval
+				levelChanged := knownLevel(previous.player.Level) && knownLevel(player.Level) && previous.player.Level != player.Level
+				currentPing, currentPingKnown := normalizedPing(player.Ping)
+				pingChanged := knownPing(previous.player.Ping) && currentPingKnown && state.lastSamplePingKnown &&
+					pingThresholdReached(state.lastSamplePing, currentPing, s.pingChangeThreshold)
+				shouldSample = distance > s.movementThreshold || at.Sub(state.lastSampleAt) >= s.maxSampleInterval || levelChanged || pingChanged
 			}
 			if shouldSample {
 				if state.segmentID == "" {
-					state.segmentID, err = s.generateID("trajectory segment")
+					segmentID, err := s.generateID("trajectory segment")
 					if err != nil {
 						s.mu.Unlock()
 						return err
 					}
+					state.segmentID = segmentID
 				}
-				ping := player.Ping
-				if math.IsNaN(ping) || math.IsInf(ping, 0) {
-					ping = 0
-				}
+				ping, pingKnown := normalizedPing(player.Ping)
 				write.Trajectories = append(write.Trajectories, store.TrajectorySample{
 					UserID: player.UserID, SegmentID: state.segmentID, ObservedAt: at,
 					X: player.LocationX, Y: player.LocationY, Ping: ping, Level: player.Level,
-					SourceRef: correlationID,
+					SourceRef: correlationID, RuntimeEpoch: runtime.Epoch,
 				})
 				state.lastSampleAt = at
 				state.lastX = player.LocationX
 				state.lastY = player.LocationY
+				if pingKnown {
+					state.lastSamplePing = ping
+					state.lastSamplePingKnown = true
+				}
 			}
 		} else {
 			state.segmentID = ""
 			state.lastSampleAt = time.Time{}
+			state.lastSamplePing = 0
+			state.lastSamplePingKnown = false
 		}
 		next[player.UserID] = state
 	}
@@ -188,15 +295,27 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		write.Events = append(write.Events, event)
 	}
 
-	// Generated UUID-like values identify this persistence attempt. The recorder's
-	// transaction prevents a failed attempt from partially committing; a retry may
-	// use fresh IDs while deriving the same events and trajectory anchor.
+	// Keep the complete write pending until the recorder confirms it. This also
+	// covers an ambiguous commit result: the next call replays these exact IDs,
+	// source references, and segment anchors before advancing the baseline.
 	if err := s.recorder.RecordPlayerObservation(ctx, write); err != nil {
+		if errors.Is(err, store.ErrObservationConflict) {
+			s.mu.Unlock()
+			if attempt >= 2 {
+				return fmt.Errorf("observe players: %w after 3 attempts", store.ErrObservationConflict)
+			}
+			return s.observeNormalized(ctx, at, current, ordered, correlationID, attempt+1)
+		}
+		s.pending = &pendingObservation{
+			write: write, next: next, current: current, at: at,
+			correlationID: correlationID, continuityValid: true,
+		}
 		s.mu.Unlock()
 		return err
 	}
 	s.online = next
 	s.asOf = at
+	s.continuityValid = true
 	doCleanup := s.lastCleanup.IsZero() || at.Sub(s.lastCleanup) >= 24*time.Hour
 	if doCleanup {
 		s.lastCleanup = at
@@ -210,6 +329,81 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		}
 	}
 	return nil
+}
+
+func serverRuntimeEqual(a, b store.ServerRuntimeState) bool {
+	return a.Epoch == b.Epoch && a.RestartedAt.Equal(b.RestartedAt)
+}
+
+func knownLevel(level int) bool { return level > 0 }
+
+func knownPing(ping float64) bool {
+	return !math.IsNaN(ping) && !math.IsInf(ping, 0) && ping >= 0
+}
+
+func normalizedPing(ping float64) (float64, bool) {
+	if !knownPing(ping) {
+		return 0, false
+	}
+	return ping, true
+}
+
+func pingThresholdReached(previous, current, threshold float64) bool {
+	return math.Abs(current-previous) >= threshold
+}
+
+// PollFailed marks the interval since the last successful player observation
+// unknown without inventing leave/join events or discarding the last known
+// player values. The next success starts fresh trajectory evidence.
+func (s *Service) PollFailed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.continuityValid = false
+	if s.pending != nil {
+		s.pending.continuityValid = false
+	}
+}
+
+func playerMapsEqual(a, b map[string]domain.Player) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for id, player := range a {
+		if other, ok := b[id]; !ok || player != other {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) playerAttributeChangedEvent(previous, current domain.Player, at time.Time, correlationID string) (store.ActivityEvent, bool, error) {
+	changes := make(map[string]attributeChange, 4)
+	if previous.PlayerID != "" && current.PlayerID != "" && previous.PlayerID != current.PlayerID {
+		changes["player_id"] = attributeChange{Old: previous.PlayerID, New: current.PlayerID}
+	}
+	if previous.Name != "" && current.Name != "" && previous.Name != current.Name {
+		changes["name"] = attributeChange{Old: previous.Name, New: current.Name}
+	}
+	if knownLevel(previous.Level) && knownLevel(current.Level) && previous.Level != current.Level {
+		changes["level"] = attributeChange{Old: previous.Level, New: current.Level}
+	}
+	if previous.BuildingCount != current.BuildingCount {
+		changes["building_count"] = attributeChange{Old: previous.BuildingCount, New: current.BuildingCount}
+	}
+	if len(changes) == 0 {
+		return store.ActivityEvent{}, false, nil
+	}
+	payload, err := json.Marshal(attributeChangedPayload{Changes: changes})
+	if err != nil {
+		return store.ActivityEvent{}, false, fmt.Errorf("observe players: encode player_attribute_changed payload: %w", err)
+	}
+	digest := sha256.Sum256([]byte(current.UserID + "\x00" + at.UTC().Format(time.RFC3339Nano) + "\x00" + correlationID + "\x00" + string(payload)))
+	id := "player_attribute_changed_" + hex.EncodeToString(digest[:])
+	return store.ActivityEvent{
+		ID: id, EventType: "player_attribute_changed", SubjectType: "player", SubjectID: current.UserID,
+		OccurredAt: at, ObservedAt: at, Source: "palworld_rest", SourceRef: correlationID,
+		CorrelationID: correlationID, Confidence: "observed", SchemaVersion: 1, PayloadJSON: string(payload),
+	}, true, nil
 }
 
 func (s *Service) playerEvent(eventType string, player domain.Player, at time.Time, correlationID string) (store.ActivityEvent, error) {

@@ -2,8 +2,11 @@ package guard
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,11 +53,13 @@ type harness struct {
 	policy  *policy.Service
 	service *Service
 	start   time.Time
+	dbPath  string
 }
 
 func newHarness(t *testing.T, limit, maxGap time.Duration) *harness {
 	t.Helper()
-	repo, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "guard.db"))
+	dbPath := filepath.Join(t.TempDir(), "guard.db")
+	repo, err := store.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +89,7 @@ func newHarness(t *testing.T, limit, maxGap time.Duration) *harness {
 		policy:  policyService,
 		service: New(repo, policyService, maxGap, 15*time.Second, 5*time.Minute),
 		start:   start,
+		dbPath:  dbPath,
 	}
 }
 
@@ -522,6 +528,169 @@ func TestSnapshotRestoresWarningAndEnforcementFromRepository(t *testing.T) {
 	}
 	if snapshot.Enforcement.Status != "success" {
 		t.Fatalf("enforcement=%+v", snapshot.Enforcement)
+	}
+}
+
+func TestGuardResultsAtomicallyAppendUnifiedTimelineEvents(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 3*time.Hour)
+	h.observe(h.start, player())
+	warningAt := h.start.Add(91 * time.Minute)
+	warning := h.observe(warningAt, player()).Warnings[0]
+	secret := "https://admin:secret@example.invalid/private"
+	if err := h.service.RecordWarningResult(t.Context(), warning, errors.New(secret), warningAt); err != nil {
+		t.Fatal(err)
+	}
+	kickAt := h.start.Add(2 * time.Hour)
+	kick := h.observe(kickAt, player()).Kicks[0]
+	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err != nil {
+		t.Fatal(err)
+	}
+
+	timeline, err := h.repo.ReadSensitivePlayerTimeline(t.Context(), "test-admin", "steam_1", h.start, kickAt.Add(time.Second), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"guard_warning_attempted", "guard_warning_failed", "enforcement_attempted", "enforcement_succeeded"}
+	if len(timeline.Events) != len(want) {
+		t.Fatalf("events=%+v", timeline.Events)
+	}
+	for i, event := range timeline.Events {
+		if event.EventType != want[i] || event.Source != "guard" || event.SubjectID != "steam_1" || event.OccurredAt != event.ObservedAt {
+			t.Errorf("event[%d]=%+v", i, event)
+		}
+		if !json.Valid([]byte(event.PayloadJSON)) || strings.Contains(event.PayloadJSON, "secret") || strings.Contains(event.PayloadJSON, "example.invalid") {
+			t.Errorf("unsafe payload=%q", event.PayloadJSON)
+		}
+	}
+}
+
+func TestGuardUnifiedEventsAreIdempotentAndRollbackWithLegacyResult(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 3*time.Hour)
+	h.observe(h.start, player())
+	warningAt := h.start.Add(91 * time.Minute)
+	warning := h.observe(warningAt, player()).Warnings[0]
+	if err := h.service.RecordWarningResult(t.Context(), warning, nil, warningAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.RecordWarningResult(t.Context(), warning, errors.New("opposite outcome"), warningAt); err == nil {
+		t.Fatal("opposite warning outcome replay must conflict")
+	}
+	if err := h.service.RecordWarningResult(t.Context(), warning, nil, warningAt); err != nil {
+		t.Fatal(err)
+	}
+	warnings, err := h.repo.WarningEvents(t.Context(), warning.UserID, warning.Period.Key)
+	if err != nil || warnings[0].Attempts != 1 {
+		t.Fatalf("warning replay=%+v err=%v", warnings, err)
+	}
+	timeline, err := h.repo.ReadSensitivePlayerTimeline(t.Context(), "test-admin", warning.UserID, h.start, warningAt.Add(time.Second), 100)
+	if err != nil || len(timeline.Events) != 2 {
+		t.Fatalf("timeline=%+v err=%v", timeline.Events, err)
+	}
+}
+
+func TestKickUnifiedEventsAreIdempotentAndRollbackWithLegacyResult(t *testing.T) {
+	h := newHarness(t, time.Minute, 3*time.Hour)
+	h.observe(h.start, player())
+	kickAt := h.start.Add(time.Minute)
+	kick := h.observe(kickAt, player()).Kicks[0]
+	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.RecordKickResult(t.Context(), kick, errors.New("opposite outcome"), kickAt); err == nil {
+		t.Fatal("opposite kick outcome replay must conflict")
+	}
+	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := h.repo.EnforcementEventsForPolicy(t.Context(), kick.UserID, kick.Period.Key, kick.PolicyRevision)
+	if err != nil || len(legacy) != 1 {
+		t.Fatalf("kick replay=%+v err=%v", legacy, err)
+	}
+	timeline, err := h.repo.ReadSensitivePlayerTimeline(t.Context(), "test-admin", kick.UserID, h.start, kickAt.Add(time.Second), 100)
+	if err != nil || len(timeline.Events) != 2 {
+		t.Fatalf("timeline=%+v err=%v", timeline.Events, err)
+	}
+}
+
+func TestGuardReplayRejectsDifferentLegacyFailureDetails(t *testing.T) {
+	t.Run("warning", func(t *testing.T) {
+		h := newHarness(t, 2*time.Hour, 3*time.Hour)
+		h.observe(h.start, player())
+		at := h.start.Add(91 * time.Minute)
+		decision := h.observe(at, player()).Warnings[0]
+		if err := h.service.RecordWarningResult(t.Context(), decision, errors.New("first safe detail"), at); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.service.RecordWarningResult(t.Context(), decision, errors.New("different safe detail"), at); err == nil {
+			t.Fatal("different warning legacy payload must conflict")
+		}
+	})
+	t.Run("kick", func(t *testing.T) {
+		h := newHarness(t, time.Minute, 3*time.Hour)
+		h.observe(h.start, player())
+		at := h.start.Add(time.Minute)
+		decision := h.observe(at, player()).Kicks[0]
+		if err := h.service.RecordKickResult(t.Context(), decision, errors.New("first safe detail"), at); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.service.RecordKickResult(t.Context(), decision, errors.New("different safe detail"), at); err == nil {
+			t.Fatal("different kick legacy payload must conflict")
+		}
+	})
+}
+
+func TestWarningResultEventInsertFailureRollsBackAttemptAndLegacyUpdate(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 3*time.Hour)
+	h.observe(h.start, player())
+	warningAt := h.start.Add(91 * time.Minute)
+	warning := h.observe(warningAt, player()).Warnings[0]
+	db := installFailingActivityTrigger(t, h.dbPath, "guard_warning_delivered")
+	defer db.Close()
+	if err := h.service.RecordWarningResult(t.Context(), warning, nil, warningAt); err == nil {
+		t.Fatal("expected injected result event failure")
+	}
+	warnings, err := h.repo.WarningEvents(t.Context(), warning.UserID, warning.Period.Key)
+	if err != nil || len(warnings) != 1 || warnings[0].Status != "pending" || warnings[0].Attempts != 0 {
+		t.Fatalf("warning legacy write was not rolled back: %+v err=%v", warnings, err)
+	}
+	assertActivityEventCount(t, db, 0)
+}
+
+func TestKickResultEventInsertFailureRollsBackAttemptAndLegacyAppend(t *testing.T) {
+	h := newHarness(t, time.Minute, 3*time.Hour)
+	h.observe(h.start, player())
+	kickAt := h.start.Add(time.Minute)
+	kick := h.observe(kickAt, player()).Kicks[0]
+	db := installFailingActivityTrigger(t, h.dbPath, "enforcement_succeeded")
+	defer db.Close()
+	if err := h.service.RecordKickResult(t.Context(), kick, nil, kickAt); err == nil {
+		t.Fatal("expected injected result event failure")
+	}
+	legacy, err := h.repo.EnforcementEventsForPolicy(t.Context(), kick.UserID, kick.Period.Key, kick.PolicyRevision)
+	if err != nil || len(legacy) != 0 {
+		t.Fatalf("kick legacy append was not rolled back: %+v err=%v", legacy, err)
+	}
+	assertActivityEventCount(t, db, 0)
+}
+
+func installFailingActivityTrigger(t *testing.T, path, eventType string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER fail_guard_result BEFORE INSERT ON activity_events WHEN NEW.event_type='` + eventType + `' BEGIN SELECT RAISE(ABORT, 'injected result failure'); END`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	return db
+}
+
+func assertActivityEventCount(t *testing.T, db *sql.DB, want int) {
+	t.Helper()
+	var got int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM activity_events`).Scan(&got); err != nil || got != want {
+		t.Fatalf("activity events=%d want=%d err=%v", got, want, err)
 	}
 }
 

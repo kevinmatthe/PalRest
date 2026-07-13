@@ -161,6 +161,7 @@ export type TrajectorySample = {
   ping: number;
   level: number;
   source_ref: string;
+  runtime_epoch: number;
 };
 
 export type PlayerPrivateSample = {
