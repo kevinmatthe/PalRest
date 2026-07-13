@@ -60,6 +60,11 @@ type SensitivePlayerTimeline struct {
 	PrivateSamples []PlayerPrivateSample `json:"private_samples"`
 }
 
+type PlayerTimeline struct {
+	Events       []ActivityEvent    `json:"events"`
+	Trajectories []TrajectorySample `json:"trajectories"`
+}
+
 type PlayerObservationWrite struct {
 	Runtime        *ServerRuntimeState
 	Events         []ActivityEvent
@@ -383,6 +388,47 @@ VALUES(?,?,?,?) ON CONFLICT(kind,content_hash) DO NOTHING`, kind, hash, formatOb
 	return inserted == 1, nil
 }
 
+func (r *Repository) ReadPlayerTimeline(ctx context.Context, userID string, start, end time.Time, limit int) (PlayerTimeline, error) {
+	var empty PlayerTimeline
+	if strings.TrimSpace(userID) == "" {
+		return empty, fmt.Errorf("read player timeline: user ID is empty")
+	}
+	if start.IsZero() || end.IsZero() || !start.Before(end) {
+		return empty, fmt.Errorf("read player timeline: nonzero start must be before end")
+	}
+	if limit < 1 || limit > 2000 {
+		return empty, fmt.Errorf("read player timeline: limit must be between 1 and 2000")
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return empty, fmt.Errorf("begin player timeline transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	events, err := queryTimelineEvents(ctx, tx, userID, start, end, limit)
+	if err != nil {
+		return empty, fmt.Errorf("query player timeline events: %w", err)
+	}
+	samples, err := queryTimelineSamples(ctx, tx, userID, start, end, limit)
+	if err != nil {
+		return empty, fmt.Errorf("query player timeline samples: %w", err)
+	}
+	if len(events) == 0 && len(samples) == 0 {
+		known, knownErr := knownPublicPlayerTx(ctx, tx, userID)
+		if knownErr != nil {
+			return empty, fmt.Errorf("query known player: %w", knownErr)
+		}
+		if !known {
+			return empty, ErrNotFound
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return empty, fmt.Errorf("commit player timeline transaction: %w", err)
+	}
+	return PlayerTimeline{Events: events, Trajectories: samples}, nil
+}
+
 func (r *Repository) ReadSensitivePlayerTimeline(ctx context.Context, actor, userID string, start, end time.Time, limit int) (SensitivePlayerTimeline, error) {
 	var empty SensitivePlayerTimeline
 	if strings.TrimSpace(actor) == "" {
@@ -487,6 +533,16 @@ SELECT 1 FROM player_sessions WHERE user_id=? UNION ALL
 SELECT 1 FROM activity_events WHERE subject_type='player' AND subject_id=? UNION ALL
 SELECT 1 FROM trajectory_samples WHERE user_id=? UNION ALL
 SELECT 1 FROM player_private_samples WHERE user_id=?)`, userID, userID, userID, userID, userID).Scan(&exists)
+	return exists == 1, err
+}
+
+func knownPublicPlayerTx(ctx context.Context, tx *sql.Tx, userID string) (bool, error) {
+	var exists int
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+SELECT 1 FROM players WHERE user_id=? UNION ALL
+SELECT 1 FROM player_sessions WHERE user_id=? UNION ALL
+SELECT 1 FROM activity_events WHERE subject_type='player' AND subject_id=? UNION ALL
+SELECT 1 FROM trajectory_samples WHERE user_id=?)`, userID, userID, userID, userID).Scan(&exists)
 	return exists == 1, err
 }
 

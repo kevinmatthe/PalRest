@@ -58,6 +58,7 @@ type AdminStore interface {
 }
 
 type ObservationQueries interface {
+	ReadPlayerTimeline(context.Context, string, time.Time, time.Time, int) (store.PlayerTimeline, error)
 	ReadSensitivePlayerTimeline(context.Context, string, string, time.Time, time.Time, int) (store.SensitivePlayerTimeline, error)
 	ReadServerMetrics(context.Context, string, time.Time, time.Time, int) ([]store.ServerMetricSample, error)
 	ReadServerDocuments(context.Context, string, string, int, *store.ServerDocumentCursor) (store.ServerDocumentPage, error)
@@ -115,6 +116,7 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 	mux.HandleFunc("GET /api/v1/status", server.getStatus)
 	mux.HandleFunc("GET /api/v1/players", server.getPlayers)
 	mux.HandleFunc("GET /api/v1/players/{userID}", server.getPlayer)
+	mux.HandleFunc("GET /api/v1/players/{userID}/timeline", server.getPlayerTimeline)
 	mux.HandleFunc("GET /api/v1/analytics/summary", server.getAnalyticsSummary)
 	mux.HandleFunc("GET /api/v1/analytics/activity", server.getAnalyticsActivity)
 	mux.HandleFunc("POST /api/v1/players/{userID}/reset", server.resetPlayer)

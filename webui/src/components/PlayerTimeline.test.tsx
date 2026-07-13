@@ -30,7 +30,7 @@ afterEach(() => vi.clearAllMocks());
 
 describe('PlayerTimeline', () => {
   it('starts intentionally empty and offers accessible player and range controls', () => {
-    render(<PlayerTimeline players={players} refreshKey={0} />);
+    render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
     expect(screen.getByText(/select a player to open/i)).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: /player/i })).toHaveValue('');
     expect(screen.getByLabelText(/start/i)).toHaveAttribute('type', 'datetime-local');
@@ -42,7 +42,7 @@ describe('PlayerTimeline', () => {
     render(<PlayerTimeline players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
     await waitFor(() => expect(api.getPlayerTimeline).toHaveBeenCalledTimes(1));
-    expect(api.getPlayerTimeline).toHaveBeenCalledWith('u/1', expect.stringMatching(/T.*(?:Z|[+-]\d\d:\d\d)$/), expect.stringMatching(/T.*(?:Z|[+-]\d\d:\d\d)$/), 500, expect.any(AbortSignal));
+    expect(api.getPlayerTimeline).toHaveBeenCalledWith('u/1', expect.stringMatching(/T.*(?:Z|[+-]\d\d:\d\d)$/), expect.stringMatching(/T.*(?:Z|[+-]\d\d:\d\d)$/), 500, expect.any(AbortSignal), false);
     expect(await screen.findByText(/no observations recorded/i)).toBeInTheDocument();
   });
 
@@ -77,14 +77,14 @@ describe('PlayerTimeline', () => {
     };
     const original = JSON.stringify(payload);
     vi.mocked(api.getPlayerTimeline).mockResolvedValue(payload);
-    render(<PlayerTimeline players={players} refreshKey={0} />);
+    render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
 
     expect(await screen.findByText('Player Joined')).toBeInTheDocument();
     const items = screen.getAllByRole('listitem').map((node) => node.textContent);
     expect(items.join('|')).toMatch(/Player Joined.*10.*20.*2001:db8::1:8211.*123.45.*-9.5.*Unsupported event/i);
     expect(screen.getByText(/IP · Admin private/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/Coordinates · Admin private/i)).toHaveLength(2);
+    expect(screen.getAllByText(/^Coordinates$/i)).toHaveLength(2);
     expect(screen.getAllByText(/REST/i).length).toBeGreaterThan(0);
     expect(screen.getByText('Snapshot')).toBeInTheDocument();
     expect(screen.getAllByText(/Occurred/i).length).toBeGreaterThan(0);
@@ -98,6 +98,18 @@ describe('PlayerTimeline', () => {
     expect(within(privateEntry!).queryByText('Guard')).not.toBeInTheDocument();
     expect(JSON.stringify(payload)).toBe(original);
     expect(screen.queryByText('future_event')).not.toBeInTheDocument();
+  });
+
+  it('keeps private samples out of the public timeline even if the server sends them', async () => {
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue({
+      ...empty,
+      private_samples: [{ user_id: 'u/1', observed_at: '2026-07-13T08:00:00Z', ip: '192.0.2.1:8211', ping: 10, level: 2, source_ref: 'private' }],
+    });
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
+    expect(await screen.findByText(/no observations recorded/i)).toBeInTheDocument();
+    expect(screen.queryByText('192.0.2.1:8211')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Private console/i)).not.toBeInTheDocument();
   });
 
   it('labels unified guard result and player attribute events', async () => {
@@ -131,6 +143,29 @@ describe('PlayerTimeline', () => {
     expect(screen.queryByText(/Observation gap/i)).not.toBeInTheDocument();
   });
 
+  it('renders trajectory samples as a map replay with a shared cursor', async () => {
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue({
+      ...empty,
+      events: [{ id: 'joined', event_type: 'player_joined', occurred_at: '2026-07-13T08:01:00Z', observed_at: '2026-07-13T08:01:00Z', source: 'guard', confidence: 'observed', summary: 'joined' }],
+      trajectories: [
+        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T08:00:00Z', x: 100, y: 200, ping: 20, level: 1, source_ref: 'one', runtime_epoch: 0 },
+        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T08:02:00Z', x: 180, y: 260, ping: 22, level: 1, source_ref: 'two', runtime_epoch: 0 },
+      ],
+    });
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
+
+    expect(await screen.findByTestId('timeline-map')).toBeInTheDocument();
+    const mapReplay = screen.getByLabelText(/map replay/i);
+    expect(screen.getByText('2 positions')).toBeInTheDocument();
+    expect(screen.getAllByTestId('timeline-map-route')).toHaveLength(1);
+    expect(screen.getByLabelText(/timeline cursor/i)).toHaveValue('0');
+    expect(within(mapReplay).getByText('100, 200')).toBeInTheDocument();
+    fireEvent.click(screen.getAllByTitle(/move replay cursor here/i).at(-1)!);
+    expect(screen.getByLabelText(/timeline cursor/i)).toHaveValue('2');
+    expect(within(mapReplay).getByText('180, 260')).toBeInTheDocument();
+  });
+
   it('shows a segment boundary when the same raw identity belongs to another runtime epoch', async () => {
     vi.mocked(api.getPlayerTimeline).mockResolvedValue({
       ...empty,
@@ -146,7 +181,7 @@ describe('PlayerTimeline', () => {
 
   it('retains the selected player and private context when search excludes that player', async () => {
     vi.mocked(api.getPlayerTimeline).mockResolvedValue({ ...empty, private_samples: [{ user_id: 'u/1', observed_at: '2026-07-13T08:00:00Z', ip: '192.0.2.1:8211', ping: 10, level: 2, source_ref: 'private' }] });
-    render(<PlayerTimeline players={players} refreshKey={0} />);
+    render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
     const select = screen.getByRole('combobox', { name: /player/i });
     fireEvent.change(select, { target: { value: 'u/1' } });
     await screen.findByText('192.0.2.1:8211');
@@ -161,7 +196,7 @@ describe('PlayerTimeline', () => {
       ...empty,
       private_samples: Array.from({ length: 500 }, (_, index) => ({ user_id: 'u/1', observed_at: new Date(Date.UTC(2026, 6, 13, 8, 0, index)).toISOString(), ip: `192.0.2.${index}`, ping: 10, level: 2, source_ref: `private-${index}` })),
     });
-    render(<PlayerTimeline players={players} refreshKey={0} />);
+    render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /player/i }), { target: { value: 'u/1' } });
     expect(await screen.findByText(/Evidence may be truncated/i)).toBeInTheDocument();
   });

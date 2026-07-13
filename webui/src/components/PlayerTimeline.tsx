@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Compass, Radio, Search, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, Compass, Crosshair, Map as MapIcon, Radio, Route, Search, ShieldAlert } from 'lucide-react';
 import { ApiError, getPlayerTimeline, type Player, type PlayerTimelineResponse, type TimelineEvent } from '../api';
 import { formatExactDateTime, titleCase } from '../utils';
 
-type Props = { players: Player[]; refreshKey: number };
+type Props = { includePrivate?: boolean; players: Player[]; refreshKey: number };
 type TimelineState =
   | { kind: 'idle' }
   | { kind: 'loading' }
@@ -16,6 +16,9 @@ type LogItem =
   | { kind: 'trajectory'; at: string; key: string; item: PlayerTimelineResponse['trajectories'][number] }
   | { kind: 'private'; at: string; key: string; item: PlayerTimelineResponse['private_samples'][number] };
 type LogRow = { item: LogItem; separator: string };
+type TrajectorySample = PlayerTimelineResponse['trajectories'][number];
+type MapPoint = { key: string; sample: TrajectorySample; x: number; y: number };
+type MapBounds = { minX: number; maxX: number; minY: number; maxY: number };
 
 const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
 const KNOWN_EVENTS = new Set([
@@ -65,11 +68,11 @@ function validateRange(start: string, end: string) {
   return '';
 }
 
-function mergeTimeline(data: PlayerTimelineResponse): LogItem[] {
+function mergeTimeline(data: PlayerTimelineResponse, includePrivate: boolean): LogItem[] {
   const merged: LogItem[] = [];
   data.events.forEach((item) => merged.push({ kind: 'event', at: item.occurred_at, key: `event:${item.id}`, item }));
   data.trajectories.forEach((item) => merged.push({ kind: 'trajectory', at: item.observed_at, key: `trajectory:${item.user_id}:${item.segment_id}:${item.observed_at}:${item.source_ref}`, item }));
-  data.private_samples.forEach((item) => merged.push({ kind: 'private', at: item.observed_at, key: `private:${item.user_id}:${item.observed_at}:${item.source_ref}`, item }));
+  if (includePrivate) data.private_samples.forEach((item) => merged.push({ kind: 'private', at: item.observed_at, key: `private:${item.user_id}:${item.observed_at}:${item.source_ref}`, item }));
   return merged.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.key.localeCompare(b.key));
 }
 
@@ -87,13 +90,71 @@ function annotateTrajectoryEvidence(items: LogItem[]): LogRow[] {
   });
 }
 
-export function PlayerTimeline({ players, refreshKey }: Props) {
+function trajectorySamples(items: LogItem[]) {
+  return items.filter((item): item is Extract<LogItem, { kind: 'trajectory' }> => item.kind === 'trajectory').map((item) => item.item);
+}
+
+function trajectoryBounds(samples: TrajectorySample[]): MapBounds | null {
+  if (!samples.length) return null;
+  const xs = samples.map((sample) => sample.x);
+  const ys = samples.map((sample) => sample.y);
+  let minX = Math.min(...xs);
+  let maxX = Math.max(...xs);
+  let minY = Math.min(...ys);
+  let maxY = Math.max(...ys);
+  const padX = Math.max((maxX - minX) * 0.12, 100);
+  const padY = Math.max((maxY - minY) * 0.12, 100);
+  minX -= padX;
+  maxX += padX;
+  minY -= padY;
+  maxY += padY;
+  if (minX === maxX) {
+    minX -= 1;
+    maxX += 1;
+  }
+  if (minY === maxY) {
+    minY -= 1;
+    maxY += 1;
+  }
+  return { minX, maxX, minY, maxY };
+}
+
+function projectSample(sample: TrajectorySample, bounds: MapBounds): { x: number; y: number } {
+  const x = ((sample.x - bounds.minX) / (bounds.maxX - bounds.minX)) * 100;
+  const y = 64 - ((sample.y - bounds.minY) / (bounds.maxY - bounds.minY)) * 64;
+  return { x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) };
+}
+
+function splitRouteSegments(points: MapPoint[]) {
+  return points.reduce<MapPoint[][]>((segments, point) => {
+    const current = segments.at(-1);
+    if (!current || current.at(-1)?.sample.segment_id !== point.sample.segment_id) segments.push([point]);
+    else current.push(point);
+    return segments;
+  }, []);
+}
+
+function latestPointAt(samples: TrajectorySample[], activeAt: string | undefined) {
+  if (!samples.length) return undefined;
+  const activeMS = activeAt ? Date.parse(activeAt) : Number.NaN;
+  if (!Number.isFinite(activeMS)) return samples[0];
+  return [...samples].reverse().find((sample) => Date.parse(sample.observed_at) <= activeMS) ?? samples[0];
+}
+
+function timelinePercent(at: string, startMS: number, endMS: number) {
+  const current = Date.parse(at);
+  if (!Number.isFinite(current) || endMS <= startMS) return 0;
+  return Math.min(100, Math.max(0, ((current - startMS) / (endMS - startMS)) * 100));
+}
+
+export function PlayerTimeline({ includePrivate = false, players, refreshKey }: Props) {
   const range = useMemo(defaultRange, []);
   const [selectedID, setSelectedID] = useState('');
   const [search, setSearch] = useState('');
   const [start, setStart] = useState(range.start);
   const [end, setEnd] = useState(range.end);
   const [state, setState] = useState<TimelineState>({ kind: 'idle' });
+  const [cursorIndex, setCursorIndex] = useState(0);
   const requestID = useRef(0);
   const rangeError = validateRange(start, end);
   const visiblePlayers = useMemo(() => {
@@ -116,7 +177,7 @@ export function PlayerTimeline({ players, refreshKey }: Props) {
     setState({ kind: 'loading' });
     const parsedStart = parseLocalDateTime(start).date!;
     const parsedEnd = parseLocalDateTime(end).date!;
-    void getPlayerTimeline(selectedID, parsedStart.toISOString(), parsedEnd.toISOString(), 500, controller.signal)
+    void getPlayerTimeline(selectedID, parsedStart.toISOString(), parsedEnd.toISOString(), 500, controller.signal, includePrivate)
       .then((data) => {
         if (!controller.signal.aborted && requestID.current === id) setState({ kind: 'ready', data });
       })
@@ -126,21 +187,26 @@ export function PlayerTimeline({ players, refreshKey }: Props) {
         else setState({ kind: 'error', message: error instanceof Error ? error.message : 'Timeline request failed.' });
       });
     return () => controller.abort();
-  }, [selectedID, start, end, refreshKey, rangeError]);
+  }, [includePrivate, selectedID, start, end, refreshKey, rangeError]);
 
-  const items = useMemo(() => state.kind === 'ready' ? mergeTimeline(state.data) : [], [state]);
+  const items = useMemo(() => state.kind === 'ready' ? mergeTimeline(state.data, includePrivate) : [], [includePrivate, state]);
   const rows = useMemo(() => annotateTrajectoryEvidence(items), [items]);
-  const mayBeTruncated = state.kind === 'ready' && [state.data.events, state.data.trajectories, state.data.private_samples].some((source) => source.length >= 500);
+  const activeIndex = items.length ? Math.min(cursorIndex, items.length - 1) : 0;
+  const mayBeTruncated = state.kind === 'ready' && [state.data.events, state.data.trajectories, includePrivate ? state.data.private_samples : []].some((source) => source.length >= 500);
+
+  useEffect(() => {
+    setCursorIndex(0);
+  }, [selectedID, start, end, refreshKey, items.length]);
 
   return (
     <section className="timeline-recorder" aria-labelledby="timeline-heading">
       <header className="timeline-heading">
         <div>
-          <p className="eyebrow">Administrator field recorder</p>
+          <p className="eyebrow">{includePrivate ? 'Administrator field recorder' : 'Public field recorder'}</p>
           <h2 id="timeline-heading">Player observation timeline</h2>
           <p>Recorded evidence only. Gaps are never interpolated.</p>
         </div>
-        <span className="timeline-private"><ShieldAlert size={16} /> Private console</span>
+        {includePrivate ? <span className="timeline-private"><ShieldAlert size={16} /> Private console</span> : null}
       </header>
       <div className="timeline-layout">
         <aside className="timeline-filters" aria-label="Timeline filters">
@@ -160,6 +226,13 @@ export function PlayerTimeline({ players, refreshKey }: Props) {
           <p className="timeline-range-note">Local time · maximum 31 days · up to 500 records per source</p>
         </aside>
         <div className="timeline-log">
+          <TimelineMap
+            activeIndex={activeIndex}
+            items={items}
+            loading={state.kind === 'loading'}
+            onCursorChange={setCursorIndex}
+            selected={Boolean(selectedID)}
+          />
           {!selectedID ? <EmptyState icon={<Compass size={28} />} text="Select a player to open their expedition log." /> : null}
           {state.kind === 'loading' ? <div className="timeline-skeleton" role="status" aria-label="Loading timeline"><span /><span /><span /></div> : null}
           {state.kind === 'not-found' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> This player is no longer known to the observation store.</div> : null}
@@ -167,7 +240,7 @@ export function PlayerTimeline({ players, refreshKey }: Props) {
           {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="No observations recorded in this range." /> : null}
           {mayBeTruncated ? <div className="timeline-alert timeline-alert--info" role="status"><AlertTriangle size={18} /> Evidence may be truncated because a source reached the 500-record response limit.</div> : null}
           {state.kind === 'ready' && items.length > 0 ? <ol className="timeline-spine" aria-label="Chronological observations">
-            {rows.map(({ item, separator }) => <TimelineEntry key={item.key} item={item} separator={separator} />)}
+            {rows.map(({ item, separator }, index) => <TimelineEntry active={index === activeIndex} key={item.key} item={item} onSelect={() => setCursorIndex(index)} separator={separator} />)}
           </ol> : null}
         </div>
       </div>
@@ -175,14 +248,73 @@ export function PlayerTimeline({ players, refreshKey }: Props) {
   );
 }
 
-function TimelineEntry({ item, separator }: { item: LogItem; separator: string }) {
+function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: { activeIndex: number; items: LogItem[]; loading: boolean; onCursorChange: (index: number) => void; selected: boolean }) {
+  const samples = useMemo(() => trajectorySamples(items), [items]);
+  const bounds = useMemo(() => trajectoryBounds(samples), [samples]);
+  const points = useMemo<MapPoint[]>(() => {
+    if (!bounds) return [];
+    return samples.map((sample) => {
+      const position = projectSample(sample, bounds);
+      return { ...position, key: `${sample.segment_id}:${sample.observed_at}:${sample.source_ref}`, sample };
+    });
+  }, [bounds, samples]);
+  const segments = useMemo(() => splitRouteSegments(points), [points]);
+  const activeItem = items[activeIndex];
+  const activeSample = latestPointAt(samples, activeItem?.at);
+  const activePoint = activeSample && bounds ? projectSample(activeSample, bounds) : undefined;
+  const startMS = items.length ? Math.min(...items.map((item) => Date.parse(item.at))) : 0;
+  const endMS = items.length ? Math.max(...items.map((item) => Date.parse(item.at))) : 1;
+  const cursorLeft = activeItem ? timelinePercent(activeItem.at, startMS, endMS) : 0;
+  const activeLabel = activeItem ? activeItem.kind === 'event' ? `Cursor: ${titleCase(activeItem.item.event_type)}` : activeItem.kind === 'trajectory' ? 'Cursor: position observation' : 'Cursor: private player sample' : selected ? 'Waiting for observations' : 'No player selected';
+
+  return <section className="timeline-map-panel" aria-label="Map replay">
+    <div className="timeline-map-header">
+      <div>
+        <p className="eyebrow">Map replay</p>
+        <h3>{activeLabel}</h3>
+      </div>
+      <span className="timeline-map-count"><Route size={15} /> {samples.length} positions</span>
+    </div>
+    <div className={`timeline-map-surface ${!points.length ? 'is-empty' : ''}`}>
+      {points.length ? <svg aria-label="Trajectory map" data-testid="timeline-map" preserveAspectRatio="none" role="img" viewBox="0 0 100 64">
+        <defs>
+          <pattern height="8" id="timeline-grid" patternUnits="userSpaceOnUse" width="8">
+            <path d="M 8 0 L 0 0 0 8" fill="none" stroke="currentColor" strokeWidth="0.18" />
+          </pattern>
+        </defs>
+        <rect className="timeline-map-grid" height="64" width="100" />
+        <path className="timeline-map-landmark" d="M0 42 C18 37 25 44 40 38 S72 29 100 35 L100 64 L0 64 Z" />
+        {segments.map((segment) => <polyline className="timeline-map-route" data-testid="timeline-map-route" key={segment[0].key} points={segment.map((point) => `${point.x},${point.y}`).join(' ')} />)}
+        {points.map((point) => <circle className="timeline-map-point" cx={point.x} cy={point.y} key={point.key} r="1.35" />)}
+        {activePoint ? <g className="timeline-map-active" data-testid="timeline-map-active">
+          <circle cx={activePoint.x} cy={activePoint.y} r="3.2" />
+          <circle cx={activePoint.x} cy={activePoint.y} r="1.2" />
+        </g> : null}
+      </svg> : <div className="timeline-map-empty">{loading ? 'Loading trajectory evidence.' : selected ? 'No position samples in this range.' : 'Choose a player to load the replay map.'}</div>}
+    </div>
+    <div className="timeline-cursor">
+      <div className="timeline-cursor-track" aria-hidden="true">
+        {items.map((item, index) => <span className={`timeline-cursor-tick timeline-cursor-tick--${item.kind}`} key={item.key} style={{ left: `${timelinePercent(item.at, startMS, endMS)}%` }} data-active={index === activeIndex ? 'true' : undefined} />)}
+        <span className="timeline-cursor-now" style={{ left: `${cursorLeft}%` }} />
+      </div>
+      <input aria-label="Timeline cursor" disabled={items.length < 2} max={Math.max(items.length - 1, 0)} min={0} onChange={(event) => onCursorChange(Number(event.target.value))} type="range" value={activeIndex} />
+      <div className="timeline-map-meta">
+        <span><MapIcon size={15} /> {activeSample ? `${activeSample.x}, ${activeSample.y}` : 'No coordinates'}</span>
+        <span>{activeItem ? formatExactDateTime(activeItem.at) : 'No cursor time'}</span>
+      </div>
+    </div>
+  </section>;
+}
+
+function TimelineEntry({ active, item, onSelect, separator }: { active: boolean; item: LogItem; onSelect: () => void; separator: string }) {
   return <>
     {separator ? <li className="timeline-separator" role="separator"><span>{separator}</span></li> : null}
-    <li className={`timeline-entry timeline-entry--${item.kind}`}>
+    <li className={`timeline-entry timeline-entry--${item.kind} ${active ? 'is-active' : ''}`}>
       <time dateTime={item.at}>{formatExactDateTime(item.at)}</time>
       {item.kind === 'event' ? <EventDetail event={item.item} /> : null}
-      {item.kind === 'trajectory' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>Position observation</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>Coordinates · Admin private</dt><dd>{item.item.x}, {item.item.y}</dd></div><div><dt>Segment</dt><dd>{item.item.segment_id || 'Unassigned'}</dd></div><div><dt>Ping</dt><dd>{item.item.ping} ms</dd></div><div><dt>Level</dt><dd>{item.item.level}</dd></div></dl></div> : null}
+      {item.kind === 'trajectory' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>Position observation</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>Coordinates</dt><dd>{item.item.x}, {item.item.y}</dd></div><div><dt>Segment</dt><dd>{item.item.segment_id || 'Unassigned'}</dd></div><div><dt>Ping</dt><dd>{item.item.ping} ms</dd></div><div><dt>Level</dt><dd>{item.item.level}</dd></div></dl></div> : null}
       {item.kind === 'private' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>Private player sample</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>IP · Admin private</dt><dd>{item.item.ip || 'Unavailable'}</dd></div><div><dt>Ping</dt><dd>{item.item.ping} ms</dd></div><div><dt>Level</dt><dd>{item.item.level}</dd></div></dl></div> : null}
+      <button className="timeline-focus" title="Move replay cursor here" type="button" onClick={onSelect}><Crosshair size={16} /></button>
     </li>
   </>;
 }

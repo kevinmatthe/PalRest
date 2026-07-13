@@ -283,3 +283,24 @@ CREATE TABLE IF NOT EXISTS server_runtime_state (
 );
 INSERT OR IGNORE INTO server_runtime_state(id, epoch, restarted_at) VALUES(1, 0, NULL);
 `
+
+const schemaV13 = `
+CREATE TABLE player_private_samples_v13 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    ip TEXT NOT NULL,
+    ping REAL NOT NULL,
+    level INTEGER NOT NULL,
+    source_ref TEXT NOT NULL,
+    UNIQUE(user_id, observed_at)
+);
+INSERT INTO player_private_samples_v13(id,user_id,observed_at,ip,ping,level,source_ref)
+SELECT id,user_id,observed_at,ip,ping,level,source_ref FROM player_private_samples;
+DROP TABLE player_private_samples;
+ALTER TABLE player_private_samples_v13 RENAME TO player_private_samples;
+CREATE INDEX player_private_samples_user_time
+ON player_private_samples(user_id, observed_at);
+CREATE INDEX player_private_samples_retention
+ON player_private_samples(observed_at, id);
+`

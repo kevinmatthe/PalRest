@@ -244,9 +244,10 @@ export function getAnalyticsActivity(range: '7d' | '30d', userID?: string, signa
   return getJSON<AnalyticsActivity>(`/api/v1/analytics/activity?${query}`, signal);
 }
 
-export function getPlayerTimeline(userID: string, start: string, end: string, limit = 500, signal?: AbortSignal) {
+export function getPlayerTimeline(userID: string, start: string, end: string, limit = 500, signal?: AbortSignal, includePrivate = false) {
   const query = new URLSearchParams({ start, end, limit: String(limit) });
-  return getJSON<PlayerTimelineResponse>(`/api/v1/admin/players/${encodeURIComponent(userID)}/timeline?${query}`, signal);
+  const prefix = includePrivate ? '/api/v1/admin/players' : '/api/v1/players';
+  return getJSON<PlayerTimelineResponse>(`${prefix}/${encodeURIComponent(userID)}/timeline?${query}`, signal);
 }
 
 export function getPolicies(signal?: AbortSignal) {

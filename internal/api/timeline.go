@@ -30,6 +30,36 @@ type adminEventDTO struct {
 	Data       map[string]any `json:"data,omitempty"`
 }
 
+func (s *Server) getPlayerTimeline(w http.ResponseWriter, r *http.Request) {
+	if s.observations == nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "observation query unavailable")
+		return
+	}
+	start, end, limit, ok := parseRangeQuery(w, r.URL.Query(), 500)
+	if !ok {
+		return
+	}
+	userID := strings.TrimSpace(r.PathValue("userID"))
+	if userID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "user ID is required")
+		return
+	}
+	timeline, err := s.observations.ReadPlayerTimeline(r.Context(), userID, start, end, limit)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "player not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "timeline query failed")
+		return
+	}
+	events := make([]adminEventDTO, 0, len(timeline.Events))
+	for _, event := range timeline.Events {
+		events = append(events, safeEvent(event))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "events": events, "trajectories": timeline.Trajectories, "private_samples": []store.PlayerPrivateSample{}})
+}
+
 func (s *Server) getAdminPlayerTimeline(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return

@@ -17,6 +17,7 @@ import (
 
 type observationQueriesFake struct {
 	timeline       store.SensitivePlayerTimeline
+	publicTimeline store.PlayerTimeline
 	metrics        []store.ServerMetricSample
 	documents      []store.ServerDocumentOccurrence
 	documentPage   store.ServerDocumentPage
@@ -27,6 +28,13 @@ type observationQueriesFake struct {
 }
 
 func (f *observationQueriesFake) ResetPlayerPolicyState(context.Context, string) error { return nil }
+func (f *observationQueriesFake) ReadPlayerTimeline(_ context.Context, _ string, _, _ time.Time, _ int) (store.PlayerTimeline, error) {
+	f.calls++
+	if f.publicTimeline.Events != nil || f.publicTimeline.Trajectories != nil {
+		return f.publicTimeline, f.err
+	}
+	return store.PlayerTimeline{Events: f.timeline.Events, Trajectories: f.timeline.Trajectories}, f.err
+}
 func (f *observationQueriesFake) ReadSensitivePlayerTimeline(_ context.Context, actor, _ string, _, _ time.Time, _ int) (store.SensitivePlayerTimeline, error) {
 	f.calls++
 	f.actor = actor
@@ -182,6 +190,26 @@ func adminRequest(t *testing.T, server *Server, path string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	req.AddCookie(sessionCookie(token, 3600))
 	return req
+}
+
+func TestPublicTimelineDoesNotRequireAuthOrReturnPrivateSamples(t *testing.T) {
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	repo := &observationQueriesFake{timeline: store.SensitivePlayerTimeline{
+		Events:         []store.ActivityEvent{{ID: "e", EventType: "player_joined", OccurredAt: at, ObservedAt: at, Source: "palworld_rest", Confidence: "observed", SchemaVersion: 1, PayloadJSON: `{"name":"Kevin","ip":"192.0.2.1"}`}},
+		Trajectories:   []store.TrajectorySample{{UserID: "u", ObservedAt: at, X: 1, Y: 2}},
+		PrivateSamples: []store.PlayerPrivateSample{{UserID: "u", ObservedAt: at, IP: "192.0.2.1:8211", Ping: 20}},
+	}}
+	server := timelineServer(repo)
+	path := "/api/v1/players/u/timeline?start=2026-07-13T08:00:00Z&end=2026-07-13T09:00:00Z&limit=500"
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+	body := res.Body.String()
+	if res.Code != http.StatusOK || !strings.Contains(body, `"x":1`) {
+		t.Fatalf("code=%d body=%s", res.Code, body)
+	}
+	if strings.Contains(body, "192.0.2.1") || !strings.Contains(body, `"private_samples":[]`) {
+		t.Fatalf("public timeline leaked private data: %s", body)
+	}
 }
 
 func TestAdminTimelineRequiresAuthAndReturnsOnlySafeDecodedEvents(t *testing.T) {

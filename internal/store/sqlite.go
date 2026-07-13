@@ -224,6 +224,20 @@ func (r *Repository) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if version < 13 {
+		hasBuildingCount, err := columnExists(ctx, tx, "player_private_samples", "building_count")
+		if err != nil {
+			return err
+		}
+		if hasBuildingCount {
+			if _, err := tx.ExecContext(ctx, schemaV13); err != nil {
+				return fmt.Errorf("apply migration 13 private sample shape: %w", err)
+			}
+		}
+		if err := recordMigration(ctx, tx, 13); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}

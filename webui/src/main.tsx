@@ -75,7 +75,7 @@ export function App() {
       setState((current) => ({ kind: 'loading', data: current.data }));
       const adminRequest = getAdminSession(requestController.signal).then((admin) => {
         if (!mounted || requestController.signal.aborted || admin.authenticated) return admin;
-        setView('dashboard');
+        setView((current) => current === 'policy' ? 'dashboard' : current);
         setState((current) => current.data ? { ...current, data: { ...current.data, admin } } : current);
         return admin;
       });
@@ -115,9 +115,6 @@ export function App() {
   }, [manualRefreshKey]);
 
   const data = state.data;
-  useEffect(() => {
-    if (view === 'timeline' && data && !data.admin.authenticated) setView('dashboard');
-  }, [data, view]);
   const players = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     const source = data?.players ?? [];
@@ -205,13 +202,13 @@ export function App() {
       {view !== 'policy' ? <nav className="view-tabs" aria-label="Console views">
         <button type="button" aria-current={view === 'dashboard' ? 'page' : undefined} onClick={() => setView('dashboard')}>Overview</button>
         <button type="button" aria-current={view === 'analytics' ? 'page' : undefined} onClick={() => setView('analytics')}>Analytics</button>
-        {data?.admin.authenticated ? <button type="button" aria-current={view === 'timeline' ? 'page' : undefined} onClick={() => setView('timeline')}>Timeline</button> : null}
+        <button type="button" aria-current={view === 'timeline' ? 'page' : undefined} onClick={() => setView('timeline')}>Timeline</button>
       </nav> : null}
 
       {view === 'policy' && data?.admin.authenticated ? (
         <PolicyManager policies={data.policies} players={data.players} busy={adminBusy} onSave={onSavePolicies} onBack={() => setView('dashboard')} />
       ) : view === 'analytics' ? <AnalyticsDashboard players={data?.players ?? []} refreshKey={manualRefreshKey + analyticsCadenceKey} />
-        : view === 'timeline' && data?.admin.authenticated ? <PlayerTimeline players={data.players} refreshKey={timelineRefreshKey} /> : <>
+        : view === 'timeline' ? <PlayerTimeline includePrivate={data?.admin.authenticated ?? false} players={data?.players ?? []} refreshKey={manualRefreshKey + timelineRefreshKey} /> : <>
       <section className="status-grid" aria-label="Service status">
         <MetricCard icon={<Users size={20} />} label="Online players" value={activePlayers.toString()} detail={`API reports ${data?.status.online_count ?? 0}`} />
         <MetricCard icon={<CircleGauge size={20} />} label="Near limit" value={atRiskPlayers.toString()} detail="10 minutes or less" tone={atRiskPlayers > 0 ? 'warn' : 'ok'} />

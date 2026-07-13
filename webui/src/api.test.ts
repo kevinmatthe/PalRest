@@ -48,15 +48,24 @@ describe('analytics API', () => {
   });
 });
 
-describe('administrator timeline API', () => {
-  it('encodes the player, RFC3339 range and limit while forwarding AbortSignal', async () => {
+describe('timeline API', () => {
+  it('uses the public timeline endpoint by default', async () => {
     const payload = { user_id: 'steam/id one', events: [], trajectories: [], private_samples: [] } satisfies PlayerTimelineResponse;
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(payload)));
     const controller = new AbortController();
 
     await expect(getPlayerTimeline('steam/id one', '2026-07-12T08:00:00+08:00', '2026-07-13T08:00:00+08:00', 500, controller.signal)).resolves.toEqual(payload);
 
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/admin/players/steam%2Fid%20one/timeline?start=2026-07-12T08%3A00%3A00%2B08%3A00&end=2026-07-13T08%3A00%3A00%2B08%3A00&limit=500');
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/players/steam%2Fid%20one/timeline?start=2026-07-12T08%3A00%3A00%2B08%3A00&end=2026-07-13T08%3A00%3A00%2B08%3A00&limit=500');
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ signal: controller.signal }));
+  });
+
+  it('uses the private administrator timeline endpoint when requested', async () => {
+    const payload = { user_id: 'steam/id one', events: [], trajectories: [], private_samples: [] } satisfies PlayerTimelineResponse;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(payload)));
+
+    await getPlayerTimeline('steam/id one', '2026-07-12T08:00:00Z', '2026-07-13T08:00:00Z', 500, undefined, true);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/admin/players/steam%2Fid%20one/timeline?start=2026-07-12T08%3A00%3A00Z&end=2026-07-13T08%3A00%3A00Z&limit=500');
   });
 });
