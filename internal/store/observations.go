@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -32,14 +33,15 @@ type ActivityEvent struct {
 }
 
 type TrajectorySample struct {
-	UserID     string    `json:"user_id"`
-	SegmentID  string    `json:"segment_id"`
-	ObservedAt time.Time `json:"observed_at"`
-	X          float64   `json:"x"`
-	Y          float64   `json:"y"`
-	Ping       float64   `json:"ping"`
-	Level      int       `json:"level"`
-	SourceRef  string    `json:"source_ref"`
+	UserID       string    `json:"user_id"`
+	SegmentID    string    `json:"segment_id"`
+	ObservedAt   time.Time `json:"observed_at"`
+	X            float64   `json:"x"`
+	Y            float64   `json:"y"`
+	Ping         float64   `json:"ping"`
+	Level        int       `json:"level"`
+	SourceRef    string    `json:"source_ref"`
+	RuntimeEpoch int64     `json:"-"`
 }
 
 type PlayerPrivateSample struct {
@@ -59,9 +61,15 @@ type SensitivePlayerTimeline struct {
 }
 
 type PlayerObservationWrite struct {
+	Runtime        *ServerRuntimeState
 	Events         []ActivityEvent
 	Trajectories   []TrajectorySample
 	PrivateSamples []PlayerPrivateSample
+}
+
+type ServerRuntimeState struct {
+	Epoch       int64
+	RestartedAt time.Time
 }
 
 var knownObservationSources = map[string]struct{}{
@@ -92,6 +100,22 @@ func (r *Repository) RecordPlayerObservation(ctx context.Context, write PlayerOb
 		}
 	}
 	return r.WithTx(ctx, func(tx *Tx) error {
+		if write.Runtime != nil {
+			current, err := currentServerRuntimeTx(ctx, tx.tx)
+			if err != nil {
+				return fmt.Errorf("record player observation: read server runtime: %w", err)
+			}
+			if !serverRuntimeStatesEqual(current, *write.Runtime) {
+				replay, replayErr := playerObservationAlreadyStored(ctx, tx.tx, write, current.Epoch)
+				if replayErr != nil {
+					return fmt.Errorf("record player observation: prove runtime-conflicted replay: %w", replayErr)
+				}
+				if replay {
+					return nil
+				}
+				return fmt.Errorf("record player observation: %w", ErrObservationConflict)
+			}
+		}
 		for _, event := range write.Events {
 			result, err := tx.tx.ExecContext(ctx, `
 INSERT INTO activity_events(
@@ -119,9 +143,9 @@ INSERT INTO activity_events(
 		}
 		for _, sample := range write.Trajectories {
 			result, err := tx.tx.ExecContext(ctx, `
-INSERT INTO trajectory_samples(user_id,segment_id,observed_at,x,y,ping,level,source_ref)
-VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,observed_at) DO NOTHING`, sample.UserID, sample.SegmentID, formatObservationTime(sample.ObservedAt),
-				sample.X, sample.Y, sample.Ping, sample.Level, sample.SourceRef)
+INSERT INTO trajectory_samples(user_id,segment_id,observed_at,x,y,ping,level,source_ref,runtime_epoch)
+VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,observed_at) DO NOTHING`, sample.UserID, sample.SegmentID, formatObservationTime(sample.ObservedAt),
+				sample.X, sample.Y, sample.Ping, sample.Level, sample.SourceRef, sample.RuntimeEpoch)
 			if err != nil {
 				return fmt.Errorf("insert trajectory sample for %q at %s: %w", sample.UserID, formatObservationTime(sample.ObservedAt), err)
 			}
@@ -132,7 +156,7 @@ VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id,observed_at) DO NOTHING`, sample.Use
 			if inserted == 0 {
 				var stored TrajectorySample
 				var observed string
-				err := tx.tx.QueryRowContext(ctx, `SELECT user_id,segment_id,observed_at,x,y,ping,level,source_ref FROM trajectory_samples WHERE user_id=? AND observed_at=?`, sample.UserID, formatObservationTime(sample.ObservedAt)).Scan(&stored.UserID, &stored.SegmentID, &observed, &stored.X, &stored.Y, &stored.Ping, &stored.Level, &stored.SourceRef)
+				err := tx.tx.QueryRowContext(ctx, `SELECT user_id,segment_id,observed_at,x,y,ping,level,source_ref,runtime_epoch FROM trajectory_samples WHERE user_id=? AND observed_at=?`, sample.UserID, formatObservationTime(sample.ObservedAt)).Scan(&stored.UserID, &stored.SegmentID, &observed, &stored.X, &stored.Y, &stored.Ping, &stored.Level, &stored.SourceRef, &stored.RuntimeEpoch)
 				if err != nil {
 					return fmt.Errorf("read replayed trajectory: %w", err)
 				}
@@ -177,6 +201,62 @@ VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id,observed_at) DO NOTHING`, sample.UserI
 	})
 }
 
+func playerObservationAlreadyStored(ctx context.Context, tx *sql.Tx, write PlayerObservationWrite, currentEpoch int64) (bool, error) {
+	if len(write.Events) == 0 && len(write.Trajectories) == 0 && len(write.PrivateSamples) == 0 {
+		return false, nil
+	}
+	for _, event := range write.Events {
+		stored, err := readStoredEvent(ctx, tx, event.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if !activityEventsEqual(*stored, event) {
+			return false, nil
+		}
+	}
+	for _, sample := range write.Trajectories {
+		var stored TrajectorySample
+		var observed string
+		err := tx.QueryRowContext(ctx, `SELECT user_id,segment_id,observed_at,x,y,ping,level,source_ref,runtime_epoch FROM trajectory_samples WHERE user_id=? AND observed_at=?`, sample.UserID, formatObservationTime(sample.ObservedAt)).
+			Scan(&stored.UserID, &stored.SegmentID, &observed, &stored.X, &stored.Y, &stored.Ping, &stored.Level, &stored.SourceRef, &stored.RuntimeEpoch)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		stored.ObservedAt, err = parseTime(observed)
+		if err != nil {
+			return false, err
+		}
+		originalEpoch := stored.RuntimeEpoch
+		stored.RuntimeEpoch = sample.RuntimeEpoch
+		if !trajectorySamplesEqual(stored, sample) || originalEpoch < sample.RuntimeEpoch || originalEpoch > currentEpoch {
+			return false, nil
+		}
+	}
+	for _, sample := range write.PrivateSamples {
+		var stored PlayerPrivateSample
+		var observed string
+		err := tx.QueryRowContext(ctx, `SELECT user_id,observed_at,ip,ping,level,building_count,source_ref FROM player_private_samples WHERE user_id=? AND observed_at=?`, sample.UserID, formatObservationTime(sample.ObservedAt)).
+			Scan(&stored.UserID, &observed, &stored.IP, &stored.Ping, &stored.Level, &stored.BuildingCount, &stored.SourceRef)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		stored.ObservedAt, err = parseTime(observed)
+		if err != nil || !privateSamplesEqual(stored, sample) {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
 func activityEventsEqual(a, b ActivityEvent) bool {
 	return a.ID == b.ID && a.EventType == b.EventType && a.SubjectType == b.SubjectType && a.SubjectID == b.SubjectID &&
 		a.OccurredAt.Equal(b.OccurredAt) && a.ObservedAt.Equal(b.ObservedAt) && a.Source == b.Source && a.SourceRef == b.SourceRef &&
@@ -199,7 +279,7 @@ func jsonSemanticallyEqual(a, b string) bool {
 }
 
 func trajectorySamplesEqual(a, b TrajectorySample) bool {
-	return a.UserID == b.UserID && a.SegmentID == b.SegmentID && a.ObservedAt.Equal(b.ObservedAt) && a.X == b.X && a.Y == b.Y && a.Ping == b.Ping && a.Level == b.Level && a.SourceRef == b.SourceRef
+	return a.UserID == b.UserID && a.SegmentID == b.SegmentID && a.ObservedAt.Equal(b.ObservedAt) && a.X == b.X && a.Y == b.Y && a.Ping == b.Ping && a.Level == b.Level && a.SourceRef == b.SourceRef && a.RuntimeEpoch == b.RuntimeEpoch
 }
 
 func privateSamplesEqual(a, b PlayerPrivateSample) bool {
@@ -260,6 +340,9 @@ func validateTrajectorySample(sample TrajectorySample) error {
 	}
 	if sample.ObservedAt.IsZero() {
 		return fmt.Errorf("observed time is zero")
+	}
+	if sample.RuntimeEpoch < 0 {
+		return fmt.Errorf("runtime epoch must be nonnegative")
 	}
 	if !finite(sample.X) || !finite(sample.Y) || !finite(sample.Ping) {
 		return fmt.Errorf("coordinates and ping must be finite")
@@ -446,7 +529,9 @@ ORDER BY occurred_at,id LIMIT ?`, userID, formatObservationTime(start), formatOb
 
 func queryTimelineSamples(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time, limit int) ([]TrajectorySample, error) {
 	rows, err := tx.QueryContext(ctx, `
-SELECT user_id,segment_id,observed_at,x,y,ping,level,source_ref
+SELECT user_id,
+       CASE WHEN runtime_epoch=0 THEN segment_id ELSE printf('runtime-%d:%s',runtime_epoch,segment_id) END,
+       observed_at,x,y,ping,level,source_ref,runtime_epoch
 FROM trajectory_samples
 WHERE user_id=? AND observed_at>=? AND observed_at<?
 ORDER BY observed_at,id LIMIT ?`, userID, formatObservationTime(start), formatObservationTime(end), limit)
@@ -459,7 +544,7 @@ ORDER BY observed_at,id LIMIT ?`, userID, formatObservationTime(start), formatOb
 		var sample TrajectorySample
 		var observedAt string
 		if err := rows.Scan(&sample.UserID, &sample.SegmentID, &observedAt, &sample.X, &sample.Y,
-			&sample.Ping, &sample.Level, &sample.SourceRef); err != nil {
+			&sample.Ping, &sample.Level, &sample.SourceRef, &sample.RuntimeEpoch); err != nil {
 			return nil, fmt.Errorf("scan trajectory sample: %w", err)
 		}
 		var err error

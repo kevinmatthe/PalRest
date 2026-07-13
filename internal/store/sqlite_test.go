@@ -55,7 +55,7 @@ func TestOpenMigrationCreatesAnalyticsSchema(t *testing.T) {
 	if err := repo.db.QueryRowContext(t.Context(), `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 {
+	if version != 12 {
 		t.Fatalf("migration version=%d", version)
 	}
 
@@ -71,6 +71,7 @@ func TestOpenMigrationCreatesAnalyticsSchema(t *testing.T) {
 		"server_documents",
 		"server_document_observations",
 		"server_observation_state",
+		"server_runtime_state",
 		"sensitive_access_audit",
 	} {
 		var count int
@@ -88,7 +89,7 @@ func TestOpenMigrationCreatesAnalyticsSchema(t *testing.T) {
 	if cleanupIndex != 1 {
 		t.Fatalf("player_sessions_ended_at count=%d", cleanupIndex)
 	}
-	for _, index := range []string{"player_sessions_user_last_observed", "activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "player_private_samples_user_time", "player_private_samples_retention", "server_metric_samples_event", "server_document_observations_kind_time", "server_document_observations_event", "sensitive_audit_actor_time"} {
+	for _, index := range []string{"player_sessions_user_last_observed", "activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "trajectory_user_runtime_time", "player_private_samples_user_time", "player_private_samples_retention", "server_metric_samples_event", "server_document_observations_kind_time", "server_document_observations_event", "sensitive_audit_actor_time"} {
 		var count int
 		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -171,10 +172,10 @@ VALUES('u1','One','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`); err != nil 
 	if err := repo.db.QueryRow(`SELECT COUNT(*) FROM players WHERE user_id='u1' AND name='One'`).Scan(&players); err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 || players != 1 {
+	if version != 12 || players != 1 {
 		t.Fatalf("version=%d players=%d", version, players)
 	}
-	for _, table := range []string{"activity_events", "trajectory_samples", "player_private_samples", "server_metric_samples", "server_documents", "server_document_observations", "server_observation_state", "sensitive_access_audit"} {
+	for _, table := range []string{"activity_events", "trajectory_samples", "player_private_samples", "server_metric_samples", "server_documents", "server_document_observations", "server_observation_state", "server_runtime_state", "sensitive_access_audit"} {
 		var count int
 		if err := repo.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -183,7 +184,7 @@ VALUES('u1','One','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`); err != nil 
 			t.Fatalf("table %s count=%d", table, count)
 		}
 	}
-	for _, index := range []string{"player_sessions_user_last_observed", "activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "player_private_samples_user_time", "player_private_samples_retention", "server_metric_samples_event", "server_document_observations_kind_time", "server_document_observations_event", "sensitive_audit_actor_time"} {
+	for _, index := range []string{"player_sessions_user_last_observed", "activity_events_subject_time", "activity_events_retention", "trajectory_user_time", "trajectory_samples_retention", "trajectory_user_runtime_time", "player_private_samples_user_time", "player_private_samples_retention", "server_metric_samples_event", "server_document_observations_kind_time", "server_document_observations_event", "sensitive_audit_actor_time"} {
 		var count int
 		if err := repo.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -364,7 +365,7 @@ DELETE FROM schema_migrations WHERE version>=8`); err != nil {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 || len(players) != 1 || players[0].UserID != "u1" || !watermark.Equal(at) {
+	if version != 12 || len(players) != 1 || players[0].UserID != "u1" || !watermark.Equal(at) {
 		t.Fatalf("version=%d players=%+v watermark=%v", version, players, watermark)
 	}
 }
@@ -397,7 +398,7 @@ func TestOpenMigratesVersionNineToTenPreservingObservationData(t *testing.T) {
 	if err := repo.db.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_master WHERE type='index' AND name IN ('player_private_samples_user_time','player_private_samples_retention')`).Scan(&indexes); err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 || events != 1 || indexes != 2 {
+	if version != 12 || events != 1 || indexes != 2 {
 		t.Fatalf("version=%d events=%d indexes=%d", version, events, indexes)
 	}
 	valid := PlayerPrivateSample{UserID: "u1", ObservedAt: at, IP: "192.0.2.1", SourceRef: "poll"}
@@ -426,7 +427,7 @@ func TestOpenMigratesVersionTenToElevenWithPlayerSessionLookupIndex(t *testing.T
 	if _, err := repo.db.ExecContext(t.Context(), `INSERT INTO player_sessions(user_id,started_at,last_observed_at) VALUES('v10-player',?,?)`, formatTime(at), formatTime(at)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.db.ExecContext(t.Context(), `DROP INDEX IF EXISTS player_sessions_user_last_observed; DELETE FROM schema_migrations WHERE version=11`); err != nil {
+	if _, err := repo.db.ExecContext(t.Context(), `DROP INDEX IF EXISTS player_sessions_user_last_observed; DELETE FROM schema_migrations WHERE version>=11`); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.Close(); err != nil {
@@ -447,8 +448,50 @@ func TestOpenMigratesVersionTenToElevenWithPlayerSessionLookupIndex(t *testing.T
 	if err := repo.db.QueryRowContext(t.Context(), `SELECT count(*) FROM player_sessions WHERE user_id='v10-player'`).Scan(&sessions); err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 || indexes != 1 || sessions != 1 {
+	if version != 12 || indexes != 1 || sessions != 1 {
 		t.Fatalf("version=%d indexes=%d sessions=%d", version, indexes, sessions)
+	}
+}
+
+func TestOpenMigratesVersionElevenToTwelvePreservingTrajectories(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "guard.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(schemaV1 + schemaV2 + schemaV3 + schemaV4 + schemaV5 + schemaV6 + schemaV7 + schemaV8 + schemaV9 + schemaV10 + schemaV11 + `
+DELETE FROM schema_migrations;
+INSERT INTO schema_migrations(version,applied_at) VALUES
+(1,'2026-01-01T00:00:00Z'),(2,'2026-01-01T00:00:00Z'),(3,'2026-01-01T00:00:00Z'),
+(4,'2026-01-01T00:00:00Z'),(5,'2026-01-01T00:00:00Z'),(6,'2026-01-01T00:00:00Z'),
+(7,'2026-01-01T00:00:00Z'),(8,'2026-01-01T00:00:00Z'),(9,'2026-01-01T00:00:00Z'),
+(10,'2026-01-01T00:00:00Z'),(11,'2026-01-01T00:00:00Z');
+INSERT INTO trajectory_samples(user_id,segment_id,observed_at,x,y,ping,level,source_ref)
+VALUES('u1','legacy-segment','2026-01-01T00:00:00Z',1,2,3,4,'legacy-poll');`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	var version, runtimeColumn, runtimeIndex, trajectories int
+	for query, dest := range map[string]*int{
+		`SELECT MAX(version) FROM schema_migrations`:                                                                     &version,
+		`SELECT COUNT(*) FROM pragma_table_info('trajectory_samples') WHERE name='runtime_epoch'`:                        &runtimeColumn,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='trajectory_user_runtime_time'`:                  &runtimeIndex,
+		`SELECT COUNT(*) FROM trajectory_samples WHERE user_id='u1' AND segment_id='legacy-segment' AND runtime_epoch=0`: &trajectories,
+	} {
+		if err := repo.db.QueryRowContext(t.Context(), query).Scan(dest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := repo.CurrentServerRuntime(t.Context())
+	if err != nil || version != 12 || runtimeColumn != 1 || runtimeIndex != 1 || trajectories != 1 || state.Epoch != 0 || !state.RestartedAt.IsZero() {
+		t.Fatalf("version=%d column=%d index=%d trajectories=%d state=%+v err=%v", version, runtimeColumn, runtimeIndex, trajectories, state, err)
 	}
 }
 
@@ -516,7 +559,7 @@ INSERT INTO player_sessions(user_id,started_at,ended_at,last_observed_at) VALUES
 			t.Fatal(err)
 		}
 	}
-	if version != 11 || indexes != 1 || players != 1 || sessions != 1 {
+	if version != 12 || indexes != 1 || players != 1 || sessions != 1 {
 		t.Fatalf("version=%d index=%d players=%d sessions=%d", version, indexes, players, sessions)
 	}
 }

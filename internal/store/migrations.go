@@ -272,3 +272,15 @@ const schemaV11 = `
 CREATE INDEX player_sessions_user_last_observed
 ON player_sessions(user_id, last_observed_at);
 `
+
+const schemaV12 = `
+CREATE INDEX IF NOT EXISTS trajectory_user_runtime_time
+ON trajectory_samples(user_id, runtime_epoch, observed_at);
+
+CREATE TABLE IF NOT EXISTS server_runtime_state (
+    id INTEGER NOT NULL PRIMARY KEY CHECK(id = 1),
+    epoch INTEGER NOT NULL CHECK(epoch >= 0),
+    restarted_at TEXT
+);
+INSERT OR IGNORE INTO server_runtime_state(id, epoch, restarted_at) VALUES(1, 0, NULL);
+`

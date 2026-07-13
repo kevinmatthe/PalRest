@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -28,6 +29,10 @@ type Recorder interface {
 	CleanupRawObservations(context.Context, time.Time, int) (int, error)
 }
 
+type runtimeRecorder interface {
+	CurrentServerRuntime(context.Context) (store.ServerRuntimeState, error)
+}
+
 type Service struct {
 	mu                sync.Mutex
 	recorder          Recorder
@@ -41,6 +46,8 @@ type Service struct {
 	lastCleanup       time.Time
 	continuityValid   bool
 	pending           *pendingObservation
+	runtime           store.ServerRuntimeState
+	runtimeKnown      bool
 }
 
 type pendingObservation struct {
@@ -116,35 +123,68 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 	if err != nil {
 		return fmt.Errorf("observe players: %w", err)
 	}
-	at = at.UTC()
+	return s.observeNormalized(ctx, at.UTC(), current, ordered, correlationID, 0)
+}
+
+func (s *Service) observeNormalized(ctx context.Context, at time.Time, current map[string]domain.Player, ordered []domain.Player, correlationID string, attempt int) error {
+	runtime := store.ServerRuntimeState{}
+	if provider, ok := s.recorder.(runtimeRecorder); ok {
+		var err error
+		runtime, err = provider.CurrentServerRuntime(ctx)
+		if err != nil {
+			return fmt.Errorf("observe players: read server runtime: %w", err)
+		}
+	}
 
 	s.mu.Lock()
 	if s.pending != nil {
 		pending := s.pending
 		if err := s.recorder.RecordPlayerObservation(ctx, pending.write); err != nil {
-			s.mu.Unlock()
-			return err
-		}
-		s.online = pending.next
-		s.asOf = pending.at
-		s.continuityValid = pending.continuityValid
-		s.pending = nil
-		if at.Equal(pending.at) {
-			same := correlationID == pending.correlationID && playerMapsEqual(current, pending.current)
-			s.mu.Unlock()
-			if !same {
-				return fmt.Errorf("observe players: observation at %s differs from pending replay", at.Format(time.RFC3339Nano))
+			if !errors.Is(err, store.ErrObservationConflict) {
+				s.mu.Unlock()
+				return err
 			}
-			return nil
+			// A runtime conflict after an ambiguous result proves the exact
+			// pending write did not commit (committed replays are accepted by
+			// the repository). Drop it and make the interval unknown before
+			// deriving the caller's observation against the current epoch.
+			s.pending = nil
+			s.continuityValid = false
+		} else {
+			s.online = pending.next
+			s.asOf = pending.at
+			s.continuityValid = pending.continuityValid
+			s.pending = nil
+			if at.Equal(pending.at) {
+				same := correlationID == pending.correlationID && playerMapsEqual(current, pending.current)
+				s.mu.Unlock()
+				if !same {
+					return fmt.Errorf("observe players: observation at %s differs from pending replay", at.Format(time.RFC3339Nano))
+				}
+				return nil
+			}
 		}
 	}
 	if !s.asOf.IsZero() && !at.After(s.asOf) {
 		s.mu.Unlock()
 		return fmt.Errorf("observe players: observation time %s must be after %s", at.Format(time.RFC3339Nano), s.asOf.Format(time.RFC3339Nano))
 	}
+	if !s.runtimeKnown {
+		s.runtime = runtime
+		s.runtimeKnown = true
+	} else if !serverRuntimeEqual(s.runtime, runtime) {
+		for userID, state := range s.online {
+			state.segmentID = ""
+			state.lastSampleAt = time.Time{}
+			state.lastX = 0
+			state.lastY = 0
+			s.online[userID] = state
+		}
+		s.runtime = runtime
+	}
 
 	next := make(map[string]playerState, len(current))
-	write := store.PlayerObservationWrite{}
+	write := store.PlayerObservationWrite{Runtime: &runtime}
 	for _, player := range ordered {
 		previous, existed := s.online[player.UserID]
 		continuous := existed && s.continuityValid && at.Sub(previous.lastAt) <= s.maxGap
@@ -194,15 +234,18 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 			shouldSample := state.segmentID == ""
 			if !shouldSample {
 				distance := math.Hypot(player.LocationX-state.lastX, player.LocationY-state.lastY)
-				shouldSample = distance > s.movementThreshold || at.Sub(state.lastSampleAt) >= s.maxSampleInterval
+				levelChanged := knownLevel(previous.player.Level) && knownLevel(player.Level) && previous.player.Level != player.Level
+				pingChanged := knownPing(previous.player.Ping) && knownPing(player.Ping) && previous.player.Ping != player.Ping
+				shouldSample = distance > s.movementThreshold || at.Sub(state.lastSampleAt) >= s.maxSampleInterval || levelChanged || pingChanged
 			}
 			if shouldSample {
 				if state.segmentID == "" {
-					state.segmentID, err = s.generateID("trajectory segment")
+					segmentID, err := s.generateID("trajectory segment")
 					if err != nil {
 						s.mu.Unlock()
 						return err
 					}
+					state.segmentID = segmentID
 				}
 				ping := player.Ping
 				if math.IsNaN(ping) || math.IsInf(ping, 0) {
@@ -211,7 +254,7 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 				write.Trajectories = append(write.Trajectories, store.TrajectorySample{
 					UserID: player.UserID, SegmentID: state.segmentID, ObservedAt: at,
 					X: player.LocationX, Y: player.LocationY, Ping: ping, Level: player.Level,
-					SourceRef: correlationID,
+					SourceRef: correlationID, RuntimeEpoch: runtime.Epoch,
 				})
 				state.lastSampleAt = at
 				state.lastX = player.LocationX
@@ -244,6 +287,13 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 	// covers an ambiguous commit result: the next call replays these exact IDs,
 	// source references, and segment anchors before advancing the baseline.
 	if err := s.recorder.RecordPlayerObservation(ctx, write); err != nil {
+		if errors.Is(err, store.ErrObservationConflict) {
+			s.mu.Unlock()
+			if attempt >= 2 {
+				return fmt.Errorf("observe players: %w after 3 attempts", store.ErrObservationConflict)
+			}
+			return s.observeNormalized(ctx, at, current, ordered, correlationID, attempt+1)
+		}
 		s.pending = &pendingObservation{
 			write: write, next: next, current: current, at: at,
 			correlationID: correlationID, continuityValid: true,
@@ -267,6 +317,16 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		}
 	}
 	return nil
+}
+
+func serverRuntimeEqual(a, b store.ServerRuntimeState) bool {
+	return a.Epoch == b.Epoch && a.RestartedAt.Equal(b.RestartedAt)
+}
+
+func knownLevel(level int) bool { return level > 0 }
+
+func knownPing(ping float64) bool {
+	return !math.IsNaN(ping) && !math.IsInf(ping, 0) && ping >= 0
 }
 
 // PollFailed marks the interval since the last successful player observation

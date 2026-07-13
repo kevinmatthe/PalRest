@@ -33,6 +33,34 @@ type ServerMetricSnapshot struct {
 	Event   *ActivityEvent
 }
 
+func (r *Repository) CurrentServerRuntime(ctx context.Context) (ServerRuntimeState, error) {
+	return scanServerRuntime(r.db.QueryRowContext(ctx, `SELECT epoch,restarted_at FROM server_runtime_state WHERE id=1`))
+}
+
+func currentServerRuntimeTx(ctx context.Context, tx *sql.Tx) (ServerRuntimeState, error) {
+	return scanServerRuntime(tx.QueryRowContext(ctx, `SELECT epoch,restarted_at FROM server_runtime_state WHERE id=1`))
+}
+
+func scanServerRuntime(row rowScanner) (ServerRuntimeState, error) {
+	var state ServerRuntimeState
+	var restartedAt sql.NullString
+	if err := row.Scan(&state.Epoch, &restartedAt); err != nil {
+		return ServerRuntimeState{}, err
+	}
+	if restartedAt.Valid {
+		at, err := parseTime(restartedAt.String)
+		if err != nil {
+			return ServerRuntimeState{}, fmt.Errorf("parse server runtime restart time: %w", err)
+		}
+		state.RestartedAt = at
+	}
+	return state, nil
+}
+
+func serverRuntimeStatesEqual(a, b ServerRuntimeState) bool {
+	return a.Epoch == b.Epoch && a.RestartedAt.UTC().Equal(b.RestartedAt.UTC())
+}
+
 type ServerDocumentObservation struct {
 	Kind      string
 	At        time.Time
@@ -107,6 +135,18 @@ INSERT INTO server_metric_samples(
 			write.Metrics.ServerFrameTime, write.Metrics.MaxPlayerNum, write.Metrics.UptimeSeconds,
 			write.Metrics.BaseCampNum, write.Metrics.Days, eventID); err != nil {
 			return fmt.Errorf("record server metric observation: insert sample: %w", err)
+		}
+		if write.Event != nil && write.Event.EventType == "server_restarted" {
+			if _, err := tx.tx.ExecContext(ctx, `UPDATE server_runtime_state SET epoch=epoch+1,restarted_at=? WHERE id=1`, formatObservationTime(write.At)); err != nil {
+				return fmt.Errorf("record server metric observation: advance runtime epoch: %w", err)
+			}
+			var epoch int64
+			if err := tx.tx.QueryRowContext(ctx, `SELECT epoch FROM server_runtime_state WHERE id=1`).Scan(&epoch); err != nil {
+				return fmt.Errorf("record server metric observation: read advanced runtime epoch: %w", err)
+			}
+			if _, err := tx.tx.ExecContext(ctx, `UPDATE trajectory_samples SET runtime_epoch=? WHERE observed_at>=? AND runtime_epoch<?`, epoch, formatObservationTime(write.At), epoch); err != nil {
+				return fmt.Errorf("record server metric observation: repair trajectory runtime epoch: %w", err)
+			}
 		}
 		if _, err := tx.tx.ExecContext(ctx, `
 INSERT INTO server_observation_state(

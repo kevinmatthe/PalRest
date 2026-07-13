@@ -39,6 +39,81 @@ type commitThenErrorRecorder struct {
 	failOnce bool
 }
 
+type noCommitThenErrorRecorder struct {
+	delegate *store.Repository
+	failOnce bool
+}
+
+func (r *noCommitThenErrorRecorder) CurrentServerRuntime(ctx context.Context) (store.ServerRuntimeState, error) {
+	return r.delegate.CurrentServerRuntime(ctx)
+}
+
+func (r *noCommitThenErrorRecorder) RecordPlayerObservation(ctx context.Context, write store.PlayerObservationWrite) error {
+	if r.failOnce {
+		r.failOnce = false
+		return errors.New("ambiguous result without commit")
+	}
+	return r.delegate.RecordPlayerObservation(ctx, write)
+}
+
+func (r *noCommitThenErrorRecorder) CleanupRawObservations(ctx context.Context, cutoff time.Time, limit int) (int, error) {
+	return r.delegate.CleanupRawObservations(ctx, cutoff, limit)
+}
+
+type restartAfterCommitRecorder struct {
+	delegate  *store.Repository
+	server    *observation.ServerService
+	restartAt time.Time
+	trigger   bool
+}
+
+type restartBeforeWriteRecorder struct {
+	delegate *store.Repository
+	server   *observation.ServerService
+	at       time.Time
+	trigger  bool
+}
+
+func (r *restartBeforeWriteRecorder) CurrentServerRuntime(ctx context.Context) (store.ServerRuntimeState, error) {
+	return r.delegate.CurrentServerRuntime(ctx)
+}
+
+func (r *restartBeforeWriteRecorder) RecordPlayerObservation(ctx context.Context, write store.PlayerObservationWrite) error {
+	if r.trigger {
+		r.trigger = false
+		if err := r.server.RecordMetrics(ctx, r.at, domain.ServerMetrics{UptimeSeconds: 1, ServerFrameTime: 1}); err != nil {
+			return err
+		}
+	}
+	return r.delegate.RecordPlayerObservation(ctx, write)
+}
+
+func (r *restartBeforeWriteRecorder) CleanupRawObservations(ctx context.Context, cutoff time.Time, limit int) (int, error) {
+	return r.delegate.CleanupRawObservations(ctx, cutoff, limit)
+}
+
+func (r *restartAfterCommitRecorder) CurrentServerRuntime(ctx context.Context) (store.ServerRuntimeState, error) {
+	return r.delegate.CurrentServerRuntime(ctx)
+}
+
+func (r *restartAfterCommitRecorder) RecordPlayerObservation(ctx context.Context, write store.PlayerObservationWrite) error {
+	if err := r.delegate.RecordPlayerObservation(ctx, write); err != nil {
+		return err
+	}
+	if r.trigger {
+		r.trigger = false
+		if err := r.server.RecordMetrics(ctx, r.restartAt, domain.ServerMetrics{UptimeSeconds: 1, ServerFrameTime: 1}); err != nil {
+			return err
+		}
+		return errors.New("ambiguous player commit after concurrent restart")
+	}
+	return nil
+}
+
+func (r *restartAfterCommitRecorder) CleanupRawObservations(ctx context.Context, cutoff time.Time, limit int) (int, error) {
+	return r.delegate.CleanupRawObservations(ctx, cutoff, limit)
+}
+
 func (r *commitThenErrorRecorder) RecordPlayerObservation(ctx context.Context, write store.PlayerObservationWrite) error {
 	r.attempts = append(r.attempts, write)
 	if err := r.delegate.RecordPlayerObservation(ctx, write); err != nil {
@@ -306,7 +381,7 @@ func TestAmbiguousCommitReplaysExactWriteBeforeAdvancingBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	for table, want := range map[string]int{"activity_events": 4, "trajectory_samples": 2, "player_private_samples": 3} {
+	for table, want := range map[string]int{"activity_events": 4, "trajectory_samples": 3, "player_private_samples": 3} {
 		var got int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&got); err != nil || got != want {
 			t.Fatalf("%s=%d want=%d err=%v", table, got, want, err)
@@ -352,6 +427,102 @@ func TestAmbiguousCommitAfterPollFailedBreaksContinuityOnReplay(t *testing.T) {
 	}
 	if len(newWrite.Trajectories) != 1 || newWrite.Trajectories[0].SegmentID == recorder.attempts[0].Trajectories[0].SegmentID {
 		t.Fatalf("new segment was not anchored after unknown continuity: %+v", newWrite.Trajectories)
+	}
+}
+
+func TestAmbiguousPlayerCommitReplaysAfterLateRestartWithoutDuplicateOrCrossSegment(t *testing.T) {
+	repo, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "restart-replay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	ids := 0
+	newID := func() string { ids++; return fmt.Sprintf("id-%d", ids) }
+	server := observation.NewServer(repo, newID)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	if err := server.RecordMetrics(t.Context(), base.Add(-time.Minute), domain.ServerMetrics{UptimeSeconds: 100, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &restartAfterCommitRecorder{delegate: repo, server: server, restartAt: base, trigger: true}
+	svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, newID)
+	before := player("u", 10, 10)
+	if err := svc.Observe(t.Context(), base, []domain.Player{before}, "players-1"); err == nil {
+		t.Fatal("expected ambiguous commit")
+	}
+	after := before
+	after.LocationX = 211
+	if err := svc.Observe(t.Context(), base.Add(time.Minute), []domain.Player{after}, "players-2"); err != nil {
+		t.Fatal(err)
+	}
+	timeline, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "u", base.Add(-time.Second), base.Add(2*time.Minute), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline.Trajectories) != 2 || timeline.Trajectories[0].SegmentID == timeline.Trajectories[1].SegmentID {
+		t.Fatalf("trajectories=%+v", timeline.Trajectories)
+	}
+}
+
+func TestUncommittedAmbiguousPlayerWriteRebasesAfterRuntimeConflict(t *testing.T) {
+	repo, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "uncommitted-runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	ids := 0
+	newID := func() string { ids++; return fmt.Sprintf("id-%d", ids) }
+	server := observation.NewServer(repo, newID)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	if err := server.RecordMetrics(t.Context(), base.Add(-time.Minute), domain.ServerMetrics{UptimeSeconds: 100, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &noCommitThenErrorRecorder{delegate: repo, failOnce: true}
+	svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, newID)
+	before := player("u", 10, 10)
+	if err := svc.Observe(t.Context(), base, []domain.Player{before}, "players-1"); err == nil {
+		t.Fatal("expected ambiguous result")
+	}
+	if err := server.RecordMetrics(t.Context(), base.Add(30*time.Second), domain.ServerMetrics{UptimeSeconds: 1, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	after := before
+	after.LocationX = 211
+	if err := svc.Observe(t.Context(), base.Add(time.Minute), []domain.Player{after}, "players-2"); err != nil {
+		t.Fatal(err)
+	}
+	timeline, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "u", base.Add(-time.Second), base.Add(2*time.Minute), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline.Trajectories) != 1 || timeline.Trajectories[0].ObservedAt != base.Add(time.Minute) || !strings.HasPrefix(timeline.Trajectories[0].SegmentID, "runtime-1:") {
+		t.Fatalf("trajectories=%+v", timeline.Trajectories)
+	}
+}
+
+func TestPlayerObservationReloadsAndRederivesWhenRuntimeChangesBeforeCommit(t *testing.T) {
+	repo, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "runtime-cas.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	ids := 0
+	newID := func() string { ids++; return fmt.Sprintf("id-%d", ids) }
+	server := observation.NewServer(repo, newID)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	if err := server.RecordMetrics(t.Context(), base.Add(-time.Minute), domain.ServerMetrics{UptimeSeconds: 100, ServerFrameTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &restartBeforeWriteRecorder{delegate: repo, server: server, at: base, trigger: true}
+	svc := observation.New(recorder, 75*time.Second, 100, 5*time.Minute, 90*24*time.Hour, newID)
+	if err := svc.Observe(t.Context(), base, []domain.Player{player("u", 10, 10)}, "players-1"); err != nil {
+		t.Fatal(err)
+	}
+	timeline, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "u", base.Add(-time.Second), base.Add(time.Second), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline.Trajectories) != 1 || !strings.HasPrefix(timeline.Trajectories[0].SegmentID, "runtime-1:") {
+		t.Fatalf("trajectories=%+v", timeline.Trajectories)
 	}
 }
 
@@ -471,6 +642,61 @@ func TestHeartbeatSamplesAtMaximumInterval(t *testing.T) {
 		if got := len(recorder.writes[minute].Trajectories); got != want {
 			t.Fatalf("minute %d trajectories=%d, want %d", minute, got, want)
 		}
+	}
+}
+
+func TestTrajectorySamplesImmediatelyOnKnownLevelOrPingChange(t *testing.T) {
+	for name, mutate := range map[string]func(*domain.Player){
+		"level only": func(p *domain.Player) { p.Level++ },
+		"ping only":  func(p *domain.Player) { p.Ping++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := &recorderFake{}
+			svc := newService(recorder)
+			base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+			before := player("u", 10, 10)
+			after := before
+			mutate(&after)
+			if err := svc.Observe(t.Context(), base, []domain.Player{before}, "poll-1"); err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.Observe(t.Context(), base.Add(time.Minute), []domain.Player{after}, "poll-2"); err != nil {
+				t.Fatal(err)
+			}
+			if got := recorder.writes[1].Trajectories; len(got) != 1 || got[0].SegmentID != recorder.writes[0].Trajectories[0].SegmentID {
+				t.Fatalf("samples=%+v", got)
+			}
+		})
+	}
+}
+
+func TestTrajectoryAttributeSamplingDoesNotCompareUnknownOrAcrossGap(t *testing.T) {
+	recorder := &recorderFake{}
+	svc := newService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	unknown := player("u", 10, 10)
+	unknown.Level = 0
+	unknown.Ping = math.NaN()
+	known := unknown
+	known.Level = 41
+	known.Ping = 28
+	if err := svc.Observe(t.Context(), base, []domain.Player{unknown}, "poll-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Observe(t.Context(), base.Add(time.Minute), []domain.Player{known}, "poll-2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorder.writes[1].Trajectories; len(got) != 0 {
+		t.Fatalf("unknown-to-known forced sample=%+v", got)
+	}
+	svc.PollFailed()
+	changed := known
+	changed.Level++
+	if err := svc.Observe(t.Context(), base.Add(2*time.Minute), []domain.Player{changed}, "poll-3"); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorder.writes[2].Trajectories; len(got) != 1 || got[0].SegmentID == recorder.writes[0].Trajectories[0].SegmentID {
+		t.Fatalf("gap anchor=%+v", got)
 	}
 }
 

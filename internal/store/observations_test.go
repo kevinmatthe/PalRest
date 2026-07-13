@@ -146,6 +146,112 @@ func TestPlayerObservationRejectsDivergentTrajectoryCollision(t *testing.T) {
 	}
 }
 
+func TestPlayerObservationRuntimeEpochCASAndRestartRepair(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	initial, err := repo.CurrentServerRuntime(t.Context())
+	if err != nil || initial.Epoch != 0 || !initial.RestartedAt.IsZero() {
+		t.Fatalf("initial=%+v err=%v", initial, err)
+	}
+	point := observationTrajectory("u", base.Add(time.Minute))
+	point.RuntimeEpoch = initial.Epoch
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{
+		Runtime: &initial, Trajectories: []TrajectorySample{point},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	restartAt := base.Add(time.Minute)
+	event := serverObservationEvent("restart-runtime", "server_restarted", restartAt, `{"old_uptime_seconds":100,"new_uptime_seconds":1}`)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{
+		At: restartAt, Metrics: serverMetrics(1), Event: &event,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := repo.CurrentServerRuntime(t.Context())
+	if err != nil || after.Epoch != 1 || after.RestartedAt != restartAt {
+		t.Fatalf("after=%+v err=%v", after, err)
+	}
+	var storedEpoch int64
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT runtime_epoch FROM trajectory_samples WHERE user_id='u'`).Scan(&storedEpoch); err != nil || storedEpoch != 1 {
+		t.Fatalf("stored epoch=%d err=%v", storedEpoch, err)
+	}
+	newPoint := observationTrajectory("u", base.Add(2*time.Minute))
+	newPoint.RuntimeEpoch = initial.Epoch
+	err = repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Runtime: &initial, Trajectories: []TrajectorySample{newPoint}})
+	if !errors.Is(err, ErrObservationConflict) {
+		t.Fatalf("err=%v want ErrObservationConflict", err)
+	}
+	var count int
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM trajectory_samples`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+}
+
+func TestServerRuntimeEpochRestartReplayAndReopenAreIdempotent(t *testing.T) {
+	repo, path := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: base, Metrics: serverMetrics(100)}); err != nil {
+		t.Fatal(err)
+	}
+	restartAt := base.Add(time.Minute)
+	event := serverObservationEvent("restart-once", "server_restarted", restartAt, `{"old_uptime_seconds":100,"new_uptime_seconds":1}`)
+	write := ServerMetricObservation{At: restartAt, Metrics: serverMetrics(1), Event: &event}
+	if err := repo.RecordServerMetricObservation(t.Context(), write); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordServerMetricObservation(t.Context(), write); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	state, err := reopened.CurrentServerRuntime(t.Context())
+	if err != nil || state.Epoch != 1 || state.RestartedAt != restartAt {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+}
+
+func TestServerRuntimeEpochAdvancesOnceForConcurrentReplayAndEachRecurrentRestart(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: base, Metrics: serverMetrics(100)}); err != nil {
+		t.Fatal(err)
+	}
+	restartAt := base.Add(time.Minute)
+	event := serverObservationEvent("concurrent-restart", "server_restarted", restartAt, `{"old_uptime_seconds":100,"new_uptime_seconds":1}`)
+	write := ServerMetricObservation{At: restartAt, Metrics: serverMetrics(1), Event: &event}
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() { errs <- repo.RecordServerMetricObservation(t.Context(), write) }()
+	}
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := repo.CurrentServerRuntime(t.Context())
+	if err != nil || state.Epoch != 1 {
+		t.Fatalf("first state=%+v err=%v", state, err)
+	}
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: base.Add(2 * time.Minute), Metrics: serverMetrics(50)}); err != nil {
+		t.Fatal(err)
+	}
+	secondAt := base.Add(3 * time.Minute)
+	secondEvent := serverObservationEvent("recurrent-restart", "server_restarted", secondAt, `{"old_uptime_seconds":50,"new_uptime_seconds":1}`)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: secondAt, Metrics: serverMetrics(1), Event: &secondEvent}); err != nil {
+		t.Fatal(err)
+	}
+	state, err = repo.CurrentServerRuntime(t.Context())
+	if err != nil || state.Epoch != 2 || state.RestartedAt != secondAt {
+		t.Fatalf("second state=%+v err=%v", state, err)
+	}
+}
+
 func TestActivityPayloadStrictJSONAndReplayEquality(t *testing.T) {
 	repo, _ := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)

@@ -200,6 +200,23 @@ func (r *Repository) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if version < 12 {
+		hasRuntimeEpoch, err := columnExists(ctx, tx, "trajectory_samples", "runtime_epoch")
+		if err != nil {
+			return err
+		}
+		if !hasRuntimeEpoch {
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE trajectory_samples ADD COLUMN runtime_epoch INTEGER NOT NULL DEFAULT 0 CHECK(runtime_epoch >= 0)`); err != nil {
+				return fmt.Errorf("apply migration 12 trajectory epoch: %w", err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, schemaV12); err != nil {
+			return fmt.Errorf("apply migration 12: %w", err)
+		}
+		if err := recordMigration(ctx, tx, 12); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}
