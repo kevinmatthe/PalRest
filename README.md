@@ -135,34 +135,40 @@ PALREST_ADMIN_PASSWORD=change-me
 - `GET /api/v1/admin/server/metrics?start=...&end=...&limit=...`：同样范围语义的完整服务器 metrics 样本，默认 limit 500。
 - `GET /api/v1/admin/server/documents?kind=info|settings&limit=...&cursor=...`：按发生记录分页读取内容寻址的服务器文档；limit 为 1–2000（默认 100），响应的 opaque `next_cursor` 原样 URL 编码后传给下一页。
 
-每次敏感时间线、metrics 和 document 查询都会在同一 SQLite 事务中写入管理员 actor、动作、对象、范围、结果与时间的访问审计；审计写入失败时不返回敏感数据。管理员事件 payload 采用允许列表，未知 schema/event 不透传 payload；settings 文档在响应前递归遮盖 credential/password/token/secret/authorization/cookie 等键。错误响应和日志只返回稳定摘要，不回显底层凭据。
+敏感时间线、metrics 和 document 查询在成功或 not-found 时，把数据读取与管理员 actor、动作、对象、范围、结果、时间的访问审计放在同一个 SQLite 事务中；审计写入失败时不返回敏感数据。查询/事务错误的 fallback 审计使用另一个最多 2 秒、与请求取消分离的有界事务。管理员事件 payload 采用允许列表，未知 schema/event 不透传 payload；settings 文档在响应前递归遮盖 credential/password/token/secret/authorization/cookie 等键。错误响应和日志只返回稳定摘要，不回显底层凭据。
 
 Passkey 还未启用；`/api/v1/admin/session` 会返回 `passkey: false`。后续可在同一套管理员 session 上接 WebAuthn credential 存储。
 
-可以从同一 Docker 网络中的容器查询。以下示例让 curl 负责 RFC3339 `+08:00` 和 cursor 的 URL 编码；cookie 值只保存在临时 jar，命令和文档中没有 session secret：
+可以从同一 Docker 网络中的容器查询。以下示例需要 `curl` 和 `jq`，让 curl 负责 RFC3339 `+08:00` 和 cursor 的 URL 编码；cookie 值只保存在随机临时 jar，密码通过 stdin 传给 curl，不出现在进程参数中：
 
 ```bash
 docker run --rm --network homelab-v2 curlimages/curl:latest \
   http://palworld-playtime-guard:8080/api/v1/status
 
-curl -sS -c /tmp/palrest-admin.cookies \
-  -H 'Content-Type: application/json' \
-  --data "{\"username\":\"$PALREST_ADMIN_USERNAME\",\"password\":\"$PALREST_ADMIN_PASSWORD\"}" \
-  http://palworld-playtime-guard:8080/api/v1/admin/login
+COOKIE_JAR=$(mktemp)
+trap 'rm -f "$COOKIE_JAR"' EXIT
+jq -n \
+  --arg username "$PALREST_ADMIN_USERNAME" \
+  --arg password "$PALREST_ADMIN_PASSWORD" \
+  '{username: $username, password: $password}' | \
+  curl -sS -c "$COOKIE_JAR" \
+    -H 'Content-Type: application/json' \
+    --data-binary @- \
+    http://palworld-playtime-guard:8080/api/v1/admin/login
 
-curl -sS -b /tmp/palrest-admin.cookies --get \
+curl -sS -b "$COOKIE_JAR" --get \
   --data-urlencode 'start=2026-07-13T08:00:00+08:00' \
   --data-urlencode 'end=2026-07-13T09:00:00+08:00' \
   --data-urlencode 'limit=500' \
   http://palworld-playtime-guard:8080/api/v1/admin/server/metrics
 
-curl -sS -b /tmp/palrest-admin.cookies --get \
+curl -sS -b "$COOKIE_JAR" --get \
   --data-urlencode 'kind=settings' \
   --data-urlencode 'limit=100' \
   http://palworld-playtime-guard:8080/api/v1/admin/server/documents
 
 # Only for a subsequent page, using a non-empty next_cursor from the response:
-curl -sS -b /tmp/palrest-admin.cookies --get \
+curl -sS -b "$COOKIE_JAR" --get \
   --data-urlencode 'kind=settings' \
   --data-urlencode 'limit=100' \
   --data-urlencode "cursor=$NEXT_CURSOR" \

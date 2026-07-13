@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -418,6 +419,7 @@ func TestReloadRejectsStartupOnlySettings(t *testing.T) {
 func TestReloadRejectsObservationSettingsWithoutChangingPolicy(t *testing.T) {
 	application, path := newTestApp(t)
 	before := application.policies.Resolve("player")
+	beforeObservation := application.CurrentConfig().Observation
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -432,6 +434,12 @@ func TestReloadRejectsObservationSettingsWithoutChangingPolicy(t *testing.T) {
 	}
 	if after := application.policies.Resolve("player"); after.Revision != before.Revision {
 		t.Fatalf("observation reload changed stored policy: before=%+v after=%+v", before, after)
+	}
+	if after := application.CurrentConfig().Observation; !reflect.DeepEqual(after, beforeObservation) {
+		t.Fatalf("rejected reload changed observation config: before=%+v after=%+v", beforeObservation, after)
+	}
+	if reloadErr := application.poller.Status().ConfigReloadErr; reloadErr == "" {
+		t.Fatal("rejected observation reload did not update poll status")
 	}
 }
 

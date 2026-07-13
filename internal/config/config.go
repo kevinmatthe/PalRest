@@ -45,23 +45,49 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &ms); err != nil {
 		return fmt.Errorf("duration must be a Go duration string or milliseconds")
 	}
+	if ms > int64(time.Duration(1<<63-1))/int64(time.Millisecond) || ms < int64(time.Duration(-1<<63))/int64(time.Millisecond) {
+		return fmt.Errorf("duration milliseconds %d overflow time.Duration", ms)
+	}
 	d.Duration = time.Duration(ms) * time.Millisecond
 	return nil
 }
 
 func parseDuration(value string) (time.Duration, error) {
 	if strings.HasSuffix(value, "d") {
-		days, err := strconv.ParseFloat(strings.TrimSuffix(value, "d"), 64)
-		if err != nil || math.IsNaN(days) || math.IsInf(days, 0) {
+		text := strings.TrimSuffix(value, "d")
+		if !signedDecimalInteger(text) {
 			return 0, fmt.Errorf("time: invalid duration %q", value)
 		}
-		hours := days * 24
-		if hours > float64(time.Duration(1<<63-1))/float64(time.Hour) || hours < float64(time.Duration(-1<<63))/float64(time.Hour) {
+		days, err := strconv.ParseInt(text, 10, 64)
+		if err != nil {
 			return 0, fmt.Errorf("time: invalid duration %q", value)
 		}
-		return time.Duration(hours * float64(time.Hour)), nil
+		const day = 24 * time.Hour
+		if days > int64(time.Duration(1<<63-1))/int64(day) || days < int64(time.Duration(-1<<63))/int64(day) {
+			return 0, fmt.Errorf("time: invalid duration %q", value)
+		}
+		return time.Duration(days) * day, nil
 	}
 	return time.ParseDuration(value)
+}
+
+func signedDecimalInteger(value string) bool {
+	if value == "" {
+		return false
+	}
+	start := 0
+	if value[0] == '+' || value[0] == '-' {
+		start = 1
+	}
+	if start == len(value) {
+		return false
+	}
+	for i := start; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (d Duration) MarshalJSON() ([]byte, error) {

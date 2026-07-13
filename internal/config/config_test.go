@@ -1,12 +1,89 @@
 package config
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestDurationJSONMillisecondsRejectOverflow(t *testing.T) {
+	maxMilliseconds := int64(math.MaxInt64) / int64(time.Millisecond)
+	minMilliseconds := int64(math.MinInt64) / int64(time.Millisecond)
+	tests := []struct {
+		name    string
+		value   int64
+		want    time.Duration
+		wantErr bool
+	}{
+		{"maximum representable quotient", maxMilliseconds, time.Duration(maxMilliseconds) * time.Millisecond, false},
+		{"minimum representable quotient", minMilliseconds, time.Duration(minMilliseconds) * time.Millisecond, false},
+		{"above maximum", maxMilliseconds + 1, 0, true},
+		{"below minimum", minMilliseconds - 1, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var duration Duration
+			err := duration.UnmarshalJSON([]byte(fmt.Sprintf("%d", tt.value)))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("value=%d duration=%s", tt.value, duration.Duration)
+				}
+				return
+			}
+			if err != nil || duration.Duration != tt.want {
+				t.Fatalf("value=%d duration=%s want=%s err=%v", tt.value, duration.Duration, tt.want, err)
+			}
+		})
+	}
+}
+
+func TestDayDurationGrammarAndBounds(t *testing.T) {
+	tests := []struct {
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"106751d", 106751 * 24 * time.Hour, false},
+		{"106752d", 0, true},
+		{"-1d", -24 * time.Hour, false},
+		{"1.5d", 0, true},
+		{"1e2d", 0, true},
+		{"0x2d", 0, true},
+		{"1d2h", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			got, err := parseDuration(tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("duration=%s", got)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("duration=%s want=%s err=%v", got, tt.want, err)
+			}
+		})
+	}
+}
+
+func TestValidDayDurationParsingDoesNotAllocate(t *testing.T) {
+	var got time.Duration
+	var err error
+	allocations := testing.AllocsPerRun(1000, func() {
+		got, err = parseDuration("106751d")
+	})
+	if err != nil || got != 106751*24*time.Hour {
+		t.Fatalf("duration=%s err=%v", got, err)
+	}
+	if allocations != 0 {
+		t.Fatalf("allocations=%v", allocations)
+	}
+}
 
 const validConfig = `
 version: 1
@@ -154,6 +231,7 @@ func TestParseRejectsInvalidObservationSettings(t *testing.T) {
 		"zero server document interval": "server_document_interval: 0s",
 		"zero trajectory max interval":  "trajectory_max_interval: 0s",
 		"zero raw retention":            "raw_retention: 0s",
+		"negative day raw retention":    "raw_retention: -1d",
 		"negative trajectory distance":  "trajectory_min_distance: -1",
 		"nan trajectory distance":       "trajectory_min_distance: .nan",
 		"infinite trajectory distance":  "trajectory_min_distance: .inf",
