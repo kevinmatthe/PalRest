@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"time"
 
@@ -122,6 +124,9 @@ func (r *Repository) RecordServerMetricObservation(ctx context.Context, write Se
 		if !serverMetricTokenMatches(write.Expected, err == nil, latestAt, latestMetrics) {
 			return fmt.Errorf("record server metric observation: %w", ErrObservationConflict)
 		}
+		if err := validateServerMetricTransition(err == nil, latestMetrics.UptimeSeconds, write); err != nil {
+			return err
+		}
 
 		eventID, err := insertOptionalActivityEvent(ctx, tx.tx, write.Event)
 		if err != nil {
@@ -165,6 +170,38 @@ ON CONFLICT(kind) DO UPDATE SET
 		}
 		return nil
 	})
+}
+
+func validateServerMetricTransition(latestExists bool, oldUptime int64, write ServerMetricObservation) error {
+	restarted := latestExists && write.Metrics.UptimeSeconds < oldUptime
+	if !restarted {
+		if write.Event != nil {
+			return fmt.Errorf("record server metric observation: event requires an authoritative uptime decrease")
+		}
+		return nil
+	}
+	if write.Event == nil {
+		return fmt.Errorf("record server metric observation: uptime decrease requires server_restarted event")
+	}
+	if write.Event.EventType != "server_restarted" {
+		return fmt.Errorf("record server metric observation: uptime decrease event must be server_restarted")
+	}
+	var payload struct {
+		Old *int64 `json:"old_uptime_seconds"`
+		New *int64 `json:"new_uptime_seconds"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader([]byte(write.Event.PayloadJSON)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		return fmt.Errorf("record server metric observation: decode server_restarted payload: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("record server metric observation: server_restarted payload has trailing content")
+	}
+	if payload.Old == nil || payload.New == nil || *payload.Old != oldUptime || *payload.New != write.Metrics.UptimeSeconds {
+		return fmt.Errorf("record server metric observation: server_restarted payload does not match authoritative uptime transition")
+	}
+	return nil
 }
 
 func (r *Repository) LatestServerMetrics(ctx context.Context) (time.Time, domain.ServerMetrics, error) {

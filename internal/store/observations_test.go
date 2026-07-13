@@ -61,6 +61,9 @@ func serverMetrics(uptime int64) domain.ServerMetrics {
 func TestServerMetricObservationIsAtomicAndIdempotent(t *testing.T) {
 	repo, _ := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at.Add(-time.Minute), Metrics: serverMetrics(100)}); err != nil {
+		t.Fatal(err)
+	}
 	event := serverObservationEvent("restart-1", "server_restarted", at, `{"old_uptime_seconds":100,"new_uptime_seconds":1}`)
 	write := ServerMetricObservation{At: at, Metrics: serverMetrics(1), Event: &event}
 	if err := repo.RecordServerMetricObservation(t.Context(), write); err != nil {
@@ -69,7 +72,7 @@ func TestServerMetricObservationIsAtomicAndIdempotent(t *testing.T) {
 	if err := repo.RecordServerMetricObservation(t.Context(), write); err != nil {
 		t.Fatalf("exact replay: %v", err)
 	}
-	for table, want := range map[string]int{"server_metric_samples": 1, "activity_events": 1} {
+	for table, want := range map[string]int{"server_metric_samples": 2, "activity_events": 1} {
 		var count int
 		if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil {
 			t.Fatal(err)
@@ -94,6 +97,112 @@ func TestServerMetricObservationIsAtomicAndIdempotent(t *testing.T) {
 	}
 	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at.Add(-time.Second), Metrics: write.Metrics}); err == nil {
 		t.Fatal("expected stale metric observation to fail")
+	}
+}
+
+func TestServerMetricRestartTransitionMustMatchAuthoritativeUptime(t *testing.T) {
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name          string
+		withBaseline  bool
+		newUptime     int64
+		event         func(time.Time) *ActivityEvent
+		wantSucceeded bool
+	}{
+		{
+			name: "first sample cannot claim restart", newUptime: 1,
+			event: func(at time.Time) *ActivityEvent {
+				value := serverObservationEvent("first-fake", "server_restarted", at, `{"old_uptime_seconds":100,"new_uptime_seconds":1}`)
+				return &value
+			},
+		},
+		{
+			name: "equal uptime cannot claim restart", withBaseline: true, newUptime: 100,
+			event: func(at time.Time) *ActivityEvent {
+				value := serverObservationEvent("equal-fake", "server_restarted", at, `{"old_uptime_seconds":100,"new_uptime_seconds":100}`)
+				return &value
+			},
+		},
+		{
+			name: "rising uptime cannot claim restart", withBaseline: true, newUptime: 101,
+			event: func(at time.Time) *ActivityEvent {
+				value := serverObservationEvent("rise-fake", "server_restarted", at, `{"old_uptime_seconds":100,"new_uptime_seconds":101}`)
+				return &value
+			},
+		},
+		{name: "falling uptime requires restart", withBaseline: true, newUptime: 1},
+		{
+			name: "falling uptime requires matching payload", withBaseline: true, newUptime: 1,
+			event: func(at time.Time) *ActivityEvent {
+				value := serverObservationEvent("wrong-payload", "server_restarted", at, `{"old_uptime_seconds":99,"new_uptime_seconds":1}`)
+				return &value
+			},
+		},
+		{
+			name: "real restart advances atomically", withBaseline: true, newUptime: 1, wantSucceeded: true,
+			event: func(at time.Time) *ActivityEvent {
+				value := serverObservationEvent("real-restart", "server_restarted", at, `{"old_uptime_seconds":100,"new_uptime_seconds":1}`)
+				return &value
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, _ := openTemp(t)
+			if tc.withBaseline {
+				if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: base, Metrics: serverMetrics(100)}); err != nil {
+					t.Fatal(err)
+				}
+				point := observationTrajectory("u", base.Add(time.Minute))
+				if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Trajectories: []TrajectorySample{point}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			at := base.Add(time.Minute)
+			var event *ActivityEvent
+			if tc.event != nil {
+				event = tc.event(at)
+			}
+			err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at, Metrics: serverMetrics(tc.newUptime), Event: event})
+			if tc.wantSucceeded {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil {
+				t.Fatal("expected invalid restart transition to fail")
+			}
+			wantMetrics, wantEvents, wantEpoch, wantTrajectoryEpoch := 0, 0, int64(0), int64(0)
+			if tc.withBaseline {
+				wantMetrics = 1
+			}
+			if tc.wantSucceeded {
+				wantMetrics, wantEvents, wantEpoch, wantTrajectoryEpoch = 2, 1, 1, 1
+			}
+			for table, want := range map[string]int{"server_metric_samples": wantMetrics, "activity_events": wantEvents} {
+				var got int
+				if scanErr := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+table).Scan(&got); scanErr != nil || got != want {
+					t.Fatalf("%s=%d want=%d err=%v", table, got, want, scanErr)
+				}
+			}
+			state, stateErr := repo.CurrentServerRuntime(t.Context())
+			if stateErr != nil || state.Epoch != wantEpoch {
+				t.Fatalf("runtime=%+v want epoch=%d err=%v", state, wantEpoch, stateErr)
+			}
+			if tc.withBaseline {
+				var trajectoryEpoch int64
+				if scanErr := repo.db.QueryRowContext(t.Context(), `SELECT runtime_epoch FROM trajectory_samples WHERE user_id='u'`).Scan(&trajectoryEpoch); scanErr != nil || trajectoryEpoch != wantTrajectoryEpoch {
+					t.Fatalf("trajectory epoch=%d want=%d err=%v", trajectoryEpoch, wantTrajectoryEpoch, scanErr)
+				}
+				latestAt, latest, latestErr := repo.LatestServerMetrics(t.Context())
+				wantAt, wantUptime := base, int64(100)
+				if tc.wantSucceeded {
+					wantAt, wantUptime = at, tc.newUptime
+				}
+				if latestErr != nil || latestAt != wantAt || latest.UptimeSeconds != wantUptime {
+					t.Fatalf("latest at=%s uptime=%d err=%v", latestAt, latest.UptimeSeconds, latestErr)
+				}
+			}
+		})
 	}
 }
 
@@ -149,6 +258,9 @@ func TestPlayerObservationRejectsDivergentTrajectoryCollision(t *testing.T) {
 func TestPlayerObservationRuntimeEpochCASAndRestartRepair(t *testing.T) {
 	repo, _ := openTemp(t)
 	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: base, Metrics: serverMetrics(100)}); err != nil {
+		t.Fatal(err)
+	}
 	initial, err := repo.CurrentServerRuntime(t.Context())
 	if err != nil || initial.Epoch != 0 || !initial.RestartedAt.IsZero() {
 		t.Fatalf("initial=%+v err=%v", initial, err)
@@ -315,11 +427,14 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, event.ID, event.EventType, event.SubjectType, 
 func TestServerMetricObservationRollsBackEventAndMetricTogether(t *testing.T) {
 	repo, _ := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at.Add(-time.Minute), Metrics: serverMetrics(100)}); err != nil {
+		t.Fatal(err)
+	}
 	conflict := serverObservationEvent("same-id", "other", at, `{}`)
 	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Events: []ActivityEvent{conflict}}); err != nil {
 		t.Fatal(err)
 	}
-	event := serverObservationEvent("same-id", "server_restarted", at, `{}`)
+	event := serverObservationEvent("same-id", "server_restarted", at, `{"old_uptime_seconds":100,"new_uptime_seconds":1}`)
 	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at, Metrics: serverMetrics(1), Event: &event}); err == nil {
 		t.Fatal("expected event ID conflict")
 	}
@@ -327,7 +442,7 @@ func TestServerMetricObservationRollsBackEventAndMetricTogether(t *testing.T) {
 	if err := repo.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM server_metric_samples`).Scan(&metrics); err != nil {
 		t.Fatal(err)
 	}
-	if metrics != 0 {
+	if metrics != 1 {
 		t.Fatalf("metric committed without event: count=%d", metrics)
 	}
 }
@@ -340,11 +455,11 @@ func TestServerMetricObservationRejectsCASConflictWithoutWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected := &ServerMetricToken{Exists: true, At: t1, Metrics: first}
-	second := serverMetrics(80)
+	second := serverMetrics(120)
 	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: t1.Add(time.Minute), Metrics: second, Expected: expected}); err != nil {
 		t.Fatal(err)
 	}
-	event := serverObservationEvent("must-rollback", "server_restarted", t1.Add(2*time.Minute), `{}`)
+	event := serverObservationEvent("must-rollback", "server_restarted", t1.Add(2*time.Minute), `{"old_uptime_seconds":120,"new_uptime_seconds":1}`)
 	err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{
 		At: t1.Add(2 * time.Minute), Metrics: serverMetrics(1), Event: &event, Expected: expected,
 	})
@@ -394,6 +509,9 @@ func TestLatestServerMetricsSurvivesReopen(t *testing.T) {
 	repo, path := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
 	metrics := serverMetrics(42)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at.Add(-time.Minute), Metrics: serverMetrics(100)}); err != nil {
+		t.Fatal(err)
+	}
 	event := serverObservationEvent("restart-reopen", "server_restarted", at, `{"old_uptime_seconds":100,"new_uptime_seconds":42}`)
 	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at, Metrics: metrics, Event: &event}); err != nil {
 		t.Fatal(err)
@@ -587,7 +705,10 @@ func TestLatestServerDocumentSurvivesReopen(t *testing.T) {
 func TestObservationCleanupPreservesEventsLinkedToDurableServerObservations(t *testing.T) {
 	repo, _ := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
-	metricEvent := serverObservationEvent("metric-linked", "server_restarted", at, `{}`)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at.Add(-time.Minute), Metrics: serverMetrics(100)}); err != nil {
+		t.Fatal(err)
+	}
+	metricEvent := serverObservationEvent("metric-linked", "server_restarted", at, `{"old_uptime_seconds":100,"new_uptime_seconds":1}`)
 	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{
 		At: at, Metrics: serverMetrics(1), Event: &metricEvent,
 	}); err != nil {
@@ -661,7 +782,10 @@ func TestUnchangedServerDocumentAdvancesDurableWatermark(t *testing.T) {
 func TestServerObservationStateSurvivesRawCleanupAndReopen(t *testing.T) {
 	repo, path := openTemp(t)
 	at := time.Date(2026, 1, 1, 8, 0, 0, 0, time.UTC)
-	metricEvent := serverObservationEvent("metric-retained-until-sample-cleanup", "server_restarted", at, `{}`)
+	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at.Add(-time.Minute), Metrics: serverMetrics(100)}); err != nil {
+		t.Fatal(err)
+	}
+	metricEvent := serverObservationEvent("metric-retained-until-sample-cleanup", "server_restarted", at, `{"old_uptime_seconds":100,"new_uptime_seconds":42}`)
 	metrics := serverMetrics(42)
 	if err := repo.RecordServerMetricObservation(t.Context(), ServerMetricObservation{At: at, Metrics: metrics, Event: &metricEvent}); err != nil {
 		t.Fatal(err)
