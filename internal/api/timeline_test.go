@@ -122,6 +122,17 @@ func TestAdminMetricsAndDocumentsValidateAndReturnTypedJSON(t *testing.T) {
 	}
 }
 
+func TestAdminRangeAcceptsURLEncodedRFC3339Offset(t *testing.T) {
+	repo := &observationQueriesFake{metrics: []store.ServerMetricSample{{ObservedAt: time.Date(2026, 7, 13, 0, 30, 0, 0, time.UTC)}}}
+	server := timelineServer(repo)
+	res := httptest.NewRecorder()
+	path := "/api/v1/admin/server/metrics?start=2026-07-13T08%3A00%3A00%2B08%3A00&end=2026-07-13T09%3A00%3A00%2B08%3A00&limit=500"
+	server.Handler().ServeHTTP(res, adminRequest(t, server, path))
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
 func TestAdminDocumentsRedactSecretsFromLegacyCanonicalRows(t *testing.T) {
 	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
 	legacy := []byte(`{"Difficulty":"Hard","AdminPassword":"old-secret","nested":{"apiKey":"key-secret","items":[{"token":"token-secret","kept":"yes"}]}}`)

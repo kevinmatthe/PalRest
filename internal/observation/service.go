@@ -64,8 +64,8 @@ func New(recorder Recorder, maxGap time.Duration, movementThreshold float64, max
 	if maxGap <= 0 {
 		panic("observation: max gap must be positive")
 	}
-	if movementThreshold <= 0 || math.IsNaN(movementThreshold) || math.IsInf(movementThreshold, 0) {
-		panic("observation: movement threshold must be positive and finite")
+	if movementThreshold < 0 || math.IsNaN(movementThreshold) || math.IsInf(movementThreshold, 0) {
+		panic("observation: movement threshold must be nonnegative and finite")
 	}
 	if maxSampleInterval <= 0 {
 		panic("observation: max sample interval must be positive")

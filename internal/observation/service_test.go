@@ -399,7 +399,7 @@ func TestNewRejectsInvalidDependenciesAndThresholds(t *testing.T) {
 	tests := map[string]func(){
 		"nil recorder":        func() { observation.New(nil, time.Second, 1, time.Second, time.Hour, id) },
 		"bad max gap":         func() { observation.New(recorder, 0, 1, time.Second, time.Hour, id) },
-		"bad movement":        func() { observation.New(recorder, time.Second, 0, time.Second, time.Hour, id) },
+		"bad movement":        func() { observation.New(recorder, time.Second, -1, time.Second, time.Hour, id) },
 		"bad sample interval": func() { observation.New(recorder, time.Second, 1, 0, time.Hour, id) },
 		"bad retention":       func() { observation.New(recorder, time.Second, 1, time.Second, 0, id) },
 		"nil ID generator":    func() { observation.New(recorder, time.Second, 1, time.Second, time.Hour, nil) },
@@ -413,5 +413,20 @@ func TestNewRejectsInvalidDependenciesAndThresholds(t *testing.T) {
 			}()
 			fn()
 		})
+	}
+}
+
+func TestZeroMovementThresholdSamplesEveryChangedPosition(t *testing.T) {
+	recorder := &recorderFake{}
+	svc := observation.New(recorder, time.Minute, 0, time.Hour, time.Hour, func() string { return "id" })
+	at := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	if err := svc.Observe(t.Context(), at, []domain.Player{player("u", 1, 1)}, "poll-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Observe(t.Context(), at.Add(time.Second), []domain.Player{player("u", 1.1, 1)}, "poll-2"); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.writes) != 2 || len(recorder.writes[1].Trajectories) != 1 {
+		t.Fatalf("writes=%+v", recorder.writes)
 	}
 }

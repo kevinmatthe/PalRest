@@ -90,8 +90,8 @@ func New(configPath string) (*App, error) {
 	}
 	guardService := guard.New(repo, policies, cfg.Server.MaxObservationGap.Duration, cfg.Enforcement.KickRetryInitial.Duration, cfg.Enforcement.KickRetryMax.Duration)
 	client := palworld.New(cfg.Server.BaseURL, cfg.Password(), cfg.Server.RequestTimeout.Duration)
-	playerObservations := observation.New(repo, cfg.Server.MaxObservationGap.Duration, observation.DefaultMovementThreshold,
-		observation.DefaultMaxSampleInterval, observation.DefaultRawObservationRetention, observation.NewID)
+	playerObservations := observation.New(repo, cfg.Server.MaxObservationGap.Duration, cfg.Observation.TrajectoryMinDistance,
+		cfg.Observation.TrajectoryMaxInterval.Duration, cfg.Observation.RawRetention.Duration, observation.NewID)
 	serverObservations := observation.NewServer(repo, observation.NewID)
 	if err := serverObservations.Restore(context.Background()); err != nil {
 		_ = repo.Close()
@@ -100,6 +100,7 @@ func New(configPath string) (*App, error) {
 	pollOptions := []poller.Option{
 		poller.WithPlayerObserver(playerObservations),
 		poller.WithServerObservations(client, serverObservations),
+		poller.WithServerMetadataInterval(cfg.Observation.ServerDocumentInterval.Duration),
 	}
 	if cfg.Server.RequestTimeout.Duration < poller.DefaultServerObservationTimeout {
 		pollOptions = append(pollOptions, poller.WithServerObservationTimeout(cfg.Server.RequestTimeout.Duration))
@@ -208,9 +209,9 @@ func (a *App) reload() error {
 		return a.reloadError(err)
 	}
 	next.Policy = current.Policy
-	if !reflect.DeepEqual(current.Server, next.Server) || !reflect.DeepEqual(current.HTTP, next.HTTP) || !reflect.DeepEqual(current.Storage, next.Storage) ||
+	if !reflect.DeepEqual(current.Server, next.Server) || !reflect.DeepEqual(current.HTTP, next.HTTP) || !reflect.DeepEqual(current.Storage, next.Storage) || !reflect.DeepEqual(current.Observation, next.Observation) ||
 		current.Enforcement.KickRetryInitial != next.Enforcement.KickRetryInitial || current.Enforcement.KickRetryMax != next.Enforcement.KickRetryMax {
-		return a.reloadError(fmt.Errorf("server, HTTP, storage, and retry settings require a restart"))
+		return a.reloadError(fmt.Errorf("server, HTTP, storage, observation, and retry settings require a restart"))
 	}
 	if err := a.poller.ApplyConfig(func() error { return nil }, next.Enforcement.AnnounceMessage, next.Enforcement.KickMessage); err != nil {
 		return a.reloadError(err)

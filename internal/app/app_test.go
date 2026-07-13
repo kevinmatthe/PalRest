@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -167,6 +168,87 @@ func TestNewWiresUnifiedPlayerAndServerObservations(t *testing.T) {
 	}
 	if string(latestInfo.Canonical) != `{"version":"v1","servername":"server","description":"hello","worldguid":"world"}` {
 		t.Fatalf("canonical info=%s", latestInfo.Canonical)
+	}
+}
+
+func TestNewUsesObservationSamplingConfiguration(t *testing.T) {
+	var mu sync.Mutex
+	counts := map[string]int{}
+	palworld := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		counts[r.URL.Path]++
+		call := counts[r.URL.Path]
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/v1/api/players":
+			_, _ = fmt.Fprintf(w, `{"players":[{"name":"One","playerId":"pal-1","userId":"u1","location_x":%d,"location_y":20}]}`, call)
+		case "/v1/api/metrics":
+			_, _ = w.Write([]byte(`{"serverfps":60,"currentplayernum":1,"serverframetime":1,"maxplayernum":32,"uptime":100,"basecampnum":1,"days":2}`))
+		case "/v1/api/info":
+			_, _ = w.Write([]byte(`{"version":"v1","servername":"server","description":"hello","worldguid":"world"}`))
+		case "/v1/api/settings":
+			_, _ = w.Write([]byte(`{"Difficulty":"Normal"}`))
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	t.Cleanup(palworld.Close)
+	t.Setenv("ADMIN_PASSWORD", "secret")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "guard.db")
+	configPath := filepath.Join(dir, "config.yaml")
+	configData := appConfig(palworld.URL+"/v1/api", dbPath, "127.0.0.1:0", false) + `
+observation:
+  server_document_interval: 1h
+  trajectory_min_distance: 0
+  trajectory_max_interval: 1h
+  raw_retention: 1d
+`
+	if err := os.WriteFile(configPath, []byte(configData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		application.poller.Run(ctx)
+		close(done)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		metricsCalls := counts["/v1/api/metrics"]
+		mu.Unlock()
+		if metricsCalls >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("timed out waiting for samples: %+v", counts)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	mu.Lock()
+	infoCalls, settingsCalls := counts["/v1/api/info"], counts["/v1/api/settings"]
+	mu.Unlock()
+	if infoCalls != 1 || settingsCalls != 1 {
+		t.Fatalf("metadata cadence ignored: info=%d settings=%d", infoCalls, settingsCalls)
+	}
+	timeline, err := application.repo.ReadSensitivePlayerTimeline(t.Context(), "test", "u1", time.Now().Add(-time.Minute), time.Now().Add(time.Minute), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline.Trajectories) < 3 {
+		t.Fatalf("trajectory distance ignored: samples=%d", len(timeline.Trajectories))
 	}
 }
 
@@ -330,6 +412,26 @@ func TestReloadRejectsStartupOnlySettings(t *testing.T) {
 	}
 	if err := application.reload(); err == nil || !strings.Contains(err.Error(), "restart") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestReloadRejectsObservationSettingsWithoutChangingPolicy(t *testing.T) {
+	application, path := newTestApp(t)
+	before := application.policies.Resolve("player")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := string(data) + "\nobservation:\n  trajectory_min_distance: 25\n"
+	if err := os.WriteFile(path, []byte(changed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = application.reload()
+	if err == nil || !strings.Contains(err.Error(), "observation") || !strings.Contains(err.Error(), "restart") {
+		t.Fatalf("error=%v", err)
+	}
+	if after := application.policies.Resolve("player"); after.Revision != before.Revision {
+		t.Fatalf("observation reload changed stored policy: before=%+v after=%+v", before, after)
 	}
 }
 

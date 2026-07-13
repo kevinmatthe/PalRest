@@ -7,6 +7,19 @@ server:
   request_timeout: 5s
   max_observation_gap: 75s
 
+# Optional observation sampling and raw-data retention. Raw events, trajectory
+# points, private player samples, and server metrics are cleaned incrementally
+# after this window. Derived/current server state and content-addressed server
+# documents are retained as long-term evidence and survive raw cleanup.
+observation:
+  server_document_interval: 5m
+  trajectory_min_distance: 100
+  trajectory_max_interval: 5m
+  raw_retention: 90d
+
+# Player IP addresses are stored only in private samples for authenticated
+# administrator timeline queries. They are never returned by public endpoints.
+
 # Optional bootstrap defaults. They are used only when the database has no
 # policy document; later edits are made in WebUI and stored in SQLite.
 policy:
