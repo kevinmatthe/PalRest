@@ -15,7 +15,7 @@ import (
 
 func TestReadOnlyEndpointsDecodeOfficialSchemas(t *testing.T) {
 	fixtures := map[string]string{
-		"/players":  `{"players":[{"name":"Kevin","accountName":"kevin","playerId":"ABC","userId":"steam_1","ip":"192.0.2.1","ping":28.5,"location_x":123.25,"location_y":-99.5,"level":41,"building_count":119}]}`,
+		"/players":  `{"players":[{"name":"Kevin","accountName":"kevin","playerId":"ABC","userId":"steam_1","ip":"192.0.2.1","ping":28.5,"location_x":123.25,"location_y":-99.5,"level":41`,
 		"/metrics":  `{"serverfps":58,"currentplayernum":1,"serverframetime":17.2,"maxplayernum":32,"uptime":3600,"basecampnum":2,"days":126}`,
 		"/info":     `{"version":"v0.7.2","servername":"Home","description":"Family","worldguid":"WORLD"}`,
 		"/settings": `{"Difficulty":"None","ExpRate":1.0,"ServerPlayerMaxNum":32,"RESTAPIEnabled":true,"Nested":{"Limit":12},"Modes":[1,2.5]}`,
@@ -166,7 +166,7 @@ func TestReadOnlyEndpointsRequireOfficialFields(t *testing.T) {
 			valid: map[string]any{"players": []any{map[string]any{
 				"name": "Kevin", "accountName": "kevin", "playerId": "ABC", "userId": "steam_1",
 				"ip": "192.0.2.1", "ping": 28.5, "location_x": 123.25, "location_y": -99.5,
-				"level": 41, "building_count": 119,
+				"level": 41,
 			}}},
 			required: []string{"players"},
 			call: func(client *Client) error {
@@ -219,7 +219,7 @@ func TestReadOnlyEndpointsRequireOfficialFields(t *testing.T) {
 				payloads["null players"] = invalidPayload{
 					value: map[string]any{"players": nil}, wantError: "decode Palworld players: missing required field players",
 				}
-				playerFields := []string{"name", "accountName", "playerId", "userId", "ip", "ping", "location_x", "location_y", "level", "building_count"}
+				playerFields := []string{"name", "accountName", "playerId", "userId", "ip", "ping", "location_x", "location_y", "level"}
 				for _, field := range playerFields {
 					copy := cloneJSONMap(t, test.valid)
 					player := copy["players"].([]any)[0].(map[string]any)
@@ -311,7 +311,7 @@ func TestPlayerSensitiveObservationFieldsDoNotMarshal(t *testing.T) {
 			t.Errorf("unexpected field %q serialized in %s", key, encoded)
 		}
 	}
-	for _, key := range []string{"ip", "ping", "location_x", "location_y", "level", "building_count"} {
+	for _, key := range []string{"ip", "ping", "location_x", "location_y", "level"} {
 		if _, ok := values[key]; ok {
 			t.Errorf("sensitive field %q serialized in %s", key, encoded)
 		}
@@ -336,7 +336,7 @@ func TestListPlayersUsesBasicAuthAndDecodesPlayers(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"players": []map[string]any{{
 			"name": "Kevin", "accountName": "kevin", "playerId": "ABC", "userId": "steam_1", "ip": "127.0.0.1",
-			"ping": 0, "location_x": 0, "location_y": 0, "level": 0, "building_count": 0,
+			"ping": 0, "location_x": 0, "location_y": 0, "level": 0,
 		}}})
 	}))
 	defer server.Close()
