@@ -57,6 +57,12 @@ type AdminStore interface {
 	ResetPlayerPolicyState(context.Context, string) error
 }
 
+type ObservationQueries interface {
+	ReadSensitivePlayerTimeline(context.Context, string, string, time.Time, time.Time, int) (store.SensitivePlayerTimeline, error)
+	ReadServerMetrics(context.Context, string, time.Time, time.Time, int) ([]store.ServerMetricSample, error)
+	ReadServerDocuments(context.Context, string, string, int) ([]store.ServerDocumentOccurrence, error)
+}
+
 type Server struct {
 	health          Health
 	status          Status
@@ -67,6 +73,7 @@ type Server struct {
 	policyUpdater   PolicyUpdater
 	resetter        Resetter
 	adminStore      AdminStore
+	observations    ObservationQueries
 	auth            *adminAuth
 	config          func() config.Config
 	handler         http.Handler
@@ -82,13 +89,17 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 	if len(updater) != 0 {
 		policyUpdater = updater[0]
 	}
-	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, auth: auth, config: configFn, now: time.Now}
+	observations, _ := adminStore.(ObservationQueries)
+	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, observations: observations, auth: auth, config: configFn, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.healthz)
 	mux.HandleFunc("GET /readyz", server.readyz)
 	mux.HandleFunc("GET /api/v1/admin/session", server.getAdminSession)
 	mux.HandleFunc("POST /api/v1/admin/login", server.login)
 	mux.HandleFunc("POST /api/v1/admin/logout", server.logout)
+	mux.HandleFunc("GET /api/v1/admin/players/{userID}/timeline", server.getAdminPlayerTimeline)
+	mux.HandleFunc("GET /api/v1/admin/server/metrics", server.getAdminServerMetrics)
+	mux.HandleFunc("GET /api/v1/admin/server/documents", server.getAdminServerDocuments)
 	mux.HandleFunc("GET /api/v1/status", server.getStatus)
 	mux.HandleFunc("GET /api/v1/players", server.getPlayers)
 	mux.HandleFunc("GET /api/v1/players/{userID}", server.getPlayer)

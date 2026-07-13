@@ -174,6 +174,22 @@ ON trajectory_samples(user_id, observed_at);
 CREATE INDEX trajectory_samples_retention
 ON trajectory_samples(observed_at, id);
 
+CREATE TABLE player_private_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    ip TEXT NOT NULL,
+    ping REAL NOT NULL,
+    level INTEGER NOT NULL,
+    building_count INTEGER NOT NULL,
+    source_ref TEXT NOT NULL,
+    UNIQUE(user_id, observed_at)
+);
+CREATE INDEX player_private_samples_user_time
+ON player_private_samples(user_id, observed_at);
+CREATE INDEX player_private_samples_retention
+ON player_private_samples(observed_at, id);
+
 CREATE TABLE server_metric_samples (
     observed_at TEXT NOT NULL PRIMARY KEY,
     server_fps INTEGER NOT NULL,

@@ -102,6 +102,36 @@ func TestFirstObservationCreatesJoinedEventAndTrajectory(t *testing.T) {
 	}
 }
 
+func TestPrivateSamplesTrackSensitiveChangesWithoutPingChurn(t *testing.T) {
+	recorder := &recorderFake{}
+	svc := newService(recorder)
+	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
+	p := player("u", 10, 10)
+	observations := []domain.Player{p, p, p, p}
+	observations[1].Ping = 99
+	observations[2].Ping = 100
+	observations[2].IP = "[2001:db8::1]:8211"
+	observations[3].Ping = 101
+	observations[3].IP = observations[2].IP
+	for i, value := range observations {
+		if err := svc.Observe(t.Context(), base.Add(time.Duration(i)*time.Minute), []domain.Player{value}, fmt.Sprintf("poll-%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(recorder.writes[0].PrivateSamples); got != 1 {
+		t.Fatalf("first private samples=%d", got)
+	}
+	if got := len(recorder.writes[1].PrivateSamples); got != 0 {
+		t.Fatalf("ping-only private samples=%d", got)
+	}
+	if got := recorder.writes[2].PrivateSamples; len(got) != 1 || got[0].IP != "[2001:db8::1]:8211" || got[0].Ping != 100 {
+		t.Fatalf("changed private sample=%+v", got)
+	}
+	if got := len(recorder.writes[3].PrivateSamples); got != 0 {
+		t.Fatalf("second ping-only private samples=%d", got)
+	}
+}
+
 func TestMovementThresholdBoundary(t *testing.T) {
 	recorder := &recorderFake{}
 	svc := newService(recorder)

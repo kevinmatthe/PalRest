@@ -337,6 +337,7 @@ func TestOpenMigratesVersionSevenToEightWithoutLosingAnalytics(t *testing.T) {
 DROP TABLE analytics_observation_state;
 DROP TABLE activity_events;
 DROP TABLE trajectory_samples;
+DROP TABLE player_private_samples;
 DROP TABLE server_metric_samples;
 DROP TABLE server_document_observations;
 DROP TABLE server_observation_state;
@@ -379,6 +380,7 @@ func TestOpenMigratesVersionSevenClosedSessionWatermark(t *testing.T) {
 DROP TABLE analytics_observation_state;
 DROP TABLE activity_events;
 DROP TABLE trajectory_samples;
+DROP TABLE player_private_samples;
 DROP TABLE server_metric_samples;
 DROP TABLE server_document_observations;
 DROP TABLE server_observation_state;

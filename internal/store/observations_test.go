@@ -530,6 +530,135 @@ func TestObservationRecordIsAtomic(t *testing.T) {
 	}
 }
 
+func TestPrivatePlayerSamplesAreAtomicValidatedAndReturned(t *testing.T) {
+	repo, _ := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	private := PlayerPrivateSample{UserID: "steam_1", ObservedAt: at, IP: "[2001:db8::1]:8211", Ping: 28.5, Level: 41, BuildingCount: 12, SourceRef: "poll-1"}
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{PrivateSamples: []PlayerPrivateSample{private}}); err != nil {
+		t.Fatal(err)
+	}
+	timeline, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "steam_1", at, at.Add(time.Minute), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline.PrivateSamples) != 1 || timeline.PrivateSamples[0] != private {
+		t.Fatalf("private samples=%+v", timeline.PrivateSamples)
+	}
+	bad := private
+	bad.ObservedAt = at.Add(time.Second)
+	bad.IP = "bad\naddress"
+	if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{Events: []ActivityEvent{observationEvent("must-rollback", "joined", "steam_1", bad.ObservedAt)}, PrivateSamples: []PlayerPrivateSample{bad}}); err == nil {
+		t.Fatal("expected invalid IP to fail")
+	}
+	var count int
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT count(*) FROM activity_events WHERE id='must-rollback'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("invalid write was partially committed: count=%d err=%v", count, err)
+	}
+	for name, mutate := range map[string]func(*PlayerPrivateSample){
+		"empty IP":                func(s *PlayerPrivateSample) { s.IP = "" },
+		"long IP":                 func(s *PlayerPrivateSample) { s.IP = strings.Repeat("x", 257) },
+		"negative ping":           func(s *PlayerPrivateSample) { s.Ping = -1 },
+		"nonfinite ping":          func(s *PlayerPrivateSample) { s.Ping = math.NaN() },
+		"negative level":          func(s *PlayerPrivateSample) { s.Level = -1 },
+		"negative building count": func(s *PlayerPrivateSample) { s.BuildingCount = -1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			value := private
+			value.ObservedAt = at.Add(2 * time.Second)
+			mutate(&value)
+			if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{PrivateSamples: []PlayerPrivateSample{value}}); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
+func TestSensitiveTimelineReturnsEmptySuccessForKnownPlayer(t *testing.T) {
+	repo, _ := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error { return tx.UpsertPlayer(domain.Player{UserID: "known"}, at) }); err != nil {
+		t.Fatal(err)
+	}
+	timeline, err := repo.ReadSensitivePlayerTimeline(t.Context(), "root", "known", at.Add(time.Hour), at.Add(2*time.Hour), 10)
+	if err != nil || len(timeline.Events) != 0 || len(timeline.Trajectories) != 0 || len(timeline.PrivateSamples) != 0 {
+		t.Fatalf("timeline=%+v err=%v", timeline, err)
+	}
+	var outcome string
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT outcome FROM sensitive_access_audit`).Scan(&outcome); err != nil || outcome != "success" {
+		t.Fatalf("outcome=%q err=%v", outcome, err)
+	}
+}
+
+func TestAuditedServerMetricAndDocumentReads(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	if err := repo.RecordServerMetrics(t.Context(), base, serverMetrics(1)); err != nil {
+		t.Fatal(err)
+	}
+	canonical := []byte(`{"version":"v1"}`)
+	if _, err := repo.RecordServerDocumentObservation(t.Context(), ServerDocumentObservation{Kind: "info", At: base, Canonical: canonical, Hash: testDocumentHash(canonical)}); err != nil {
+		t.Fatal(err)
+	}
+	metrics, err := repo.ReadServerMetrics(t.Context(), "root", base, base.Add(time.Hour), 10)
+	if err != nil || len(metrics) != 1 || !metrics[0].ObservedAt.Equal(base) {
+		t.Fatalf("metrics=%+v err=%v", metrics, err)
+	}
+	docs, err := repo.ReadServerDocuments(t.Context(), "root", "info", 10)
+	if err != nil || len(docs) != 1 || string(docs[0].Canonical) != string(canonical) {
+		t.Fatalf("docs=%+v err=%v", docs, err)
+	}
+	rows, err := repo.db.QueryContext(t.Context(), `SELECT action,outcome FROM sensitive_access_audit ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var action, outcome string
+		if err := rows.Scan(&action, &outcome); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, action+":"+outcome)
+	}
+	if strings.Join(got, ",") != "read_server_metrics:success,read_server_documents:success" {
+		t.Fatalf("audits=%v", got)
+	}
+}
+
+func TestServerReadQueryErrorsAreAudited(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	if _, err := repo.db.ExecContext(t.Context(), `DROP TABLE server_metric_samples`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ReadServerMetrics(t.Context(), "root", base, base.Add(time.Hour), 10); err == nil {
+		t.Fatal("expected query error")
+	}
+	var action, outcome string
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT action,outcome FROM sensitive_access_audit`).Scan(&action, &outcome); err != nil || action != "read_server_metrics" || outcome != "error" {
+		t.Fatalf("action=%q outcome=%q err=%v", action, outcome, err)
+	}
+}
+
+func TestCleanupRawObservationsIncludesPrivateSamplesWithBound(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	for i := 0; i < 2; i++ {
+		sample := PlayerPrivateSample{UserID: "u", ObservedAt: base.Add(time.Duration(i) * time.Second), IP: "192.0.2.1", SourceRef: "poll"}
+		if err := repo.RecordPlayerObservation(t.Context(), PlayerObservationWrite{PrivateSamples: []PlayerPrivateSample{sample}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := repo.CleanupRawObservations(t.Context(), base.Add(time.Hour), 1)
+	if err != nil || deleted != 1 {
+		t.Fatalf("deleted=%d err=%v", deleted, err)
+	}
+	var remaining int
+	if err := repo.db.QueryRowContext(t.Context(), `SELECT count(*) FROM player_private_samples`).Scan(&remaining); err != nil || remaining != 1 {
+		t.Fatalf("remaining=%d err=%v", remaining, err)
+	}
+}
+
 func TestTimelineReadOrdersRowsDeterministically(t *testing.T) {
 	repo, _ := openTemp(t)
 	now := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
@@ -547,10 +676,11 @@ func TestTimelineReadOrdersRowsDeterministically(t *testing.T) {
 	if err := repo.RecordPlayerObservation(t.Context(), write); err != nil {
 		t.Fatal(err)
 	}
-	events, samples, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "steam_1", now, now.Add(time.Hour), 20)
+	timeline, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "steam_1", now, now.Add(time.Hour), 20)
 	if err != nil {
 		t.Fatal(err)
 	}
+	events, samples := timeline.Events, timeline.Trajectories
 	if len(events) != 3 || events[0].ID != "evt-a" || events[1].ID != "evt-b" || events[2].ID != "evt-c" {
 		t.Fatalf("events=%#v", events)
 	}
@@ -610,10 +740,11 @@ func TestObservationFixedWidthTimesPreserveTimelineOrderAndHalfOpenRange(t *test
 	if err := repo.RecordPlayerObservation(t.Context(), write); err != nil {
 		t.Fatal(err)
 	}
-	events, samples, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "steam_1", base, end, 20)
+	timeline, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "steam_1", base, end, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
+	events, samples := timeline.Events, timeline.Trajectories
 	var eventIDs []string
 	for _, event := range events {
 		eventIDs = append(eventIDs, event.ID)
@@ -697,7 +828,7 @@ func TestObservationDocumentsAndAuditUseFixedWidthTimes(t *testing.T) {
 	if _, err := repo.RecordServerDocument(t.Context(), "info", base.Add(100*time.Millisecond), []byte(`{}`), testDocumentHash([]byte(`{}`))); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "missing", base, base.Add(time.Second), 10); !errors.Is(err, ErrNotFound) {
+	if _, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "missing", base, base.Add(time.Second), 10); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
 	var documentAt, rangeStart, rangeEnd, requestedAt string
@@ -740,14 +871,14 @@ func TestObservationRecordServerDocumentDeduplicatesCanonicalHash(t *testing.T) 
 func TestSensitiveTimelineAuditsNotFoundAndQueryError(t *testing.T) {
 	repo, _ := openTemp(t)
 	now := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
-	_, _, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "missing", now, now.Add(time.Hour), 20)
+	_, err := repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "missing", now, now.Add(time.Hour), 20)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("not-found err=%v", err)
 	}
 	if _, err := repo.db.ExecContext(t.Context(), `DROP TABLE trajectory_samples`); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "steam_1", now, now.Add(time.Hour), 20)
+	_, err = repo.ReadSensitivePlayerTimeline(t.Context(), "admin", "steam_1", now, now.Add(time.Hour), 20)
 	if err == nil {
 		t.Fatal("expected query error")
 	}
@@ -785,7 +916,7 @@ func TestSensitiveTimelineRejectsInvalidInputWithoutAudit(t *testing.T) {
 		{"high limit", "admin", "u", now, now.Add(time.Hour), 2001},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, _, err := repo.ReadSensitivePlayerTimeline(t.Context(), tc.actor, tc.userID, tc.start, tc.end, tc.limit); err == nil {
+			if _, err := repo.ReadSensitivePlayerTimeline(t.Context(), tc.actor, tc.userID, tc.start, tc.end, tc.limit); err == nil {
 				t.Fatal("expected validation error")
 			}
 		})
@@ -880,7 +1011,7 @@ func TestObservationCleanupIsBoundedAndPreservesProtectedRows(t *testing.T) {
 	if _, err := repo.RecordServerDocument(ctx, "info", now, []byte(`{}`), testDocumentHash([]byte(`{}`))); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := repo.ReadSensitivePlayerTimeline(ctx, "admin", "missing", now, cutoff, 10); !errors.Is(err, ErrNotFound) {
+	if _, err := repo.ReadSensitivePlayerTimeline(ctx, "admin", "missing", now, cutoff, 10); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
 	deleted, err := repo.CleanupRawObservations(ctx, cutoff, 1)

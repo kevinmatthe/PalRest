@@ -40,12 +40,13 @@ type Service struct {
 }
 
 type playerState struct {
-	player       domain.Player
-	lastAt       time.Time
-	segmentID    string
-	lastSampleAt time.Time
-	lastX        float64
-	lastY        float64
+	player        domain.Player
+	lastAt        time.Time
+	segmentID     string
+	lastSampleAt  time.Time
+	lastX         float64
+	lastY         float64
+	lastPrivateAt time.Time
 }
 
 type eventPayload struct {
@@ -119,6 +120,22 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		} else if at.Sub(previous.lastAt) > s.maxGap {
 			state.segmentID = ""
 			state.lastSampleAt = time.Time{}
+			state.lastPrivateAt = time.Time{}
+		}
+
+		shouldPrivateSample := state.lastPrivateAt.IsZero() ||
+			player.IP != previous.player.IP || player.Level != previous.player.Level ||
+			player.BuildingCount != previous.player.BuildingCount || at.Sub(state.lastPrivateAt) >= s.maxSampleInterval
+		if shouldPrivateSample {
+			ping := player.Ping
+			if math.IsNaN(ping) || math.IsInf(ping, 0) || ping < 0 {
+				ping = 0
+			}
+			write.PrivateSamples = append(write.PrivateSamples, store.PlayerPrivateSample{
+				UserID: player.UserID, ObservedAt: at, IP: player.IP, Ping: ping,
+				Level: player.Level, BuildingCount: player.BuildingCount, SourceRef: correlationID,
+			})
+			state.lastPrivateAt = at
 		}
 
 		if validCoordinates(player.LocationX, player.LocationY) {

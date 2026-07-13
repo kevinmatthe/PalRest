@@ -39,9 +39,26 @@ type TrajectorySample struct {
 	SourceRef  string    `json:"source_ref"`
 }
 
+type PlayerPrivateSample struct {
+	UserID        string    `json:"user_id"`
+	ObservedAt    time.Time `json:"observed_at"`
+	IP            string    `json:"ip"`
+	Ping          float64   `json:"ping"`
+	Level         int       `json:"level"`
+	BuildingCount int       `json:"building_count"`
+	SourceRef     string    `json:"source_ref"`
+}
+
+type SensitivePlayerTimeline struct {
+	Events         []ActivityEvent       `json:"events"`
+	Trajectories   []TrajectorySample    `json:"trajectories"`
+	PrivateSamples []PlayerPrivateSample `json:"private_samples"`
+}
+
 type PlayerObservationWrite struct {
-	Events       []ActivityEvent
-	Trajectories []TrajectorySample
+	Events         []ActivityEvent
+	Trajectories   []TrajectorySample
+	PrivateSamples []PlayerPrivateSample
 }
 
 var knownObservationSources = map[string]struct{}{
@@ -66,6 +83,11 @@ func (r *Repository) RecordPlayerObservation(ctx context.Context, write PlayerOb
 			return fmt.Errorf("record player observation: trajectory %d: %w", i, err)
 		}
 	}
+	for i := range write.PrivateSamples {
+		if err := validatePlayerPrivateSample(write.PrivateSamples[i]); err != nil {
+			return fmt.Errorf("record player observation: private sample %d: %w", i, err)
+		}
+	}
 	return r.WithTx(ctx, func(tx *Tx) error {
 		for _, event := range write.Events {
 			if _, err := tx.tx.ExecContext(ctx, `
@@ -86,8 +108,32 @@ VALUES(?,?,?,?,?,?,?,?)`, sample.UserID, sample.SegmentID, formatObservationTime
 				return fmt.Errorf("insert trajectory sample for %q at %s: %w", sample.UserID, formatObservationTime(sample.ObservedAt), err)
 			}
 		}
+		for _, sample := range write.PrivateSamples {
+			if _, err := tx.tx.ExecContext(ctx, `
+INSERT INTO player_private_samples(user_id,observed_at,ip,ping,level,building_count,source_ref)
+VALUES(?,?,?,?,?,?,?)`, sample.UserID, formatObservationTime(sample.ObservedAt), sample.IP,
+				sample.Ping, sample.Level, sample.BuildingCount, sample.SourceRef); err != nil {
+				return fmt.Errorf("insert private player sample for %q at %s: %w", sample.UserID, formatObservationTime(sample.ObservedAt), err)
+			}
+		}
 		return nil
 	})
+}
+
+func validatePlayerPrivateSample(sample PlayerPrivateSample) error {
+	if strings.TrimSpace(sample.UserID) == "" || strings.TrimSpace(sample.SourceRef) == "" {
+		return fmt.Errorf("user ID and source reference must be nonempty")
+	}
+	if sample.ObservedAt.IsZero() {
+		return fmt.Errorf("observed time is zero")
+	}
+	if sample.IP == "" || len(sample.IP) > 256 || strings.IndexFunc(sample.IP, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+		return fmt.Errorf("IP must be nonempty safe text of at most 256 bytes")
+	}
+	if !finite(sample.Ping) || sample.Ping < 0 || sample.Level < 0 || sample.BuildingCount < 0 {
+		return fmt.Errorf("ping must be finite and nonnegative and counts must be nonnegative")
+	}
+	return nil
 }
 
 func validateActivityEvent(event ActivityEvent) error {
@@ -168,46 +214,61 @@ VALUES(?,?,?,?) ON CONFLICT(kind,content_hash) DO NOTHING`, kind, hash, formatOb
 	return inserted == 1, nil
 }
 
-func (r *Repository) ReadSensitivePlayerTimeline(ctx context.Context, actor, userID string, start, end time.Time, limit int) ([]ActivityEvent, []TrajectorySample, error) {
+func (r *Repository) ReadSensitivePlayerTimeline(ctx context.Context, actor, userID string, start, end time.Time, limit int) (SensitivePlayerTimeline, error) {
+	var empty SensitivePlayerTimeline
 	if strings.TrimSpace(actor) == "" {
-		return nil, nil, fmt.Errorf("read sensitive player timeline: actor is empty")
+		return empty, fmt.Errorf("read sensitive player timeline: actor is empty")
 	}
 	if strings.TrimSpace(userID) == "" {
-		return nil, nil, fmt.Errorf("read sensitive player timeline: user ID is empty")
+		return empty, fmt.Errorf("read sensitive player timeline: user ID is empty")
 	}
 	if start.IsZero() || end.IsZero() || !start.Before(end) {
-		return nil, nil, fmt.Errorf("read sensitive player timeline: nonzero start must be before end")
+		return empty, fmt.Errorf("read sensitive player timeline: nonzero start must be before end")
 	}
 	if limit < 1 || limit > 2000 {
-		return nil, nil, fmt.Errorf("read sensitive player timeline: limit must be between 1 and 2000")
+		return empty, fmt.Errorf("read sensitive player timeline: limit must be between 1 and 2000")
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("begin sensitive timeline transaction: %w", err)
+		return empty, fmt.Errorf("begin sensitive timeline transaction: %w", err)
 	}
 	events, err := queryTimelineEvents(ctx, tx, userID, start, end, limit)
 	if err == nil {
 		var samples []TrajectorySample
 		samples, err = queryTimelineSamples(ctx, tx, userID, start, end, limit)
 		if err == nil {
+			var private []PlayerPrivateSample
+			private, err = queryTimelinePrivateSamples(ctx, tx, userID, start, end, limit)
+			if err != nil {
+				goto queryFailed
+			}
 			outcome := "success"
-			if len(events) == 0 && len(samples) == 0 {
-				outcome = "not_found"
+			if len(events) == 0 && len(samples) == 0 && len(private) == 0 {
+				known, knownErr := knownPlayerTx(ctx, tx, userID)
+				if knownErr != nil {
+					err = knownErr
+					goto queryFailed
+				}
+				if !known {
+					outcome = "not_found"
+				}
 			}
 			if auditErr := insertTimelineAudit(ctx, tx, actor, userID, start, end, outcome); auditErr != nil {
 				_ = tx.Rollback()
-				return nil, nil, fmt.Errorf("audit sensitive player timeline: %w", auditErr)
+				return empty, fmt.Errorf("audit sensitive player timeline: %w", auditErr)
 			}
 			if commitErr := tx.Commit(); commitErr != nil {
-				return nil, nil, fmt.Errorf("commit sensitive player timeline: %w", commitErr)
+				return empty, fmt.Errorf("commit sensitive player timeline: %w", commitErr)
 			}
 			if outcome == "not_found" {
-				return nil, nil, ErrNotFound
+				return empty, ErrNotFound
 			}
-			return events, samples, nil
+			return SensitivePlayerTimeline{Events: events, Trajectories: samples, PrivateSamples: private}, nil
 		}
 	}
+
+queryFailed:
 
 	// SQLite permits many statement errors without poisoning a transaction, but
 	// rolling back before the audit is safer and avoids blocking the repository's
@@ -216,9 +277,44 @@ func (r *Repository) ReadSensitivePlayerTimeline(ctx context.Context, actor, use
 	_ = tx.Rollback()
 	queryErr := err
 	if auditErr := r.recordTimelineErrorAudit(ctx, actor, userID, start, end); auditErr != nil {
-		return nil, nil, errors.Join(fmt.Errorf("query sensitive player timeline: %w", queryErr), auditErr)
+		return empty, errors.Join(fmt.Errorf("query sensitive player timeline: %w", queryErr), auditErr)
 	}
-	return nil, nil, fmt.Errorf("query sensitive player timeline: %w", queryErr)
+	return empty, fmt.Errorf("query sensitive player timeline: %w", queryErr)
+}
+
+func queryTimelinePrivateSamples(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time, limit int) ([]PlayerPrivateSample, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT user_id,observed_at,ip,ping,level,building_count,source_ref
+FROM player_private_samples WHERE user_id=? AND observed_at>=? AND observed_at<? ORDER BY observed_at,id LIMIT ?`,
+		userID, formatObservationTime(start), formatObservationTime(end), limit)
+	if err != nil {
+		return nil, fmt.Errorf("query private player samples: %w", err)
+	}
+	defer rows.Close()
+	result := make([]PlayerPrivateSample, 0)
+	for rows.Next() {
+		var sample PlayerPrivateSample
+		var observed string
+		if err := rows.Scan(&sample.UserID, &observed, &sample.IP, &sample.Ping, &sample.Level, &sample.BuildingCount, &sample.SourceRef); err != nil {
+			return nil, err
+		}
+		sample.ObservedAt, err = parseTime(observed)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, sample)
+	}
+	return result, rows.Err()
+}
+
+func knownPlayerTx(ctx context.Context, tx *sql.Tx, userID string) (bool, error) {
+	var exists int
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+SELECT 1 FROM players WHERE user_id=? UNION ALL
+SELECT 1 FROM player_sessions WHERE user_id=? UNION ALL
+SELECT 1 FROM activity_events WHERE subject_type='player' AND subject_id=? UNION ALL
+SELECT 1 FROM trajectory_samples WHERE user_id=? UNION ALL
+SELECT 1 FROM player_private_samples WHERE user_id=?)`, userID, userID, userID, userID, userID).Scan(&exists)
+	return exists == 1, err
 }
 
 func queryTimelineEvents(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time, limit int) ([]ActivityEvent, error) {
@@ -324,6 +420,7 @@ WHERE e.occurred_at<?
   AND NOT EXISTS (SELECT 1 FROM server_document_observations d WHERE d.event_id=e.id)
 ORDER BY e.occurred_at,e.id LIMIT ?)`},
 		{"trajectory samples", `DELETE FROM trajectory_samples WHERE id IN (SELECT id FROM trajectory_samples WHERE observed_at<? ORDER BY observed_at,id LIMIT ?)`},
+		{"private player samples", `DELETE FROM player_private_samples WHERE id IN (SELECT id FROM player_private_samples WHERE observed_at<? ORDER BY observed_at,id LIMIT ?)`},
 		{"server metric samples", `DELETE FROM server_metric_samples WHERE rowid IN (SELECT rowid FROM server_metric_samples WHERE observed_at<? ORDER BY observed_at LIMIT ?)`},
 	} {
 		var affected int64
