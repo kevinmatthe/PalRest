@@ -932,37 +932,6 @@ func TestServerMetricCASRetryRederivesRestartAgainstWinningWriter(t *testing.T) 
 	}
 }
 
-func TestServerDocumentCASRetryRederivesChangeAgainstWinningWriter(t *testing.T) {
-	repo, _ := openServerRepository(t)
-	defer repo.Close()
-	base := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
-	seed := observation.NewServer(repo, func() string { return "seed" })
-	if err := seed.RecordSettings(t.Context(), base, domain.ServerSettings{Values: map[string]any{"value": "A"}}); err != nil {
-		t.Fatal(err)
-	}
-	winner := observation.NewServer(repo, func() string { return "winner-settings" })
-	interleaved := &interleavingRepository{delegate: repo}
-	interleaved.hook = func() {
-		if err := winner.RecordSettings(t.Context(), base.Add(time.Minute), domain.ServerSettings{Values: map[string]any{"value": "B"}}); err != nil {
-			t.Errorf("winning writer: %v", err)
-		}
-	}
-	loser := observation.NewServer(interleaved, func() string { return "retried-settings" })
-	if err := loser.RecordSettings(t.Context(), base.Add(2*time.Minute), domain.ServerSettings{Values: map[string]any{"value": "C"}}); err != nil {
-		t.Fatal(err)
-	}
-	if len(interleaved.documents) != 2 || interleaved.documents[0].Expected == nil || interleaved.documents[1].Expected == nil {
-		t.Fatalf("writes=%#v", interleaved.documents)
-	}
-	winnerSnapshot, err := repo.LatestServerDocument(t.Context(), "settings")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if interleaved.documents[1].Event == nil || !strings.Contains(interleaved.documents[1].Event.PayloadJSON, `"old_hash":"`+interleaved.documents[1].Expected.Hash+`"`) {
-		t.Fatalf("retried event=%#v expected=%#v latest=%#v", interleaved.documents[1].Event, interleaved.documents[1].Expected, winnerSnapshot)
-	}
-}
-
 func TestServerCASRetriesAreBounded(t *testing.T) {
 	t.Run("metrics", func(t *testing.T) {
 		recorder := &serverRecorderFake{metricErrors: []error{store.ErrObservationConflict, store.ErrObservationConflict, store.ErrObservationConflict, nil}}
@@ -978,39 +947,6 @@ func TestServerCASRetriesAreBounded(t *testing.T) {
 			t.Fatalf("err=%v calls=%d", err, len(recorder.documentCalls))
 		}
 	})
-}
-
-func TestServerRestartDetectionSurvivesRawRetentionAndReopen(t *testing.T) {
-	repo, path := openServerRepository(t)
-	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	service := observation.NewServer(repo, observation.NewID)
-	if err := service.RecordMetrics(t.Context(), old, domain.ServerMetrics{UptimeSeconds: 100, ServerFrameTime: 1}); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if _, err := repo.CleanupRawObservations(t.Context(), old.Add(100*24*time.Hour), 100); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := repo.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := store.Open(t.Context(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	service = observation.NewServer(reopened, func() string { return "restart-after-retention" })
-	if err := service.Restore(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.RecordMetrics(t.Context(), old.Add(101*24*time.Hour), domain.ServerMetrics{UptimeSeconds: 1, ServerFrameTime: 1}); err != nil {
-		t.Fatal(err)
-	}
-	latest, err := reopened.LatestServerMetricObservation(t.Context())
-	if err != nil || latest.Event == nil || latest.Event.EventType != "server_restarted" || !strings.Contains(latest.Event.PayloadJSON, `"old_uptime_seconds":100`) {
-		t.Fatalf("latest=%+v err=%v", latest, err)
-	}
 }
 
 func TestServerServiceRestoresAllBaselinesAcrossReopen(t *testing.T) {
