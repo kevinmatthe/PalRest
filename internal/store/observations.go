@@ -533,8 +533,9 @@ queryFailed:
 }
 
 func queryTimelinePrivateSamples(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time, limit int) ([]PlayerPrivateSample, error) {
+	// Latest `limit` rows in range, returned chronological (ASC) for the UI.
 	rows, err := tx.QueryContext(ctx, `SELECT user_id,observed_at,ip,ping,level,source_ref
-FROM player_private_samples WHERE user_id=? AND observed_at>=? AND observed_at<? ORDER BY observed_at,id LIMIT ?`,
+FROM player_private_samples WHERE user_id=? AND observed_at>=? AND observed_at<? ORDER BY observed_at DESC, id DESC LIMIT ?`,
 		userID, formatObservationTime(start), formatObservationTime(end), limit)
 	if err != nil {
 		return nil, fmt.Errorf("query private player samples: %w", err)
@@ -553,7 +554,13 @@ FROM player_private_samples WHERE user_id=? AND observed_at>=? AND observed_at<?
 		}
 		result = append(result, sample)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(result)-1; i < j; i, j = i+1, j-1 {
+		result[i], result[j] = result[j], result[i]
+	}
+	return result, nil
 }
 
 func knownPlayerTx(ctx context.Context, tx *sql.Tx, userID string) (bool, error) {
@@ -605,12 +612,13 @@ WHERE user_id=? AND observed_at>=? AND observed_at<?`,
 }
 
 func queryTimelineEvents(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time, limit int) ([]ActivityEvent, error) {
+	// Prefer the latest rows in the range so long windows keep recent replay evidence.
 	rows, err := tx.QueryContext(ctx, `
 SELECT id,event_type,subject_type,subject_id,occurred_at,observed_at,source,source_ref,
        correlation_id,confidence,schema_version,payload_json
 FROM activity_events
 WHERE subject_type='player' AND subject_id=? AND occurred_at>=? AND occurred_at<?
-ORDER BY occurred_at,id LIMIT ?`, userID, formatObservationTime(start), formatObservationTime(end), limit)
+ORDER BY occurred_at DESC, id DESC LIMIT ?`, userID, formatObservationTime(start), formatObservationTime(end), limit)
 	if err != nil {
 		return nil, fmt.Errorf("query activity events: %w", err)
 	}
@@ -638,6 +646,9 @@ ORDER BY occurred_at,id LIMIT ?`, userID, formatObservationTime(start), formatOb
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate activity events: %w", err)
 	}
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
+	}
 	return events, nil
 }
 
@@ -646,7 +657,7 @@ func queryTimelineSamples(ctx context.Context, tx *sql.Tx, userID string, start,
 SELECT user_id,segment_id,observed_at,x,y,ping,level,source_ref,runtime_epoch
 FROM trajectory_samples
 WHERE user_id=? AND observed_at>=? AND observed_at<?
-ORDER BY observed_at,id LIMIT ?`, userID, formatObservationTime(start), formatObservationTime(end), limit)
+ORDER BY observed_at DESC, id DESC LIMIT ?`, userID, formatObservationTime(start), formatObservationTime(end), limit)
 	if err != nil {
 		return nil, fmt.Errorf("query trajectory samples: %w", err)
 	}
@@ -669,6 +680,9 @@ ORDER BY observed_at,id LIMIT ?`, userID, formatObservationTime(start), formatOb
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate trajectory samples: %w", err)
+	}
+	for i, j := 0, len(samples)-1; i < j; i, j = i+1, j-1 {
+		samples[i], samples[j] = samples[j], samples[i]
 	}
 	return samples, nil
 }

@@ -453,8 +453,20 @@ select:focus-visible {
 .timeline-map-meta span { display: inline-flex; min-width: 0; align-items: center; gap: 0.35rem; overflow-wrap: anywhere; }
 .timeline-empty { display: grid; min-height: 15rem; place-items: center; align-content: center; gap: 0.75rem; padding: 1rem; border: 1px dashed #abb7ad; color: #68756e; background: rgba(255, 255, 252, 0.55); text-align: center; font-size: 1rem; }
 .timeline-alert { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.9rem; border: 1px solid #dda24a; color: #6a4210; background: #fff2d5; font-size: 1rem; line-height: 1.5; overflow-wrap: anywhere; }
-.timeline-alert--info { margin-bottom: 1rem; border-color: #6ca4ae; color: #245c67; background: #eaf6f7; }
+.timeline-alert--info { margin-bottom: 1rem; border-color: #6ca4ae; color: #245c67; background: #eaf6f7; flex-wrap: wrap; align-items: center; }
 .timeline-alert svg { flex: 0 0 auto; margin-top: 0.15rem; }
+.timeline-load-older {
+  margin-left: auto;
+  min-height: 2.25rem;
+  padding: 0 0.85rem;
+  border: 1px solid #6ca4ae;
+  border-radius: 0.35rem;
+  color: #1d5a66;
+  background: #fff;
+  font-weight: 800;
+  cursor: pointer;
+}
+.timeline-load-older:disabled { opacity: 0.6; cursor: not-allowed; }
 .timeline-skeleton { display: grid; gap: 1rem; min-height: 16rem; padding-left: 1.4rem; border-left: 2px solid #b7c0b8; }
 .timeline-skeleton span { display: block; height: 5.5rem; border-radius: 0.35rem; background: linear-gradient(100deg, #e3e4dc 20%, #f4f3ec 40%, #e3e4dc 60%); background-size: 200% 100%; animation: timeline-scan 1.3s ease-in-out infinite; }
 @keyframes timeline-scan { from { background-position: 100% 0; } to { background-position: -100% 0; } }

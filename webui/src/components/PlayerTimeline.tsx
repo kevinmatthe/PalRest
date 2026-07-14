@@ -120,6 +120,7 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<PlaySpeed>(1);
   const [playMode, setPlayMode] = useState<PlayMode>('index');
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const requestID = useRef(0);
   const lastRefreshKey = useRef(refreshKey);
   const cursorIndexRef = useRef(cursorIndex);
@@ -194,6 +195,68 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
     typeof state.data.trajectory_total === 'number' ? `轨迹 ${state.data.trajectories.length}/${state.data.trajectory_total}` : null,
     includePrivate && typeof state.data.private_sample_total === 'number' ? `私有 ${state.data.private_samples.length}/${state.data.private_sample_total}` : null,
   ].filter(Boolean).join(' · ') : '';
+  const canLoadOlder = state.kind === 'ready' && mayBeTruncated && items.length > 0;
+
+  function oldestLoadedISO(data: PlayerTimelineResponse): string | undefined {
+    const times = [
+      ...data.events.map((e) => Date.parse(e.occurred_at)),
+      ...data.trajectories.map((t) => Date.parse(t.observed_at)),
+      ...(includePrivate ? data.private_samples.map((p) => Date.parse(p.observed_at)) : []),
+    ].filter((t) => Number.isFinite(t));
+    if (!times.length) return undefined;
+    return new Date(Math.min(...times)).toISOString();
+  }
+
+  function mergeOlderPage(current: PlayerTimelineResponse, older: PlayerTimelineResponse): PlayerTimelineResponse {
+    const eventIDs = new Set(current.events.map((e) => e.id));
+    const trajKeys = new Set(current.trajectories.map((t) => `${t.user_id}:${t.segment_id}:${t.observed_at}:${t.source_ref}`));
+    const privKeys = new Set(current.private_samples.map((p) => `${p.user_id}:${p.observed_at}:${p.source_ref}`));
+    const events = [...older.events.filter((e) => !eventIDs.has(e.id)), ...current.events]
+      .sort((a, b) => Date.parse(a.occurred_at) - Date.parse(b.occurred_at) || a.id.localeCompare(b.id));
+    const trajectories = [
+      ...older.trajectories.filter((t) => !trajKeys.has(`${t.user_id}:${t.segment_id}:${t.observed_at}:${t.source_ref}`)),
+      ...current.trajectories,
+    ].sort((a, b) => Date.parse(a.observed_at) - Date.parse(b.observed_at));
+    const private_samples = [
+      ...older.private_samples.filter((p) => !privKeys.has(`${p.user_id}:${p.observed_at}:${p.source_ref}`)),
+      ...current.private_samples,
+    ].sort((a, b) => Date.parse(a.observed_at) - Date.parse(b.observed_at));
+    return {
+      ...current,
+      events,
+      trajectories,
+      private_samples,
+      event_total: Math.max(current.event_total ?? events.length, older.event_total ?? 0),
+      trajectory_total: Math.max(current.trajectory_total ?? trajectories.length, older.trajectory_total ?? 0),
+      private_sample_total: Math.max(current.private_sample_total ?? private_samples.length, older.private_sample_total ?? 0),
+    };
+  }
+
+  async function loadOlder() {
+    if (state.kind !== 'ready' || loadingOlder || !selectedID) return;
+    const before = oldestLoadedISO(state.data);
+    const parsedStart = parseLocalDateTime(start).date;
+    if (!before || !parsedStart) return;
+    const beforeMS = Date.parse(before);
+    if (!Number.isFinite(beforeMS) || beforeMS <= parsedStart.getTime()) return;
+    setLoadingOlder(true);
+    try {
+      const older = await getPlayerTimeline(selectedID, parsedStart.toISOString(), before, 500, undefined, includePrivate);
+      setState((prev) => {
+        if (prev.kind !== 'ready') return prev;
+        const prevCount = mergeTimeline(prev.data, includePrivate).length;
+        const merged = mergeOlderPage(prev.data, older);
+        const nextCount = mergeTimeline(merged, includePrivate).length;
+        const added = Math.max(0, nextCount - prevCount);
+        queueMicrotask(() => setCursorIndex((idx) => idx + added));
+        return { kind: 'ready', data: merged };
+      });
+    } catch (error: unknown) {
+      setState({ kind: 'error', message: error instanceof Error ? error.message : '加载更早记录失败。' });
+    } finally {
+      setLoadingOlder(false);
+    }
+  }
 
   function seekTrajectorySample(sample: TrajectorySample) {
     const key = trajectoryKey(sample);
@@ -320,7 +383,20 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
           {state.kind === 'not-found' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> 该玩家已不在观察记录中。</div> : null}
           {state.kind === 'error' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> {state.message}</div> : null}
           {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="当前时间范围没有观察记录。" /> : null}
-          {mayBeTruncated ? <div className="timeline-alert timeline-alert--info" role="status"><AlertTriangle size={18} /> 结果可能已截断{truncationDetail ? `（${truncationDetail}）` : '（某类达到 500 条上限）'}。可缩小时间范围查看完整证据。</div> : null}
+          {mayBeTruncated ? (
+            <div className="timeline-alert timeline-alert--info" role="status">
+              <AlertTriangle size={18} />
+              <span>
+                默认加载时间范围内<strong>最近</strong>最多 500 条/类{truncationDetail ? `（${truncationDetail}）` : ''}。
+                {canLoadOlder ? ' 可继续加载更早证据。' : ' 可缩小时间范围查看完整证据。'}
+              </span>
+              {canLoadOlder ? (
+                <button type="button" className="timeline-load-older" disabled={loadingOlder} onClick={() => void loadOlder()}>
+                  {loadingOlder ? '加载中…' : '加载更早'}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
           {state.kind === 'ready' && items.length > 0 ? (
             <TimelineSpineList
               activeIndex={activeIndex}

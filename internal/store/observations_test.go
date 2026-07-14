@@ -1322,6 +1322,37 @@ func TestObservationFixedWidthTimesPreserveTimelineOrderAndHalfOpenRange(t *test
 	}
 }
 
+func TestReadPlayerTimelinePrefersLatestWithinLimit(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	write := PlayerObservationWrite{
+		Events: []ActivityEvent{
+			observationEvent("e0", "e0", "steam_1", base),
+			observationEvent("e1", "e1", "steam_1", base.Add(time.Minute)),
+			observationEvent("e2", "e2", "steam_1", base.Add(2*time.Minute)),
+			observationEvent("e3", "e3", "steam_1", base.Add(3*time.Minute)),
+			observationEvent("e4", "e4", "steam_1", base.Add(4*time.Minute)),
+		},
+	}
+	if err := repo.RecordPlayerObservation(t.Context(), write); err != nil {
+		t.Fatal(err)
+	}
+	timeline, err := repo.ReadPlayerTimeline(t.Context(), "steam_1", base, base.Add(10*time.Minute), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timeline.EventTotal != 5 {
+		t.Fatalf("event_total=%d", timeline.EventTotal)
+	}
+	if len(timeline.Events) != 3 {
+		t.Fatalf("events=%d", len(timeline.Events))
+	}
+	// Chronological ASC among the latest 3: e2,e3,e4
+	if timeline.Events[0].ID != "e2" || timeline.Events[2].ID != "e4" {
+		t.Fatalf("expected latest three e2..e4, got %+v", timeline.Events)
+	}
+}
+
 func TestObservationFixedWidthTimesProtectCleanupBoundary(t *testing.T) {
 	repo, _ := openTemp(t)
 	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)

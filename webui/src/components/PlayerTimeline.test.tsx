@@ -239,7 +239,8 @@ describe('PlayerTimeline', () => {
     });
     render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
-    expect(await screen.findByText(/结果可能已截断/i)).toBeInTheDocument();
+    expect(await screen.findByText(/默认加载时间范围内/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /加载更早/i })).toBeInTheDocument();
   });
 
   it('shows loading, not-found, and request failure states', async () => {
