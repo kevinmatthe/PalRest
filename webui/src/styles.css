@@ -222,6 +222,10 @@ select:focus-visible {
 .analytics-panel { overflow: hidden; }
 .analytics-panel-heading { align-items: flex-start; flex-wrap: wrap; }
 .analytics-toggle { display: flex; flex-wrap: wrap; gap: 0.25rem; padding: 0.2rem; border-radius: 0.5rem; background: #edf2ef; }
+.behavior-ranking-panel { margin-top: 0.75rem; }
+.behavior-rank-controls { display: grid; gap: 0.45rem; justify-items: end; }
+.behavior-ranking-table { font-size: 0.875rem; }
+.behavior-ranking-table td, .behavior-ranking-table th { white-space: nowrap; }
 .analytics-toggle button { min-height: 2.75rem; padding: 0 0.8rem; border: 1px solid transparent; border-radius: 0.4rem; color: #5b6963; background: transparent; font-size: 0.75rem; font-weight: 800; cursor: pointer; }
 .analytics-toggle button[aria-pressed="true"] { border-color: #bbcec5; color: #1f5245; background: #fff; box-shadow: 0 0.15rem 0.4rem rgba(32, 62, 50, 0.09); }
 .analytics-empty { display: grid; min-height: 10rem; place-items: center; padding: 1rem; border: 1px dashed #ccd8d2; border-radius: 0.5rem; color: #6d7973; background: #f8faf9; text-align: center; font-size: 0.8125rem; }

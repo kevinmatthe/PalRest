@@ -2,9 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { Activity, Clock3, TrendingUp, Users } from 'lucide-react';
 import {
   getAnalyticsActivity,
+  getAnalyticsBehavior,
   getAnalyticsSummary,
   type AnalyticsActivity,
+  type AnalyticsBehaviorRanking,
   type AnalyticsSummary,
+  type BehaviorRankRange,
+  type BehaviorRankSort,
   type Player,
 } from '../api';
 import { formatDateTime, formatDuration } from '../utils';
@@ -12,6 +16,13 @@ import { ActivityChart } from './ActivityChart';
 
 type Period = 'today' | 'week';
 type Range = '7d' | '30d';
+
+const DOMINANT_ZH: Record<string, string> = {
+  traveling: '跑图',
+  local: '局部',
+  stationary: '挂机',
+  unknown: '未知',
+};
 
 export function AnalyticsDashboard({ players, refreshKey }: { players: Player[]; refreshKey: number }) {
   const [rankingPeriod, setRankingPeriod] = useState<Period>('today');
@@ -30,6 +41,11 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
   const [summaryError, setSummaryError] = useState('');
   const [serverError, setServerError] = useState('');
   const [playerError, setPlayerError] = useState('');
+  const [behaviorRange, setBehaviorRange] = useState<BehaviorRankRange>('today');
+  const [behaviorSort, setBehaviorSort] = useState<BehaviorRankSort>('traveling');
+  const [behavior, setBehavior] = useState<AnalyticsBehaviorRanking>();
+  const [behaviorLoading, setBehaviorLoading] = useState(true);
+  const [behaviorError, setBehaviorError] = useState('');
 
   useEffect(() => {
     const controller = new AbortController();
@@ -67,6 +83,20 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
 
   useEffect(() => {
     const controller = new AbortController();
+    setBehaviorLoading(true);
+    setBehaviorError('');
+    getAnalyticsBehavior(behaviorRange, behaviorSort, 25, controller.signal).then((next) => {
+      if (!controller.signal.aborted) setBehavior(next);
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) setBehaviorError(error instanceof Error ? error.message : 'Could not load behavior ranking');
+    }).finally(() => {
+      if (!controller.signal.aborted) setBehaviorLoading(false);
+    });
+    return () => controller.abort();
+  }, [behaviorRange, behaviorSort, refreshKey]);
+
+  useEffect(() => {
+    const controller = new AbortController();
     const requestKey = `${range}:${selectedUserID}`;
     setPlayerError('');
     if (!selectedUserID) {
@@ -92,7 +122,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
     if (!query) return players;
     return players.filter((player) => player.user_id === selectedUserID || [player.name, player.account_name, player.user_id].some((value) => value.toLowerCase().includes(query)));
   }, [playerQuery, players, selectedUserID]);
-  const errors = [summaryError, serverError, playerError].filter(Boolean).join(' · ');
+  const errors = [summaryError, serverError, playerError, behaviorError].filter(Boolean).join(' · ');
   const matchingSummary = summaryKey === rankingPeriod ? summary : undefined;
   const matchingServer = serverKey === range ? serverActivity : undefined;
   const matchingPlayer = playerKey === `${range}:${selectedUserID}` ? playerActivity?.player : undefined;
@@ -103,7 +133,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
   return <section className="analytics-dashboard" aria-labelledby="analytics-heading" aria-busy={firstLoad}>
     <header className="analytics-heading">
       <div><p className="eyebrow">Player activity</p><h2 id="analytics-heading">Analytics</h2></div>
-      {(summaryLoading || serverLoading || playerLoading) && !firstLoad ? <span className="analytics-refreshing" role="status">Refreshing data…</span> : null}
+      {(summaryLoading || serverLoading || playerLoading || behaviorLoading) && !firstLoad ? <span className="analytics-refreshing" role="status">Refreshing data…</span> : null}
     </header>
     {firstLoad ? <div className="analytics-loading"><span className="skeleton-row" /><span>Loading analytics</span></div> : null}
     {errors ? <div className="notice analytics-notice" role="alert">{errors}</div> : null}
@@ -144,6 +174,74 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
           : !summaryLoading ? <div className="analytics-empty">No ranking activity for this period.</div> : <SkeletonChart />}
       </section>
     </div>
+
+    <section className="panel analytics-panel behavior-ranking-panel" aria-label="Trajectory behavior ranking">
+      <PanelHeading
+        title="轨迹行为排行"
+        detail={behavior?.note ?? '由位置轨迹推导 · 非政策在线时长'}
+      >
+        <div className="behavior-rank-controls">
+          <ToggleGroup
+            label="Behavior range"
+            options={[['today', '今日'], ['7d', '7 天']]}
+            value={behaviorRange}
+            onChange={(value) => setBehaviorRange(value as BehaviorRankRange)}
+          />
+          <ToggleGroup
+            label="Behavior sort"
+            options={[
+              ['traveling', '跑图'],
+              ['stationary', '挂机'],
+              ['radius', '活动范围'],
+              ['path', '路径'],
+              ['active', '观测活跃'],
+            ]}
+            value={behaviorSort}
+            onChange={(value) => setBehaviorSort(value as BehaviorRankSort)}
+          />
+        </div>
+      </PanelHeading>
+      {behavior?.ranking.length ? (
+        <div className="ranking-wrap">
+          <table className="ranking-table behavior-ranking-table">
+            <caption>Trajectory behavior ranking</caption>
+            <thead>
+              <tr>
+                <th scope="col">#</th>
+                <th scope="col">玩家</th>
+                <th scope="col">主导</th>
+                <th scope="col">跑图</th>
+                <th scope="col">挂机</th>
+                <th scope="col">半径</th>
+                <th scope="col">路径</th>
+                <th scope="col">活跃</th>
+              </tr>
+            </thead>
+            <tbody>
+              {behavior.ranking.map((entry, index) => (
+                <tr key={entry.user_id}>
+                  <td>{index + 1}</td>
+                  <th scope="row">
+                    <span>{entry.name || entry.user_id}</span>
+                    <small className={entry.online ? 'online' : 'offline'}>{entry.online ? 'Online' : 'Offline'}</small>
+                  </th>
+                  <td>{DOMINANT_ZH[entry.dominant_class] ?? entry.dominant_class}</td>
+                  <td>{Math.round(entry.traveling_share * 100)}%</td>
+                  <td>{Math.round(entry.stationary_share * 100)}%</td>
+                  <td>{Math.round(entry.radius).toLocaleString('zh-CN')}</td>
+                  <td>{Math.round(entry.path_length).toLocaleString('zh-CN')}</td>
+                  <td>{formatDuration(entry.observed_active_ms)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : !behaviorLoading ? (
+        <div className="analytics-empty">当前范围没有足够的轨迹样本做行为排行。</div>
+      ) : (
+        <SkeletonChart />
+      )}
+    </section>
   </section>;
 }
 

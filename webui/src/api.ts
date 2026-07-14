@@ -248,6 +248,45 @@ export function getAnalyticsActivity(range: '7d' | '30d', userID?: string, signa
   return getJSON<AnalyticsActivity>(`/api/v1/analytics/activity?${query}`, signal);
 }
 
+export type BehaviorRankSort = 'traveling' | 'stationary' | 'radius' | 'path' | 'active';
+export type BehaviorRankRange = 'today' | '7d';
+
+export type BehaviorRankEntry = {
+  user_id: string;
+  name: string;
+  sample_count: number;
+  observed_active_ms: number;
+  path_length: number;
+  radius: number;
+  mean_speed: number;
+  peak_speed: number;
+  traveling_share: number;
+  local_share: number;
+  stationary_share: number;
+  dominant_class: string;
+  online: boolean;
+};
+
+export type AnalyticsBehaviorRanking = {
+  range: BehaviorRankRange;
+  sort: BehaviorRankSort;
+  start: string;
+  end: string;
+  timezone: string;
+  ranking: BehaviorRankEntry[];
+  note?: string;
+};
+
+export function getAnalyticsBehavior(
+  range: BehaviorRankRange,
+  sort: BehaviorRankSort,
+  limit = 25,
+  signal?: AbortSignal,
+) {
+  const query = new URLSearchParams({ range, sort, limit: String(limit) });
+  return getJSON<AnalyticsBehaviorRanking>(`/api/v1/analytics/behavior?${query}`, signal);
+}
+
 export function getPlayerTimeline(userID: string, start: string, end: string, limit = 500, signal?: AbortSignal, includePrivate = false) {
   const query = new URLSearchParams({ start, end, limit: String(limit) });
   const prefix = includePrivate ? '/api/v1/admin/players' : '/api/v1/players';

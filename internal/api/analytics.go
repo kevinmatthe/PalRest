@@ -1,11 +1,15 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/kevinmatt/palworld-playtime-guard/internal/behavior"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
 )
 
@@ -96,6 +100,157 @@ func (s *Server) getAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"online_count": len(ids), "as_of": asOfJSON, "today_observed_ms": observed, "peak_count": peak, "peak_at": peakAt, "active_players": len(todayRows), "ranking_period": period, "ranking": items})
+}
+
+type behaviorRankItem struct {
+	UserID           string  `json:"user_id"`
+	Name             string  `json:"name"`
+	SampleCount      int     `json:"sample_count"`
+	ObservedActiveMs int64   `json:"observed_active_ms"`
+	PathLength       float64 `json:"path_length"`
+	Radius           float64 `json:"radius"`
+	MeanSpeed        float64 `json:"mean_speed"`
+	PeakSpeed        float64 `json:"peak_speed"`
+	TravelingShare   float64 `json:"traveling_share"`
+	LocalShare       float64 `json:"local_share"`
+	StationaryShare  float64 `json:"stationary_share"`
+	DominantClass    string  `json:"dominant_class"`
+	Online           bool    `json:"online"`
+}
+
+// GET /api/v1/analytics/behavior?range=today|7d&sort=traveling|stationary|radius|path|active&limit=25
+func (s *Server) getAnalyticsBehavior(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.adminStore.(interface {
+		ListUsersWithTrajectories(ctx context.Context, start, end time.Time, limit int) ([]string, error)
+		ListTrajectoryPointsAsc(ctx context.Context, userID string, start, end time.Time, limit int) ([]behavior.Point, error)
+		PlayerDisplayNames(ctx context.Context, userIDs []string) (map[string]string, error)
+	})
+	if !ok || s.adminStore == nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "behavior ranking unavailable")
+		return
+	}
+	rangeKey := r.URL.Query().Get("range")
+	if rangeKey == "" {
+		rangeKey = "today"
+	}
+	if rangeKey != "today" && rangeKey != "7d" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "range must be today or 7d")
+		return
+	}
+	sortKey := r.URL.Query().Get("sort")
+	if sortKey == "" {
+		sortKey = "traveling"
+	}
+	switch sortKey {
+	case "traveling", "stationary", "radius", "path", "active":
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_request", "sort must be traveling, stationary, radius, path, or active")
+		return
+	}
+	limit := 25
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 100 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "limit must be 1–100")
+			return
+		}
+		limit = n
+	}
+	days := 1
+	if rangeKey == "7d" {
+		days = 7
+	}
+	_, start, end, err := s.analyticsBounds(days)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "behavior ranking failed")
+		return
+	}
+	// Scan more candidates than limit so sorting is meaningful.
+	userIDs, err := repo.ListUsersWithTrajectories(r.Context(), start.UTC(), end.UTC(), 150)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "behavior ranking failed")
+		return
+	}
+	items := make([]behaviorRankItem, 0, len(userIDs))
+	for _, userID := range userIDs {
+		points, err := repo.ListTrajectoryPointsAsc(r.Context(), userID, start.UTC(), end.UTC(), behavior.MaxSamples)
+		if err != nil || len(points) < 2 {
+			continue
+		}
+		sum := behavior.Summarize(points, start.UTC(), end.UTC())
+		if sum.SampleCount < 2 {
+			continue
+		}
+		items = append(items, behaviorRankItem{
+			UserID:           userID,
+			SampleCount:      sum.SampleCount,
+			ObservedActiveMs: sum.ObservedActiveMs,
+			PathLength:       sum.PathLength,
+			Radius:           sum.Radius,
+			MeanSpeed:        sum.MeanSpeed,
+			PeakSpeed:        sum.PeakSpeed,
+			TravelingShare:   sum.TravelingShare,
+			LocalShare:       sum.LocalShare,
+			StationaryShare:  sum.StationaryShare,
+			DominantClass:    sum.DominantClass,
+		})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		switch sortKey {
+		case "stationary":
+			if a.StationaryShare != b.StationaryShare {
+				return a.StationaryShare > b.StationaryShare
+			}
+		case "radius":
+			if a.Radius != b.Radius {
+				return a.Radius > b.Radius
+			}
+		case "path":
+			if a.PathLength != b.PathLength {
+				return a.PathLength > b.PathLength
+			}
+		case "active":
+			if a.ObservedActiveMs != b.ObservedActiveMs {
+				return a.ObservedActiveMs > b.ObservedActiveMs
+			}
+		default: // traveling
+			if a.TravelingShare != b.TravelingShare {
+				return a.TravelingShare > b.TravelingShare
+			}
+		}
+		return a.UserID < b.UserID
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = it.UserID
+	}
+	names, _ := repo.PlayerDisplayNames(r.Context(), ids)
+	onlineIDs, _ := s.analyticsOnline.Current()
+	online := make(map[string]bool, len(onlineIDs))
+	for _, id := range onlineIDs {
+		online[id] = true
+	}
+	for i := range items {
+		if n := names[items[i].UserID]; n != "" {
+			items[i].Name = n
+		} else {
+			items[i].Name = items[i].UserID
+		}
+		items[i].Online = online[items[i].UserID]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"range":      rangeKey,
+		"sort":       sortKey,
+		"start":      start.UTC(),
+		"end":        end.UTC(),
+		"timezone":   s.policies.Policy().Timezone,
+		"ranking":    items,
+		"note":       "Trajectory-derived motion metrics; not policy playtime. Limited to recent samples per player.",
+	})
 }
 
 type activityPoint struct {
