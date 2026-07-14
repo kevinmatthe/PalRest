@@ -91,6 +91,7 @@ See matrix; detail when scheduled.
 | 2026-07-14 | O5 | Done — `mergeTimelineTicks` pixel-bucket ticks; ResizeObserver track width | `c592823` |
 | 2026-07-14 | O8 | Done — `TimelineMap.tsx` + `timelineShared.ts`; shell owns data/playback | `c592823` |
 | 2026-07-14 | O6 | Partial — unified `LOCATION_COORDINATE_FALLBACK` (`地图坐标位置`); FT/tower still numbered v1 names | `c592823` |
+| 2026-07-14 | O9 | Done — `virtualWindow` list + scrollport; only list scrolls to active row; long list mounts a window | pending |
 
 ---
 
