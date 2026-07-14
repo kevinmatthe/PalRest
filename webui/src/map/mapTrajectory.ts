@@ -140,3 +140,88 @@ export const FOCUS_PULSE_COLOR = '#ca8519';
 export const FOCUS_PULSE_WEIGHT = 2;
 export const ARROW_SIZE_PX = 12;
 export const ARROW_COLOR = '#ca8519';
+
+/** Breath-highlight roles for focus / trajectory neighbors / expanded siblings. */
+export type BreathRole = 'focus' | 'prev' | 'next' | 'sibling';
+
+export const BREATH_COLORS: Record<BreathRole, { stroke: string; fill: string; radius: number; weight: number }> = {
+  focus: { stroke: '#ca8519', fill: '#ca8519', radius: 14, weight: 2.5 },
+  /** Past neighbor — cooler teal */
+  prev: { stroke: '#0f8fa3', fill: '#0f8fa3', radius: 11, weight: 2 },
+  /** Future neighbor — violet so it reads as "ahead" */
+  next: { stroke: '#8b5cf6', fill: '#8b5cf6', radius: 11, weight: 2 },
+  /** Other points lit when a cluster is expanded */
+  sibling: { stroke: '#56B4E9', fill: '#56B4E9', radius: 9, weight: 1.75 },
+};
+
+export type BreathTarget<T> = {
+  role: BreathRole;
+  sample: T;
+  key: string;
+};
+
+/**
+ * Build breath-highlight targets for the current focus:
+ * - always the focus sample
+ * - chronological prev/next samples (same segment when available, else adjacent index)
+ * - other markers currently expanded from the focus cluster as siblings
+ */
+export function collectBreathTargets<T extends TrajectoryPointLike>(
+  samples: T[],
+  focusKey: string,
+  keyOf: (sample: T) => string,
+  expandedKeys: Iterable<string> = [],
+): BreathTarget<T>[] {
+  if (!samples.length || !focusKey) return [];
+  const focusIndex = samples.findIndex((s) => keyOf(s) === focusKey);
+  if (focusIndex < 0) return [];
+
+  const focus = samples[focusIndex]!;
+  const targets: BreathTarget<T>[] = [{ role: 'focus', sample: focus, key: focusKey }];
+  const claimed = new Set<string>([focusKey]);
+
+  const prev = findTrajectoryNeighbor(samples, focusIndex, -1);
+  if (prev) {
+    const key = keyOf(prev);
+    targets.push({ role: 'prev', sample: prev, key });
+    claimed.add(key);
+  }
+  const next = findTrajectoryNeighbor(samples, focusIndex, 1);
+  if (next) {
+    const key = keyOf(next);
+    targets.push({ role: 'next', sample: next, key });
+    claimed.add(key);
+  }
+
+  for (const key of expandedKeys) {
+    if (claimed.has(key)) continue;
+    const sample = samples.find((s) => keyOf(s) === key);
+    if (!sample) continue;
+    targets.push({ role: 'sibling', sample, key });
+    claimed.add(key);
+  }
+  return targets;
+}
+
+/** Prefer same-segment neighbor; fall back to index ±1. */
+export function findTrajectoryNeighbor<T extends TrajectoryPointLike>(
+  samples: T[],
+  focusIndex: number,
+  direction: -1 | 1,
+): T | undefined {
+  const focus = samples[focusIndex];
+  if (!focus) return undefined;
+  const target = focusIndex + direction;
+  if (target < 0 || target >= samples.length) return undefined;
+  // Walk in direction until same segment or take immediate neighbor.
+  if (direction < 0) {
+    for (let i = focusIndex - 1; i >= 0; i -= 1) {
+      if (samples[i]!.segment_id === focus.segment_id) return samples[i];
+    }
+  } else {
+    for (let i = focusIndex + 1; i < samples.length; i += 1) {
+      if (samples[i]!.segment_id === focus.segment_id) return samples[i];
+    }
+  }
+  return samples[target];
+}

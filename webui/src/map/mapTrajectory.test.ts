@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BREATH_COLORS,
+  collectBreathTargets,
   DEFAULT_TRAJECTORY_MAX_POINTS,
   DEFAULT_TRAJECTORY_WINDOW_MS,
+  findTrajectoryNeighbor,
   hybridTrajectoryWindow,
   pingBin,
   pingColor,
@@ -155,6 +158,54 @@ describe('trajectory style constants', () => {
     expect(TRAJ_DASH_ARRAY).toBe('10 14');
     expect(TRAJ_PAST_COLOR).toMatch(/^#/);
     expect(TRAJ_TIP_COLOR).toMatch(/^#/);
+  });
+
+  it('breath roles use distinct stroke colors', () => {
+    const colors = new Set(Object.values(BREATH_COLORS).map((c) => c.stroke));
+    expect(colors.size).toBe(4);
+  });
+});
+
+describe('collectBreathTargets', () => {
+  const keyOf = (s: TrajectoryPointLike) => `${s.segment_id}:${s.observed_at}`;
+  const chain = [
+    pt({ observed_at: '2026-07-14T10:00:00.000Z', segment_id: 's1', x: 0, y: 0 }),
+    pt({ observed_at: '2026-07-14T10:01:00.000Z', segment_id: 's1', x: 1, y: 0 }),
+    pt({ observed_at: '2026-07-14T10:02:00.000Z', segment_id: 's1', x: 2, y: 0 }),
+    pt({ observed_at: '2026-07-14T10:03:00.000Z', segment_id: 's1', x: 3, y: 0 }),
+  ];
+
+  it('includes focus plus chronological prev/next neighbors', () => {
+    const focusKey = keyOf(chain[2]!);
+    const got = collectBreathTargets(chain, focusKey, keyOf);
+    expect(got.map((t) => t.role)).toEqual(['focus', 'prev', 'next']);
+    expect(got.find((t) => t.role === 'prev')?.sample.x).toBe(1);
+    expect(got.find((t) => t.role === 'next')?.sample.x).toBe(3);
+  });
+
+  it('adds expanded siblings that are not focus/neighbors', () => {
+    const focusKey = keyOf(chain[1]!);
+    const expanded = [keyOf(chain[0]!), keyOf(chain[1]!), keyOf(chain[3]!)];
+    const got = collectBreathTargets(chain, focusKey, keyOf, expanded);
+    // prev is chain[0], next is chain[2] (not expanded), sibling is chain[3]
+    expect(got.map((t) => t.role).sort()).toEqual(['focus', 'next', 'prev', 'sibling'].sort());
+    expect(got.find((t) => t.role === 'sibling')?.sample.x).toBe(3);
+  });
+
+  it('returns empty when focus key is unknown', () => {
+    expect(collectBreathTargets(chain, 'missing', keyOf)).toEqual([]);
+  });
+});
+
+describe('findTrajectoryNeighbor', () => {
+  it('prefers same-segment neighbor over cross-segment adjacency', () => {
+    const mixed = [
+      pt({ observed_at: '2026-07-14T10:00:00.000Z', segment_id: 's1', x: 0, y: 0 }),
+      pt({ observed_at: '2026-07-14T10:01:00.000Z', segment_id: 's1', x: 1, y: 0 }),
+      pt({ observed_at: '2026-07-14T10:02:00.000Z', segment_id: 's2', x: 9, y: 0 }),
+    ];
+    expect(findTrajectoryNeighbor(mixed, 1, 1)?.segment_id).toBe('s2'); // no later s1
+    expect(findTrajectoryNeighbor(mixed, 1, -1)?.x).toBe(0);
   });
 });
 

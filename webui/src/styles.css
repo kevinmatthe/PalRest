@@ -425,13 +425,38 @@ select:focus-visible {
 @keyframes timeline-traj-dash {
   to { stroke-dashoffset: -24; }
 }
-.timeline-focus-pulse {
-  animation: timeline-focus-pulse 1.2s ease-out infinite;
+/* Role-colored breath rings; hit fires once per cursor update, then soft loop. */
+.timeline-breath {
+  fill-opacity: 0.12;
 }
-@keyframes timeline-focus-pulse {
-  0% { stroke-opacity: 0.9; }
-  70% { stroke-opacity: 0.15; }
-  100% { stroke-opacity: 0.9; }
+.timeline-breath.timeline-breath-run.timeline-breath--focus {
+  animation:
+    timeline-breath-hit 0.55s ease-out,
+    timeline-breath-pulse 1.1s ease-in-out 0.55s infinite;
+}
+.timeline-breath.timeline-breath-run.timeline-breath--prev {
+  animation:
+    timeline-breath-hit 0.55s ease-out,
+    timeline-breath-pulse 1.25s ease-in-out 0.55s infinite;
+}
+.timeline-breath.timeline-breath-run.timeline-breath--next {
+  animation:
+    timeline-breath-hit 0.55s ease-out,
+    timeline-breath-pulse 1.25s ease-in-out 0.55s infinite;
+}
+.timeline-breath.timeline-breath-run.timeline-breath--sibling {
+  animation:
+    timeline-breath-hit 0.6s ease-out,
+    timeline-breath-pulse 1.4s ease-in-out 0.6s infinite;
+}
+@keyframes timeline-breath-hit {
+  0% { stroke-opacity: 0.2; }
+  35% { stroke-opacity: 1; }
+  100% { stroke-opacity: 0.7; }
+}
+@keyframes timeline-breath-pulse {
+  0%, 100% { stroke-opacity: 0.35; }
+  50% { stroke-opacity: 0.95; }
 }
 .timeline-traj-arrow {
   background: transparent;
@@ -449,7 +474,7 @@ select:focus-visible {
 }
 @media (prefers-reduced-motion: reduce) {
   .timeline-traj-past { animation: none; }
-  .timeline-focus-pulse { animation: none; stroke-opacity: 0.55; }
+  .timeline-breath.timeline-breath-run { animation: none; stroke-opacity: 0.7; }
 }
 .timeline-transport button,
 .timeline-transport select {

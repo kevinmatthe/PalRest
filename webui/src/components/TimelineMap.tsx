@@ -13,9 +13,8 @@ import { MAP_LANDMARKS } from '../map/mapLandmarks';
 import { PLAY_SPEEDS, type PlayMode, type PlaySpeed } from '../map/mapPlayback';
 import {
   ARROW_SIZE_PX,
-  FOCUS_PULSE_COLOR,
-  FOCUS_PULSE_RADIUS,
-  FOCUS_PULSE_WEIGHT,
+  BREATH_COLORS,
+  collectBreathTargets,
   hybridTrajectoryWindow,
   pingColor,
   splitTrajectoryPastFuture,
@@ -142,6 +141,7 @@ export function TimelineMap({
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const markersByKeyRef = useRef(new Map<string, SampleCircleMarker>());
   const expandStateRef = useRef<ExpandState>({ markers: [] });
+  const breathTickRef = useRef(0);
   const activeSampleKeyRef = useRef('');
   const onSeekTrajectoryRef = useRef(onSeekTrajectory);
   onSeekTrajectoryRef.current = onSeekTrajectory;
@@ -380,15 +380,30 @@ export function TimelineMap({
     if (focusSample) {
       const activePoint = projectWorldSample(focusSample);
       const ping = colorMode === 'ping' ? pingColor(focusSample.ping) : null;
+      // Bump tick so CSS breath hit restarts even when focus stays in the same cluster.
+      breathTickRef.current += 1;
+      const breathTick = breathTickRef.current;
 
-      L.circleMarker(activePoint, {
-        radius: FOCUS_PULSE_RADIUS,
-        color: FOCUS_PULSE_COLOR,
-        fillOpacity: 0,
-        weight: FOCUS_PULSE_WEIGHT,
-        className: 'timeline-focus-pulse',
-        interactive: false,
-      }).addTo(focusLayer);
+      const expandedKeys = expandStateRef.current.markers
+        .map((layer) => (layer as SampleCircleMarker).options.sampleKey)
+        .filter((key): key is string => typeof key === 'string' && key.length > 0);
+      const breathTargets = collectBreathTargets(samples, activeSampleKey, trajectoryKey, expandedKeys);
+      // Draw softer roles first; focus ring last under the solid core.
+      const roleOrder = { sibling: 0, prev: 1, next: 2, focus: 3 } as const;
+      [...breathTargets]
+        .sort((a, b) => roleOrder[a.role] - roleOrder[b.role])
+        .forEach((target) => {
+          const style = BREATH_COLORS[target.role];
+          L.circleMarker(projectWorldSample(target.sample), {
+            radius: style.radius,
+            color: style.stroke,
+            fillColor: style.fill,
+            fillOpacity: target.role === 'focus' ? 0 : 0.14,
+            weight: style.weight,
+            className: `timeline-breath timeline-breath--${target.role} timeline-breath-tick-${breathTick % 2}`,
+            interactive: false,
+          }).addTo(focusLayer);
+        });
 
       L.circleMarker(activePoint, {
         radius: ping ? Math.max(8, ping.radius + 3) : 8,
@@ -411,6 +426,18 @@ export function TimelineMap({
         });
         L.marker(activePoint, { icon, interactive: false, keyboard: false }).addTo(focusLayer);
       }
+
+      // Force SVG path CSS animations to restart on every cursor step.
+      requestAnimationFrame(() => {
+        focusLayer.eachLayer((layer) => {
+          const el = (layer as L.Path).getElement?.();
+          if (!el) return;
+          el.classList.remove('timeline-breath-run');
+          // Reflow so removing/adding the run class restarts keyframes.
+          void (el as HTMLElement).offsetWidth;
+          el.classList.add('timeline-breath-run');
+        });
+      });
 
       if (shouldPanToFocus(map.getBounds(), activePoint)) {
         map.panTo(activePoint, { animate: false });
