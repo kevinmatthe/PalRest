@@ -126,6 +126,7 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [guildPOIs, setGuildPOIs] = useState<BehaviorPOI[]>([]);
   const [highlightedTeleportIndex, setHighlightedTeleportIndex] = useState<number | null>(null);
+  const [highlightedPOIId, setHighlightedPOIId] = useState<string | null>(null);
   const requestID = useRef(0);
   const lastRefreshKey = useRef(refreshKey);
   const cursorIndexRef = useRef(cursorIndex);
@@ -230,12 +231,55 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
 
   useEffect(() => {
     setHighlightedTeleportIndex(null);
-  }, [selectedID, start, end, behaviorSummary?.teleportSuspects.length]);
+    setHighlightedPOIId(null);
+  }, [selectedID, start, end, behaviorSummary?.teleportSuspects.length, behaviorSummary?.poiDwells.length]);
 
   const highlightedTeleport = useMemo(() => {
     if (highlightedTeleportIndex == null || !behaviorSummary) return null;
     return behaviorSummary.teleportSuspects[highlightedTeleportIndex] ?? null;
   }, [behaviorSummary, highlightedTeleportIndex]);
+
+  const mapFocusTarget = useMemo(() => {
+    if (highlightedTeleport) {
+      const { fromX, fromY, toX, toY, at } = highlightedTeleport;
+      if (
+        Number.isFinite(fromX) && Number.isFinite(fromY)
+        && Number.isFinite(toX) && Number.isFinite(toY)
+      ) {
+        return {
+          key: `tp:${at}:${fromX}:${fromY}:${toX}:${toY}`,
+          points: [
+            { x: fromX as number, y: fromY as number },
+            { x: toX as number, y: toY as number },
+          ],
+        };
+      }
+    }
+    if (highlightedPOIId && behaviorSummary) {
+      const dwell =
+        behaviorSummary.poiDwells.find((d) => d.poiId === highlightedPOIId)
+        ?? (behaviorSummary.activityAnchor?.poiId === highlightedPOIId
+          ? behaviorSummary.activityAnchor
+          : undefined);
+      if (dwell && Number.isFinite(dwell.x) && Number.isFinite(dwell.y)) {
+        return {
+          key: `poi:${dwell.poiId}:${dwell.x}:${dwell.y}`,
+          points: [{ x: dwell.x as number, y: dwell.y as number }],
+        };
+      }
+    }
+    return null;
+  }, [behaviorSummary, highlightedPOIId, highlightedTeleport]);
+
+  function focusPOI(poiId: string | null) {
+    setHighlightedTeleportIndex(null);
+    setHighlightedPOIId(poiId);
+  }
+
+  function highlightTeleport(index: number | null) {
+    setHighlightedPOIId(null);
+    setHighlightedTeleportIndex(index);
+  }
 
   const rows = useMemo(() => annotateTrajectoryEvidence(items), [items]);
   const segmentNames = useMemo(() => segmentLabels(items), [items]);
@@ -438,13 +482,22 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             selected={Boolean(selectedID)}
             behaviorSummary={behaviorSummary}
             highlightedTeleport={highlightedTeleport}
-          />
-          <BehaviorSummaryPanel
-            selected={Boolean(selectedID)}
-            loading={state.kind === 'loading'}
-            summary={behaviorSummary}
-            highlightedTeleportIndex={highlightedTeleportIndex}
-            onHighlightTeleport={setHighlightedTeleportIndex}
+            highlightedPOIId={highlightedPOIId}
+            focusTarget={mapFocusTarget}
+            sidePanel={
+              selectedID ? (
+                <BehaviorSummaryPanel
+                  variant="overlay"
+                  selected
+                  loading={state.kind === 'loading'}
+                  summary={behaviorSummary}
+                  highlightedTeleportIndex={highlightedTeleportIndex}
+                  onHighlightTeleport={highlightTeleport}
+                  highlightedPOIId={highlightedPOIId}
+                  onFocusPOI={focusPOI}
+                />
+              ) : null
+            }
           />
           {!selectedID ? <EmptyState icon={<Compass size={28} />} text="选择玩家后查看轨迹和事件。" /> : null}
           {state.kind === 'loading' ? <div className="timeline-skeleton" role="status" aria-label="正在加载时间轴"><span /><span /><span /></div> : null}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
@@ -100,6 +100,12 @@ function projectWorldXY(x: number, y: number): L.LatLngExpression {
   return [mapX, mapY];
 }
 
+/** World-space points to pan/fit the map to (from behavior panel clicks). */
+export type MapFocusTarget = {
+  key: string;
+  points: Array<{ x: number; y: number }>;
+};
+
 export type TimelineMapProps = {
   activeIndex: number;
   items: LogItem[];
@@ -118,6 +124,12 @@ export type TimelineMapProps = {
   behaviorSummary?: BehaviorSummary | null;
   /** Single suspected teleport to draw (from behavior panel click); null = hide. */
   highlightedTeleport?: TeleportSuspect | null;
+  /** POI dwell/anchor currently focused from the side list. */
+  highlightedPOIId?: string | null;
+  /** Pan/zoom target from list clicks; fit once per key. */
+  focusTarget?: MapFocusTarget | null;
+  /** Floating panel over the map (e.g. behavior summary). */
+  sidePanel?: ReactNode;
 };
 
 export function TimelineMap({
@@ -136,6 +148,9 @@ export function TimelineMap({
   selected,
   behaviorSummary = null,
   highlightedTeleport = null,
+  highlightedPOIId = null,
+  focusTarget = null,
+  sidePanel = null,
 }: TimelineMapProps) {
   const mapElementRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -150,7 +165,7 @@ export function TimelineMap({
   const markersByKeyRef = useRef(new Map<string, SampleCircleMarker>());
   const expandStateRef = useRef<ExpandState>({ markers: [] });
   const breathTickRef = useRef(0);
-  const lastTeleportFitKeyRef = useRef('');
+  const lastFocusKeyRef = useRef('');
   const activeSampleKeyRef = useRef('');
   const onSeekTrajectoryRef = useRef(onSeekTrajectory);
   onSeekTrajectoryRef.current = onSeekTrajectory;
@@ -427,39 +442,51 @@ export function TimelineMap({
         if (!Number.isFinite(dwell.x) || !Number.isFinite(dwell.y)) continue;
         const kindClass =
           dwell.kind === 'boss_tower' ? 'tower' : dwell.kind === 'guild_base' ? 'guild' : 'ft';
-        const radius = dwell.kind === 'guild_base' ? 9 : dwell.kind === 'boss_tower' ? 8 : 7;
+        const active = highlightedPOIId === dwell.poiId;
+        const radius = (dwell.kind === 'guild_base' ? 9 : dwell.kind === 'boss_tower' ? 8 : 7) + (active ? 3 : 0);
         const fill =
           dwell.kind === 'boss_tower' ? '#e8b86d' : dwell.kind === 'guild_base' ? '#c4b5fd' : '#9fd0db';
         const stroke =
           dwell.kind === 'boss_tower' ? '#8d5a0f' : dwell.kind === 'guild_base' ? '#6d28d9' : '#0f7285';
         const marker = L.circleMarker(projectWorldXY(dwell.x!, dwell.y!), {
           radius,
-          color: stroke,
+          color: active ? '#ca8519' : stroke,
           fillColor: fill,
           fillOpacity: 0.92,
-          weight: 2.5,
-          className: `timeline-behavior-poi timeline-behavior-poi--${kindClass}`,
+          weight: active ? 3.5 : 2.5,
+          className: `timeline-behavior-poi timeline-behavior-poi--${kindClass}${active ? ' is-active' : ''}`,
         });
         marker.bindTooltip(
           `${dwell.nameZh} · 驻留 ${Math.max(1, Math.round(dwell.dwellMs / 60_000))} 分`,
           { direction: 'top', opacity: 0.95 },
         );
         marker.addTo(behaviorOverlay);
+        if (active) {
+          L.circleMarker(projectWorldXY(dwell.x!, dwell.y!), {
+            radius: radius + 8,
+            color: '#ca8519',
+            fillOpacity: 0,
+            weight: 2,
+            className: 'timeline-behavior-poi-focus-ring',
+            interactive: false,
+          }).addTo(behaviorOverlay);
+        }
       }
       if (behaviorSummary.activityAnchor && Number.isFinite(behaviorSummary.activityAnchor.x) && Number.isFinite(behaviorSummary.activityAnchor.y)) {
         const a = behaviorSummary.activityAnchor;
+        const anchorActive = highlightedPOIId === a.poiId;
         L.circleMarker(projectWorldXY(a.x!, a.y!), {
-          radius: 14,
+          radius: anchorActive ? 18 : 14,
           color: '#ca8519',
           fillOpacity: 0,
-          weight: 2,
+          weight: anchorActive ? 3 : 2,
           className: 'timeline-behavior-anchor-ring',
           interactive: false,
         }).addTo(behaviorOverlay);
       }
     }
 
-    // Draw one teleport arc only when the user selects a list item below.
+    // Draw one teleport arc only when the user selects a list item.
     if (
       highlightedTeleport
       && Number.isFinite(highlightedTeleport.fromX)
@@ -487,17 +514,6 @@ export function TimelineMap({
         opacity: 0.95,
       });
       line.addTo(behaviorOverlay);
-      const fitKey = `${hop.at}:${hop.fromX}:${hop.fromY}:${hop.toX}:${hop.toY}`;
-      if (lastTeleportFitKeyRef.current !== fitKey) {
-        lastTeleportFitKeyRef.current = fitKey;
-        try {
-          map.fitBounds(line.getBounds().pad(0.4), { animate: false, maxZoom: 4 });
-        } catch {
-          /* ignore empty bounds */
-        }
-      }
-    } else {
-      lastTeleportFitKeyRef.current = '';
     }
 
     focusLayer.clearLayers();
@@ -592,7 +608,35 @@ export function TimelineMap({
         map.panTo(activePoint, { animate: false });
       }
     }
-  }, [activeItem?.at, activeSampleKey, behaviorSummary, colorMode, highlightedTeleport, samples, showLines, showPoints]);
+  }, [activeItem?.at, activeSampleKey, behaviorSummary, colorMode, highlightedPOIId, highlightedTeleport, samples, showLines, showPoints]);
+
+  // Focus map when the user clicks a POI or teleport in the side list.
+  useEffect(() => {
+    const map = leafletRef.current;
+    if (!map || !focusTarget || focusTarget.points.length === 0) {
+      lastFocusKeyRef.current = '';
+      return;
+    }
+    if (lastFocusKeyRef.current === focusTarget.key) return;
+    lastFocusKeyRef.current = focusTarget.key;
+    const latLngs = focusTarget.points
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
+      .map((p) => projectWorldXY(p.x, p.y));
+    if (latLngs.length === 0) return;
+    try {
+      if (latLngs.length === 1) {
+        const zoom = Math.max(map.getZoom(), 4);
+        map.setView(latLngs[0] as L.LatLngExpression, Math.min(zoom, 5), { animate: true });
+      } else {
+        map.fitBounds(L.latLngBounds(latLngs as L.LatLngExpression[]).pad(0.35), {
+          animate: true,
+          maxZoom: 4,
+        });
+      }
+    } catch {
+      /* ignore empty bounds */
+    }
+  }, [focusTarget]);
 
   return <section className="timeline-map-panel" aria-label="地图回放">
     <div className="timeline-map-header">
@@ -650,6 +694,7 @@ export function TimelineMap({
       <div aria-label="Palworld 完整游戏地图" className="timeline-leaflet-map" data-testid="timeline-map" ref={mapElementRef} role="img" />
       {!mapAvailable ? <div className="timeline-map-missing" role="status">真实地图瓦片加载失败：本地 <code>webui/public/map/tiles</code> 与 palworld.gg 均无法读取，请检查 Git LFS 或网络。</div> : null}
       {!points.length ? <div className="timeline-map-empty">{loading ? '正在加载轨迹证据。' : selected ? '当前时间范围没有位置样本，已显示完整地图。' : '选择玩家后叠加轨迹。'}</div> : null}
+      {sidePanel ? <div className="timeline-map-side-panel">{sidePanel}</div> : null}
     </div>
     <div className="timeline-cursor">
       <div className="timeline-cursor-track" aria-hidden="true" ref={trackRef} data-testid="timeline-cursor-track">

@@ -1,5 +1,5 @@
 import { Activity } from 'lucide-react';
-import { GAP_SHARE_WARN, type BehaviorSummary } from '../behavior/behaviorTypes';
+import { GAP_SHARE_WARN, type BehaviorSummary, type POIDwell } from '../behavior/behaviorTypes';
 import {
   BEHAVIOR_CLASS_LABELS,
   formatBehaviorDistance,
@@ -17,22 +17,42 @@ export type BehaviorSummaryPanelProps = {
   summary: BehaviorSummary | null;
   loading: boolean;
   selected: boolean;
+  /** Compact floating panel over the map. */
+  variant?: 'inline' | 'overlay';
   /** Index into summary.teleportSuspects currently shown on the map; null = none. */
   highlightedTeleportIndex?: number | null;
   onHighlightTeleport?: (index: number | null) => void;
+  /** POI id focused on the map (anchor or dwell). */
+  highlightedPOIId?: string | null;
+  onFocusPOI?: (poiId: string | null) => void;
 };
+
+function hasCoords(poi: Pick<POIDwell, 'x' | 'y'>): boolean {
+  return Number.isFinite(poi.x) && Number.isFinite(poi.y);
+}
 
 export function BehaviorSummaryPanel({
   summary,
   loading,
   selected,
+  variant = 'inline',
   highlightedTeleportIndex = null,
   onHighlightTeleport,
+  highlightedPOIId = null,
+  onFocusPOI,
 }: BehaviorSummaryPanelProps) {
   if (!selected) return null;
 
+  function togglePOI(poi: POIDwell) {
+    if (!hasCoords(poi)) return;
+    onFocusPOI?.(highlightedPOIId === poi.poiId ? null : poi.poiId);
+  }
+
   return (
-    <section className="behavior-summary" aria-label="行为摘要">
+    <section
+      className={`behavior-summary${variant === 'overlay' ? ' behavior-summary--overlay' : ''}`}
+      aria-label="行为摘要"
+    >
       <header className="behavior-summary-header">
         <div>
           <p className="eyebrow">轨迹分析</p>
@@ -104,33 +124,76 @@ export function BehaviorSummaryPanel({
           {summary.activityAnchor ? (
             <div className="behavior-poi-block">
               <h4 className="behavior-poi-heading">活动锚点</h4>
-              <div className="behavior-poi-anchor">
-                <span className="behavior-poi-name">{summary.activityAnchor.nameZh}</span>
-                <span
-                  className={`behavior-poi-kind behavior-poi-kind--${summary.activityAnchor.kind}`}
+              <p className="behavior-poi-hint">点击可在地图上定位</p>
+              {hasCoords(summary.activityAnchor) ? (
+                <button
+                  type="button"
+                  className={`behavior-poi-item${highlightedPOIId === summary.activityAnchor.poiId ? ' is-active' : ''}`}
+                  aria-pressed={highlightedPOIId === summary.activityAnchor.poiId}
+                  onClick={() => togglePOI(summary.activityAnchor!)}
                 >
-                  {formatPOIKind(summary.activityAnchor.kind)}
-                </span>
-                <span className="behavior-poi-duration">
-                  {formatDuration(summary.activityAnchor.dwellMs)}
-                </span>
-              </div>
+                  <span className="behavior-poi-name">{summary.activityAnchor.nameZh}</span>
+                  <span
+                    className={`behavior-poi-kind behavior-poi-kind--${summary.activityAnchor.kind}`}
+                  >
+                    {formatPOIKind(summary.activityAnchor.kind)}
+                  </span>
+                  <span className="behavior-poi-duration">
+                    {formatDuration(summary.activityAnchor.dwellMs)}
+                  </span>
+                </button>
+              ) : (
+                <div className="behavior-poi-anchor">
+                  <span className="behavior-poi-name">{summary.activityAnchor.nameZh}</span>
+                  <span
+                    className={`behavior-poi-kind behavior-poi-kind--${summary.activityAnchor.kind}`}
+                  >
+                    {formatPOIKind(summary.activityAnchor.kind)}
+                  </span>
+                  <span className="behavior-poi-duration">
+                    {formatDuration(summary.activityAnchor.dwellMs)}
+                  </span>
+                </div>
+              )}
             </div>
           ) : null}
 
           {summary.poiDwells.length > 0 ? (
             <div className="behavior-poi-block">
               <h4 className="behavior-poi-heading">驻留</h4>
-              <ol className="behavior-poi-list">
-                {summary.poiDwells.map((dwell) => (
-                  <li key={dwell.poiId}>
-                    <span className="behavior-poi-name">{dwell.nameZh}</span>
-                    <span className={`behavior-poi-kind behavior-poi-kind--${dwell.kind}`}>
-                      {formatPOIKind(dwell.kind)}
-                    </span>
-                    <span className="behavior-poi-duration">{formatDuration(dwell.dwellMs)}</span>
-                  </li>
-                ))}
+              <p className="behavior-poi-hint">点击传送点/据点可定位到地图</p>
+              <ol className="behavior-poi-list behavior-poi-list--clickable">
+                {summary.poiDwells.map((dwell) => {
+                  const focusable = hasCoords(dwell);
+                  const active = highlightedPOIId === dwell.poiId;
+                  if (!focusable) {
+                    return (
+                      <li key={dwell.poiId}>
+                        <span className="behavior-poi-name">{dwell.nameZh}</span>
+                        <span className={`behavior-poi-kind behavior-poi-kind--${dwell.kind}`}>
+                          {formatPOIKind(dwell.kind)}
+                        </span>
+                        <span className="behavior-poi-duration">{formatDuration(dwell.dwellMs)}</span>
+                      </li>
+                    );
+                  }
+                  return (
+                    <li key={dwell.poiId}>
+                      <button
+                        type="button"
+                        className={`behavior-poi-item${active ? ' is-active' : ''}`}
+                        aria-pressed={active}
+                        onClick={() => togglePOI(dwell)}
+                      >
+                        <span className="behavior-poi-name">{dwell.nameZh}</span>
+                        <span className={`behavior-poi-kind behavior-poi-kind--${dwell.kind}`}>
+                          {formatPOIKind(dwell.kind)}
+                        </span>
+                        <span className="behavior-poi-duration">{formatDuration(dwell.dwellMs)}</span>
+                      </button>
+                    </li>
+                  );
+                })}
               </ol>
             </div>
           ) : null}
@@ -153,7 +216,7 @@ export function BehaviorSummaryPanel({
           {summary.teleportSuspects.length > 0 ? (
             <div className="behavior-poi-block">
               <h4 className="behavior-poi-heading">疑似传送</h4>
-              <p className="behavior-poi-hint">点击一条可在地图上显示/隐藏连线</p>
+              <p className="behavior-poi-hint">点击一条显示连线并定位到地图</p>
               <ol className="behavior-poi-list behavior-poi-list--clickable">
                 {summary.teleportSuspects.map((t, i) => {
                   const active = highlightedTeleportIndex === i;

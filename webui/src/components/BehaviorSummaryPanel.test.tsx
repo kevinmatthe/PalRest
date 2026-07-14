@@ -184,7 +184,7 @@ describe('BehaviorSummaryPanel', () => {
       />,
     );
 
-    expect(screen.getByText(/点击一条可在地图上显示\/隐藏连线/)).toBeInTheDocument();
+    expect(screen.getByText(/点击一条显示连线并定位到地图/)).toBeInTheDocument();
     const btn = screen.getByRole('button', { name: /中央 · 传送点 1 → 火山 · 传送点 2/ });
     expect(btn).toHaveAttribute('aria-pressed', 'false');
 
@@ -210,5 +210,71 @@ describe('BehaviorSummaryPanel', () => {
 
     await user.click(screen.getByRole('button', { name: /中央 · 传送点 1 → 火山 · 传送点 2/ }));
     expect(onHighlightTeleport).toHaveBeenLastCalledWith(null);
+  });
+
+  it('lets user focus a dwell / fast-travel POI on the map', async () => {
+    const user = userEvent.setup();
+    const onFocusPOI = vi.fn();
+    const data = summary({
+      activityAnchor: {
+        poiId: 'ft-a',
+        nameZh: '中央 · 传送点 1',
+        kind: 'fast_travel',
+        dwellMs: 600_000,
+        sampleHits: 5,
+        x: 1000,
+        y: 2000,
+      },
+      poiDwells: [
+        {
+          poiId: 'ft-a',
+          nameZh: '中央 · 传送点 1',
+          kind: 'fast_travel',
+          dwellMs: 600_000,
+          sampleHits: 5,
+          x: 1000,
+          y: 2000,
+        },
+        {
+          poiId: 'tw-1',
+          nameZh: '初始之塔',
+          kind: 'boss_tower',
+          dwellMs: 300_000,
+          sampleHits: 3,
+          x: 5000,
+          y: 6000,
+        },
+      ],
+    });
+
+    const { rerender } = render(
+      <BehaviorSummaryPanel
+        loading={false}
+        selected
+        variant="overlay"
+        summary={data}
+        highlightedPOIId={null}
+        onFocusPOI={onFocusPOI}
+      />,
+    );
+
+    expect(document.querySelector('.behavior-summary--overlay')).toBeTruthy();
+    const dwellBtn = screen.getByRole('button', { name: /初始之塔/ });
+    await user.click(dwellBtn);
+    expect(onFocusPOI).toHaveBeenCalledWith('tw-1');
+
+    rerender(
+      <BehaviorSummaryPanel
+        loading={false}
+        selected
+        variant="overlay"
+        summary={data}
+        highlightedPOIId="tw-1"
+        onFocusPOI={onFocusPOI}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /初始之塔/ })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByRole('button', { name: /初始之塔/ }));
+    expect(onFocusPOI).toHaveBeenLastCalledWith(null);
   });
 });
