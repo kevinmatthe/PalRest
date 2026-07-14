@@ -4,6 +4,7 @@ import {
   PLAY_SPEEDS,
   nextCursorIndex,
   playIntervalMs,
+  prevCursorIndex,
   type PlaySpeed,
 } from './mapPlayback';
 
@@ -41,5 +42,18 @@ describe('nextCursorIndex', () => {
 
   it('length 1 stays at 0 and is done', () => {
     expect(nextCursorIndex(0, 1)).toEqual({ index: 0, done: true });
+  });
+});
+
+describe('prevCursorIndex', () => {
+  it('steps backward until the first index', () => {
+    expect(prevCursorIndex(3, 4)).toEqual({ index: 2, done: false });
+    expect(prevCursorIndex(1, 4)).toEqual({ index: 0, done: false });
+    expect(prevCursorIndex(0, 4)).toEqual({ index: 0, done: true });
+  });
+
+  it('length 0/1 stay done at 0', () => {
+    expect(prevCursorIndex(0, 0)).toEqual({ index: 0, done: true });
+    expect(prevCursorIndex(0, 1)).toEqual({ index: 0, done: true });
   });
 });

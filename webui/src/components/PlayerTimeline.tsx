@@ -3,11 +3,10 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
-import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import { AlertTriangle, Compass, Crosshair, Map as MapIcon, Radio, Route, Search, ShieldAlert } from 'lucide-react';
 import { ApiError, getPlayerTimeline, type Player, type PlayerTimelineResponse, type TimelineEvent } from '../api';
 import { knownMapLocation as resolveLandmark } from '../map/mapLandmarks';
-import { nextCursorIndex, playIntervalMs, PLAY_SPEEDS, type PlaySpeed } from '../map/mapPlayback';
+import { nextCursorIndex, playIntervalMs, PLAY_SPEEDS, prevCursorIndex, type PlaySpeed } from '../map/mapPlayback';
 import { hybridTrajectoryWindow, pingColor } from '../map/mapTrajectory';
 
 type Props = { includePrivate?: boolean; players: Player[]; refreshKey: number };
@@ -332,8 +331,39 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
     return () => window.clearInterval(id);
   }, [playing, speed, items.length]);
 
+  function stepCursor(direction: -1 | 1) {
+    if (items.length < 2) return;
+    setPlaying(false);
+    setCursorIndex((current) => {
+      const result = direction === 1
+        ? nextCursorIndex(current, items.length)
+        : prevCursorIndex(current, items.length);
+      return result.index;
+    });
+  }
+
+  function onTimelineKeyDown(event: React.KeyboardEvent<HTMLElement>) {
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+    if (event.key === ' ' || event.code === 'Space') {
+      event.preventDefault();
+      if (items.length >= 2) setPlaying((value) => !value);
+      return;
+    }
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      stepCursor(1);
+      return;
+    }
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      stepCursor(-1);
+    }
+  }
+
   return (
-    <section className="timeline-recorder" aria-labelledby="timeline-heading">
+    <section className="timeline-recorder" aria-labelledby="timeline-heading" onKeyDown={onTimelineKeyDown}>
       <header className="timeline-heading">
         <div>
           <p className="eyebrow">{includePrivate ? '管理员观察记录' : '公开观察记录'}</p>
@@ -370,6 +400,7 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             items={items}
             loading={state.kind === 'loading'}
             onCursorChange={seekCursor}
+            onStep={stepCursor}
             playing={playing}
             speed={speed}
             onPlayingChange={setPlaying}
@@ -383,7 +414,18 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
           {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="当前时间范围没有观察记录。" /> : null}
           {mayBeTruncated ? <div className="timeline-alert timeline-alert--info" role="status"><AlertTriangle size={18} /> 某类数据达到 500 条响应上限，结果可能已截断。</div> : null}
           {state.kind === 'ready' && items.length > 0 ? <ol className="timeline-spine" aria-label="按时间排序的观察记录">
-            {rows.map(({ item, separator }, index) => <TimelineEntry active={index === activeIndex} index={index} key={item.key} item={item} locationLabel={item.kind === 'trajectory' ? locationNames.get(trajectoryKey(item.item)) : undefined} onSelect={seekCursor} segmentLabel={item.kind === 'trajectory' ? segmentNames.get(item.item.segment_id) : undefined} separator={separator} />)}
+            {rows.map(({ item, separator }, index) => (
+              <TimelineEntry
+                active={index === activeIndex}
+                index={index}
+                key={item.key}
+                item={item}
+                locationLabel={item.kind === 'trajectory' ? locationNames.get(trajectoryKey(item.item)) : undefined}
+                onSelect={seekCursor}
+                segmentLabel={item.kind === 'trajectory' ? segmentNames.get(item.item.segment_id) : undefined}
+                separator={separator}
+              />
+            ))}
           </ol> : null}
         </div>
       </div>
@@ -396,6 +438,7 @@ function TimelineMap({
   items,
   loading,
   onCursorChange,
+  onStep,
   playing,
   speed,
   onPlayingChange,
@@ -406,6 +449,7 @@ function TimelineMap({
   items: LogItem[];
   loading: boolean;
   onCursorChange: (index: number) => void;
+  onStep: (direction: -1 | 1) => void;
   playing: boolean;
   speed: PlaySpeed;
   onPlayingChange: (playing: boolean) => void;
@@ -418,12 +462,14 @@ function TimelineMap({
   const lineLayerRef = useRef<L.LayerGroup | null>(null);
   const focusLayerRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const markersByKeyRef = useRef(new Map<string, L.CircleMarker>());
+  const excludedClusterKeyRef = useRef('');
   const samples = useMemo(() => trajectorySamples(items), [items]);
   const [mapAvailable, setMapAvailable] = useState(true);
   const [colorMode, setColorMode] = useState<'position' | 'ping'>('position');
   const points = useMemo<MapPoint[]>(() => {
     return samples.map((sample) => {
-      return { key: `${sample.segment_id}:${sample.observed_at}:${sample.source_ref}`, latLng: projectWorldSample(sample), sample };
+      return { key: trajectoryKey(sample), latLng: projectWorldSample(sample), sample };
     });
   }, [samples]);
   const activeItem = items[activeIndex];
@@ -457,7 +503,18 @@ function TimelineMap({
     tileLayer.on('tileerror', () => setMapAvailable(false));
     tileLayer.addTo(map);
     map.fitBounds(PALWORLD_TILE_BOUNDS);
-    const clusterGroup = L.markerClusterGroup({ showCoverageOnHover: false });
+    const clusterGroup = L.markerClusterGroup({
+      showCoverageOnHover: false,
+      iconCreateFunction(cluster) {
+        const count = cluster.getChildCount();
+        const size = count < 10 ? 'sm' : count < 50 ? 'md' : 'lg';
+        return L.divIcon({
+          html: `<div><span>${count}</span></div>`,
+          className: `timeline-marker-cluster timeline-marker-cluster--${size}`,
+          iconSize: L.point(size === 'sm' ? 36 : size === 'md' ? 44 : 52, size === 'sm' ? 36 : size === 'md' ? 44 : 52),
+        });
+      },
+    });
     const lineLayer = L.layerGroup();
     const focusLayer = L.layerGroup();
     clusterGroup.addTo(map);
@@ -475,9 +532,35 @@ function TimelineMap({
       clusterGroupRef.current = null;
       lineLayerRef.current = null;
       focusLayerRef.current = null;
+      markersByKeyRef.current.clear();
+      excludedClusterKeyRef.current = '';
     };
   }, []);
 
+  // O1: rebuild cluster markers only when the sample set or color mode changes.
+  useEffect(() => {
+    const clusterGroup = clusterGroupRef.current;
+    if (!clusterGroup) return;
+    clusterGroup.clearLayers();
+    markersByKeyRef.current.clear();
+    excludedClusterKeyRef.current = '';
+    points.forEach((point) => {
+      const colors = colorMode === 'ping'
+        ? pingColor(point.sample.ping)
+        : { fill: '#fffdf7', stroke: '#0f7285' };
+      const marker = L.circleMarker(point.latLng, {
+        radius: 4,
+        color: colors.stroke,
+        fillColor: colors.fill,
+        fillOpacity: 1,
+        weight: 2,
+      });
+      markersByKeyRef.current.set(point.key, marker);
+      clusterGroup.addLayer(marker);
+    });
+  }, [colorMode, points]);
+
+  // O1: cursor changes only update polyline, focus marker, and which sample is excluded from the cluster.
   useEffect(() => {
     const map = leafletRef.current;
     const clusterGroup = clusterGroupRef.current;
@@ -485,12 +568,19 @@ function TimelineMap({
     const focusLayer = focusLayerRef.current;
     if (!map || !clusterGroup || !lineLayer || !focusLayer) return;
 
-    clusterGroup.clearLayers();
-    lineLayer.clearLayers();
-    focusLayer.clearLayers();
+    const previousKey = excludedClusterKeyRef.current;
+    if (previousKey && previousKey !== activeSampleKey) {
+      const previous = markersByKeyRef.current.get(previousKey);
+      if (previous && !clusterGroup.hasLayer(previous)) clusterGroup.addLayer(previous);
+    }
+    if (activeSampleKey) {
+      const active = markersByKeyRef.current.get(activeSampleKey);
+      if (active && clusterGroup.hasLayer(active)) clusterGroup.removeLayer(active);
+    }
+    excludedClusterKeyRef.current = activeSampleKey;
 
+    lineLayer.clearLayers();
     const activeAt = activeItem?.at;
-    const activeSample = latestPointAt(samples, activeAt);
     const lineSamples = hybridTrajectoryWindow(samples, activeAt);
     if (lineSamples.length > 1) {
       L.polyline(lineSamples.map((sample) => projectWorldSample(sample)), {
@@ -502,23 +592,11 @@ function TimelineMap({
       }).addTo(lineLayer);
     }
 
-    points.forEach((point) => {
-      if (trajectoryKey(point.sample) === activeSampleKey) return;
-      const colors = colorMode === 'ping'
-        ? pingColor(point.sample.ping)
-        : { fill: '#fffdf7', stroke: '#0f7285' };
-      L.circleMarker(point.latLng, {
-        radius: 4,
-        color: colors.stroke,
-        fillColor: colors.fill,
-        fillOpacity: 1,
-        weight: 2,
-      }).addTo(clusterGroup);
-    });
-
-    if (activeSample) {
-      const activePoint = projectWorldSample(activeSample);
-      const ping = colorMode === 'ping' ? pingColor(activeSample.ping) : null;
+    focusLayer.clearLayers();
+    const focusSample = latestPointAt(samples, activeAt);
+    if (focusSample) {
+      const activePoint = projectWorldSample(focusSample);
+      const ping = colorMode === 'ping' ? pingColor(focusSample.ping) : null;
       L.circleMarker(activePoint, {
         radius: 8,
         color: '#8d5a0f',
@@ -528,7 +606,7 @@ function TimelineMap({
       }).addTo(focusLayer);
       map.panTo(activePoint, { animate: false });
     }
-  }, [activeItem?.at, activeSampleKey, colorMode, points, samples]);
+  }, [activeItem?.at, activeSampleKey, colorMode, samples]);
 
   return <section className="timeline-map-panel" aria-label="地图回放">
     <div className="timeline-map-header">
@@ -566,6 +644,7 @@ function TimelineMap({
         <span className="timeline-cursor-now" style={{ left: `${cursorLeft}%` }} />
       </div>
       <div className="timeline-transport">
+        <button type="button" aria-label="上一步" disabled={items.length < 2 || activeIndex <= 0} onClick={() => onStep(-1)}>上一步</button>
         <button
           type="button"
           aria-label={playing ? '暂停' : '播放'}
@@ -574,6 +653,7 @@ function TimelineMap({
         >
           {playing ? '暂停' : '播放'}
         </button>
+        <button type="button" aria-label="下一步" disabled={items.length < 2 || activeIndex >= items.length - 1} onClick={() => onStep(1)}>下一步</button>
         <label>
           <span className="sr-only">倍速</span>
           <select
@@ -596,12 +676,20 @@ function TimelineMap({
 }
 
 function TimelineEntry({ active, index, item, locationLabel, onSelect, segmentLabel, separator }: { active: boolean; index: number; item: LogItem; locationLabel?: string; onSelect: (index: number) => void; segmentLabel?: string; separator: string }) {
+  const rowRef = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    if (!active) return;
+    const node = rowRef.current;
+    if (node && typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }, [active]);
   return <>
     {separator ? <li className="timeline-separator" role="separator"><span>{separator}</span></li> : null}
-    <li className={`timeline-entry timeline-entry--${item.kind} ${active ? 'is-active' : ''}`}>
+    <li ref={rowRef} className={`timeline-entry timeline-entry--${item.kind} ${active ? 'is-active' : ''}`}>
       <time dateTime={item.at}>{formatTimelineDateTime(item.at)}</time>
       {item.kind === 'event' ? <EventDetail event={item.item} /> : null}
-      {item.kind === 'trajectory' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>位置采样</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>地图位置</dt><dd>{locationLabel ?? '未匹配地名 · 坐标位置'}</dd></div><div><dt>坐标</dt><dd>{item.item.x}, {item.item.y}</dd></div><div><dt>轨迹段</dt><dd>{segmentLabel ?? '未分段'}</dd></div><div><dt>延迟</dt><dd>{item.item.ping} ms</dd></div><div><dt>等级</dt><dd>{item.item.level}</dd></div></dl></div> : null}
+      {item.kind === 'trajectory' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>位置采样</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>地图位置</dt><dd>{locationLabel ?? '地图坐标位置'}</dd></div><div><dt>坐标</dt><dd>{item.item.x}, {item.item.y}</dd></div><div><dt>轨迹段</dt><dd>{segmentLabel ?? '未分段'}</dd></div><div><dt>延迟</dt><dd>{item.item.ping} ms</dd></div><div><dt>等级</dt><dd>{item.item.level}</dd></div></dl></div> : null}
       {item.kind === 'private' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>私有玩家采样</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>IP · 管理员私有</dt><dd>{item.item.ip || '不可用'}</dd></div><div><dt>延迟</dt><dd>{item.item.ping} ms</dd></div><div><dt>等级</dt><dd>{item.item.level}</dd></div></dl></div> : null}
       <button aria-label={`将回放光标移动到第 ${index + 1} 条记录`} className="timeline-focus" title="将回放光标移动到这里" type="button" onClick={() => onSelect(index)}><Crosshair size={16} /></button>
     </li>

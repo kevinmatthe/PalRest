@@ -13,3 +13,10 @@ export function nextCursorIndex(current: number, length: number): { index: numbe
   const index = current + 1;
   return { index, done: index >= length - 1 };
 }
+
+/** Step backward; done=true when already at the first index. */
+export function prevCursorIndex(current: number, length: number): { index: number; done: boolean } {
+  if (length <= 1) return { index: 0, done: true };
+  if (current <= 0) return { index: 0, done: true };
+  return { index: current - 1, done: false };
+}

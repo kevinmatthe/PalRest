@@ -351,4 +351,26 @@ describe('PlayerTimeline', () => {
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
     await waitFor(() => expect(screen.getAllByText(/靠近/).length).toBeGreaterThan(0));
   });
+
+  it('steps the cursor with 下一步 and 上一步', async () => {
+    const payload: PlayerTimelineResponse = {
+      user_id: 'u/1',
+      events: [
+        { id: 'e1', event_type: 'player_joined', occurred_at: '2026-07-13T08:00:00Z', observed_at: '2026-07-13T08:00:00Z', source: 'guard', confidence: 'observed', summary: 'a' },
+        { id: 'e2', event_type: 'player_left', occurred_at: '2026-07-13T09:00:00Z', observed_at: '2026-07-13T09:00:00Z', source: 'guard', confidence: 'observed', summary: 'b' },
+        { id: 'e3', event_type: 'player_joined', occurred_at: '2026-07-13T10:00:00Z', observed_at: '2026-07-13T10:00:00Z', source: 'guard', confidence: 'observed', summary: 'c' },
+      ],
+      trajectories: [],
+      private_samples: [],
+    };
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue(payload);
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await waitFor(() => expect(screen.getByLabelText(/时间轴光标/)).not.toBeDisabled());
+    expect(screen.getByLabelText(/时间轴光标/)).toHaveValue('0');
+    fireEvent.click(screen.getByRole('button', { name: /下一步/i }));
+    expect(screen.getByLabelText(/时间轴光标/)).toHaveValue('1');
+    fireEvent.click(screen.getByRole('button', { name: /上一步/i }));
+    expect(screen.getByLabelText(/时间轴光标/)).toHaveValue('0');
+  });
 });
