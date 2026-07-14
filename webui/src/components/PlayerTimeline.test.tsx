@@ -352,6 +352,28 @@ describe('PlayerTimeline', () => {
     await waitFor(() => expect(screen.getAllByText(/靠近/).length).toBeGreaterThan(0));
   });
 
+  it('seeks the cursor when a trajectory sample is focused via seek path', async () => {
+    // Map marker clicks are Leaflet-internal; cover the same seek mapping used by O10.
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue({
+      ...empty,
+      events: [
+        { id: 'e1', event_type: 'player_joined', occurred_at: '2026-07-13T07:00:00Z', observed_at: '2026-07-13T07:00:00Z', source: 'guard', confidence: 'observed', summary: 'join' },
+      ],
+      trajectories: [
+        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T08:00:00Z', x: 10, y: 20, ping: 20, level: 1, source_ref: 'a', runtime_epoch: 0 },
+        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T09:00:00Z', x: 30, y: 40, ping: 40, level: 2, source_ref: 'b', runtime_epoch: 0 },
+      ],
+    });
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await waitFor(() => expect(screen.getByLabelText(/时间轴光标/)).not.toBeDisabled());
+    expect(screen.getByLabelText(/时间轴光标/)).toHaveValue('0');
+    // Jump to second trajectory row via list crosshair (same index resolution as map seek)
+    const focusButtons = screen.getAllByRole('button', { name: /将回放光标移动到第/i });
+    fireEvent.click(focusButtons[2]!); // event + traj0 + traj1 → index 2
+    expect(screen.getByLabelText(/时间轴光标/)).toHaveValue('2');
+  });
+
   it('steps the cursor with 下一步 and 上一步', async () => {
     const payload: PlayerTimelineResponse = {
       user_id: 'u/1',

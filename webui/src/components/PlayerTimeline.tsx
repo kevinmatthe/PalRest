@@ -8,6 +8,7 @@ import { ApiError, getPlayerTimeline, type Player, type PlayerTimelineResponse, 
 import { knownMapLocation as resolveLandmark } from '../map/mapLandmarks';
 import { nextCursorIndex, playIntervalMs, PLAY_SPEEDS, prevCursorIndex, type PlaySpeed } from '../map/mapPlayback';
 import { hybridTrajectoryWindow, pingColor } from '../map/mapTrajectory';
+import { shouldPanToFocus } from '../map/mapView';
 
 type Props = { includePrivate?: boolean; players: Player[]; refreshKey: number };
 type TimelineState =
@@ -311,6 +312,12 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   const activeIndex = items.length ? Math.min(cursorIndex, items.length - 1) : 0;
   const mayBeTruncated = state.kind === 'ready' && [state.data.events, state.data.trajectories, includePrivate ? state.data.private_samples : []].some((source) => source.length >= 500);
 
+  function seekTrajectorySample(sample: TrajectorySample) {
+    const key = trajectoryKey(sample);
+    const index = items.findIndex((item) => item.kind === 'trajectory' && trajectoryKey(item.item) === key);
+    if (index >= 0) seekCursor(index);
+  }
+
   useEffect(() => {
     setCursorIndex(0);
     setPlaying(false);
@@ -400,6 +407,7 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             items={items}
             loading={state.kind === 'loading'}
             onCursorChange={seekCursor}
+            onSeekTrajectory={seekTrajectorySample}
             onStep={stepCursor}
             playing={playing}
             speed={speed}
@@ -438,6 +446,7 @@ function TimelineMap({
   items,
   loading,
   onCursorChange,
+  onSeekTrajectory,
   onStep,
   playing,
   speed,
@@ -449,6 +458,7 @@ function TimelineMap({
   items: LogItem[];
   loading: boolean;
   onCursorChange: (index: number) => void;
+  onSeekTrajectory: (sample: TrajectorySample) => void;
   onStep: (direction: -1 | 1) => void;
   playing: boolean;
   speed: PlaySpeed;
@@ -464,6 +474,8 @@ function TimelineMap({
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const markersByKeyRef = useRef(new Map<string, L.CircleMarker>());
   const excludedClusterKeyRef = useRef('');
+  const onSeekTrajectoryRef = useRef(onSeekTrajectory);
+  onSeekTrajectoryRef.current = onSeekTrajectory;
   const samples = useMemo(() => trajectorySamples(items), [items]);
   const [mapAvailable, setMapAvailable] = useState(true);
   const [colorMode, setColorMode] = useState<'position' | 'ping'>('position');
@@ -555,12 +567,14 @@ function TimelineMap({
         fillOpacity: 1,
         weight: 2,
       });
+      marker.on('click', () => onSeekTrajectoryRef.current(point.sample));
       markersByKeyRef.current.set(point.key, marker);
       clusterGroup.addLayer(marker);
     });
   }, [colorMode, points]);
 
   // O1: cursor changes only update polyline, focus marker, and which sample is excluded from the cluster.
+  // O7: pan only when the focus leaves a slightly inset viewport.
   useEffect(() => {
     const map = leafletRef.current;
     const clusterGroup = clusterGroupRef.current;
@@ -604,7 +618,9 @@ function TimelineMap({
         fillOpacity: 0.92,
         weight: 3,
       }).addTo(focusLayer);
-      map.panTo(activePoint, { animate: false });
+      if (shouldPanToFocus(map.getBounds(), activePoint)) {
+        map.panTo(activePoint, { animate: false });
+      }
     }
   }, [activeItem?.at, activeSampleKey, colorMode, samples]);
 

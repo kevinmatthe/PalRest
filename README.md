@@ -191,12 +191,20 @@ PALREST_API_TARGET=http://127.0.0.1:8080 npm run dev
 
 容器部署：
 
+构建上下文应为 **playtime-guard 仓库根目录**（不是 `webui/`），以便 Dockerfile 多阶段使用 Git LFS 物化地图瓦片：
+
 ```bash
-docker build -t palrest-webui:test webui
+# 推荐：先在宿主把 LFS 对象拉齐（尤其是 smudge 被跳过的 clone）
+git lfs pull --include="webui/public/map/tiles/**"
+
+# 从仓库根构建（compose/sidecars 同理：context=./playtime-guard, dockerfile=webui/Dockerfile）
+docker build -f webui/Dockerfile -t palrest-webui:test .
 docker run --rm -p 127.0.0.1:18081:8080 \
   -e PALREST_API_UPSTREAM=http://palworld-playtime-guard:8080 \
   palrest-webui:test
 ```
+
+地图瓦片存放在 `webui/public/map/tiles`（Git LFS）。构建阶段会尝试 `git lfs pull`；若工作区已是真实 PNG 则直接使用。若瓦片仍是 LFS pointer 文本，镜像仍可构建，运行时按瓦片回退到 `https://palworld.gg/images/tiles/...`。
 
 `PALREST_API_UPSTREAM` 是 WebUI 容器内 Caddy 访问 Go sidecar 的地址。默认值为 `http://palworld-playtime-guard:8080`，适合与 sidecar 位于同一 Docker 网络的部署。通常不需要设置 `PALREST_API_BASE_URL`；保持为空时浏览器只访问 WebUI 容器，由 Caddy 反代 API 请求。
 
