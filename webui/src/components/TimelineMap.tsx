@@ -157,6 +157,8 @@ export function TimelineMap({
   const samples = useMemo(() => trajectorySamples(items), [items]);
   const [mapAvailable, setMapAvailable] = useState(true);
   const [colorMode, setColorMode] = useState<'position' | 'ping'>('position');
+  const [showPoints, setShowPoints] = useState(true);
+  const [showLines, setShowLines] = useState(true);
   const [showLandmarks, setShowLandmarks] = useState(false);
   const [trackWidthPx, setTrackWidthPx] = useState(320);
   const points = useMemo<MapPoint[]>(() => {
@@ -317,6 +319,10 @@ export function TimelineMap({
     clearExpandState(expandStateRef.current);
     clusterGroup.clearLayers();
     markersByKeyRef.current.clear();
+    if (!showPoints) {
+      clusterGroup.refreshClusters();
+      return;
+    }
     points.forEach((point) => {
       const colors = colorMode === 'ping'
         ? pingColor(point.sample.ping)
@@ -336,7 +342,7 @@ export function TimelineMap({
     clusterGroup.refreshClusters();
     const focusMarker = markersByKeyRef.current.get(activeSampleKeyRef.current);
     expandClusterForExactPoints(clusterGroup, expandedLayer, expandStateRef.current, focusMarker);
-  }, [colorMode, points]);
+  }, [colorMode, points, showPoints]);
 
   useEffect(() => {
     const map = leafletRef.current;
@@ -348,9 +354,14 @@ export function TimelineMap({
     if (!map || !clusterGroup || !expandedLayer || !lineLayer || !behaviorOverlay || !focusLayer) return;
 
     // Expand focus cluster into exact-coordinate points (not spiderfy).
-    const focusMarker = markersByKeyRef.current.get(activeSampleKey);
-    expandClusterForExactPoints(clusterGroup, expandedLayer, expandStateRef.current, focusMarker);
-    clusterGroup.refreshClusters();
+    if (showPoints) {
+      const focusMarker = markersByKeyRef.current.get(activeSampleKey);
+      expandClusterForExactPoints(clusterGroup, expandedLayer, expandStateRef.current, focusMarker);
+      clusterGroup.refreshClusters();
+    } else {
+      expandedLayer.clearLayers();
+      clearExpandState(expandStateRef.current);
+    }
 
     lineLayer.clearLayers();
     behaviorOverlay.clearLayers();
@@ -359,53 +370,55 @@ export function TimelineMap({
     const split = splitTrajectoryPastFuture(lineSamples, activeAt);
     const projectAll = (list: typeof lineSamples) => list.map((s) => projectWorldSample(s));
 
-    if (split.future.length >= 2) {
-      L.polyline(projectAll(split.future), {
-        color: TRAJ_FUTURE_COLOR,
-        opacity: 0.28,
-        weight: TRAJ_FUTURE_WEIGHT + 3,
-        lineCap: 'round',
-        lineJoin: 'round',
-        className: 'timeline-traj-future-glow',
-        interactive: false,
-      }).addTo(lineLayer);
-      L.polyline(projectAll(split.future), {
-        color: TRAJ_FUTURE_COLOR,
-        opacity: TRAJ_FUTURE_OPACITY,
-        weight: TRAJ_FUTURE_WEIGHT,
-        lineCap: 'round',
-        lineJoin: 'round',
-        dashArray: TRAJ_FUTURE_DASH_ARRAY,
-        className: 'timeline-traj-future',
-      }).addTo(lineLayer);
-    }
-    // Past path: per-edge behavior class colors (跑图/局部/挂机).
-    if (split.past.length >= 2) {
-      for (let i = 0; i < split.past.length - 1; i += 1) {
-        const a = split.past[i]!;
-        const b = split.past[i + 1]!;
-        const edgeClass = edgeClassBetween(a, b);
-        if (edgeClass === 'gap') continue;
-        const color = BEHAVIOR_EDGE_COLORS[edgeClass];
-        const weight = edgeClass === 'traveling' ? 5.5 : edgeClass === 'local' ? 4.5 : 3.5;
-        L.polyline([projectWorldSample(a), projectWorldSample(b)], {
-          color,
-          opacity: edgeClass === 'stationary' ? 0.75 : 0.95,
-          weight,
+    if (showLines) {
+      if (split.future.length >= 2) {
+        L.polyline(projectAll(split.future), {
+          color: TRAJ_FUTURE_COLOR,
+          opacity: 0.28,
+          weight: TRAJ_FUTURE_WEIGHT + 3,
           lineCap: 'round',
           lineJoin: 'round',
-          className: `timeline-traj-edge timeline-traj-edge--${edgeClass}`,
+          className: 'timeline-traj-future-glow',
+          interactive: false,
+        }).addTo(lineLayer);
+        L.polyline(projectAll(split.future), {
+          color: TRAJ_FUTURE_COLOR,
+          opacity: TRAJ_FUTURE_OPACITY,
+          weight: TRAJ_FUTURE_WEIGHT,
+          lineCap: 'round',
+          lineJoin: 'round',
+          dashArray: TRAJ_FUTURE_DASH_ARRAY,
+          className: 'timeline-traj-future',
         }).addTo(lineLayer);
       }
-      const tip = split.past.slice(-2);
-      L.polyline(projectAll(tip), {
-        color: TRAJ_TIP_COLOR,
-        opacity: 1,
-        weight: TRAJ_TIP_WEIGHT,
-        lineCap: 'round',
-        lineJoin: 'round',
-        className: 'timeline-traj-tip',
-      }).addTo(lineLayer);
+      // Past path: per-edge behavior class colors (跑图/局部/挂机).
+      if (split.past.length >= 2) {
+        for (let i = 0; i < split.past.length - 1; i += 1) {
+          const a = split.past[i]!;
+          const b = split.past[i + 1]!;
+          const edgeClass = edgeClassBetween(a, b);
+          if (edgeClass === 'gap') continue;
+          const color = BEHAVIOR_EDGE_COLORS[edgeClass];
+          const weight = edgeClass === 'traveling' ? 5.5 : edgeClass === 'local' ? 4.5 : 3.5;
+          L.polyline([projectWorldSample(a), projectWorldSample(b)], {
+            color,
+            opacity: edgeClass === 'stationary' ? 0.75 : 0.95,
+            weight,
+            lineCap: 'round',
+            lineJoin: 'round',
+            className: `timeline-traj-edge timeline-traj-edge--${edgeClass}`,
+          }).addTo(lineLayer);
+        }
+        const tip = split.past.slice(-2);
+        L.polyline(projectAll(tip), {
+          color: TRAJ_TIP_COLOR,
+          opacity: 1,
+          weight: TRAJ_TIP_WEIGHT,
+          lineCap: 'round',
+          lineJoin: 'round',
+          className: 'timeline-traj-tip',
+        }).addTo(lineLayer);
+      }
     }
 
     // POI dwell pins + teleport arcs from behavior analysis.
@@ -579,7 +592,7 @@ export function TimelineMap({
         map.panTo(activePoint, { animate: false });
       }
     }
-  }, [activeItem?.at, activeSampleKey, behaviorSummary, colorMode, highlightedTeleport, samples]);
+  }, [activeItem?.at, activeSampleKey, behaviorSummary, colorMode, highlightedTeleport, samples, showLines, showPoints]);
 
   return <section className="timeline-map-panel" aria-label="地图回放">
     <div className="timeline-map-header">
@@ -592,14 +605,32 @@ export function TimelineMap({
           <button type="button" aria-pressed={colorMode === 'position'} onClick={() => setColorMode('position')}>位置</button>
           <button type="button" aria-pressed={colorMode === 'ping'} onClick={() => setColorMode('ping')}>延迟</button>
         </div>
-        <button
-          type="button"
-          className="timeline-landmark-toggle"
-          aria-pressed={showLandmarks}
-          onClick={() => setShowLandmarks((value) => !value)}
-        >
-          地标
-        </button>
+        <div className="timeline-layer-toggles" role="group" aria-label="轨迹图层">
+          <button
+            type="button"
+            className="timeline-layer-toggle"
+            aria-pressed={showPoints}
+            onClick={() => setShowPoints((value) => !value)}
+          >
+            点
+          </button>
+          <button
+            type="button"
+            className="timeline-layer-toggle"
+            aria-pressed={showLines}
+            onClick={() => setShowLines((value) => !value)}
+          >
+            线
+          </button>
+          <button
+            type="button"
+            className="timeline-layer-toggle"
+            aria-pressed={showLandmarks}
+            onClick={() => setShowLandmarks((value) => !value)}
+          >
+            地标
+          </button>
+        </div>
         <span className="timeline-map-count"><Route size={15} /> {samples.length} 个坐标</span>
       </div>
     </div>

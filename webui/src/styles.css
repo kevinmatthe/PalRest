@@ -368,6 +368,13 @@ select:focus-visible {
   gap: 0.5rem;
   min-width: 0;
 }
+.timeline-layer-toggles {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+}
+.timeline-layer-toggle,
 .timeline-landmark-toggle {
   min-height: 2rem;
   padding: 0 0.7rem;
@@ -379,10 +386,14 @@ select:focus-visible {
   font-weight: 800;
   cursor: pointer;
 }
+.timeline-layer-toggle[aria-pressed="true"],
 .timeline-landmark-toggle[aria-pressed="true"] {
   border-color: #8d5a0f;
   color: #6a4210;
   background: #fff2d5;
+}
+.timeline-layer-toggle[aria-pressed="false"] {
+  opacity: 0.72;
 }
 /* Compact cluster chips: no count text (tooltip on hover). */
 .timeline-marker-cluster {

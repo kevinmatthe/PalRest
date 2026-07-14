@@ -323,7 +323,7 @@ describe('PlayerTimeline', () => {
     expect(screen.getByRole('button', { name: /播放/i })).toBeInTheDocument();
   });
 
-  it('exposes play mode and landmark toggles', async () => {
+  it('exposes play mode and map layer toggles', async () => {
     vi.mocked(api.getPlayerTimeline).mockResolvedValue({
       ...empty,
       events: [
@@ -336,8 +336,18 @@ describe('PlayerTimeline', () => {
     await waitFor(() => expect(screen.getByLabelText(/播放模式/i)).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText(/播放模式/i), { target: { value: 'time' } });
     expect(screen.getByLabelText(/播放模式/i)).toHaveValue('time');
+
+    const points = screen.getByRole('button', { name: /^点$/i });
+    const lines = screen.getByRole('button', { name: /^线$/i });
     const landmark = screen.getByRole('button', { name: /^地标$/i });
+    expect(points).toHaveAttribute('aria-pressed', 'true');
+    expect(lines).toHaveAttribute('aria-pressed', 'true');
     expect(landmark).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(points);
+    expect(points).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(lines);
+    expect(lines).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(landmark);
     expect(landmark).toHaveAttribute('aria-pressed', 'true');
   });
