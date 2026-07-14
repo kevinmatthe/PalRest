@@ -127,6 +127,8 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   const [guildPOIs, setGuildPOIs] = useState<BehaviorPOI[]>([]);
   const [highlightedTeleportIndex, setHighlightedTeleportIndex] = useState<number | null>(null);
   const [highlightedPOIId, setHighlightedPOIId] = useState<string | null>(null);
+  /** Evidence detail list is secondary to the map — collapsed and not mounted by default. */
+  const [detailExpanded, setDetailExpanded] = useState(false);
   const requestID = useRef(0);
   const lastRefreshKey = useRef(refreshKey);
   const cursorIndexRef = useRef(cursorIndex);
@@ -228,6 +230,10 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
       pois,
     });
   }, [selectedID, rangeError, start, end, items, pois]);
+
+  useEffect(() => {
+    setDetailExpanded(false);
+  }, [selectedID, start, end]);
 
   useEffect(() => {
     setHighlightedTeleportIndex(null);
@@ -500,32 +506,64 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             }
           />
           {!selectedID ? <EmptyState icon={<Compass size={28} />} text="选择玩家后查看轨迹和事件。" /> : null}
-          {state.kind === 'loading' ? <div className="timeline-skeleton" role="status" aria-label="正在加载时间轴"><span /><span /><span /></div> : null}
           {state.kind === 'not-found' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> 该玩家已不在观察记录中。</div> : null}
           {state.kind === 'error' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> {state.message}</div> : null}
           {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="当前时间范围没有观察记录。" /> : null}
-          {mayBeTruncated ? (
-            <div className="timeline-alert timeline-alert--info" role="status">
-              <AlertTriangle size={18} />
-              <span>
-                默认加载时间范围内<strong>最近</strong>最多 500 条/类{truncationDetail ? `（${truncationDetail}）` : ''}。
-                {canLoadOlder ? ' 可继续加载更早证据。' : ' 可缩小时间范围查看完整证据。'}
-              </span>
-              {canLoadOlder ? (
-                <button type="button" className="timeline-load-older" disabled={loadingOlder} onClick={() => void loadOlder()}>
-                  {loadingOlder ? '加载中…' : '加载更早'}
-                </button>
+          {selectedID && state.kind !== 'idle' && state.kind !== 'not-found' ? (
+            <div className="timeline-detail-section">
+              <button
+                type="button"
+                className="timeline-detail-toggle"
+                aria-expanded={detailExpanded}
+                aria-controls="timeline-detail-body"
+                disabled={state.kind === 'loading'}
+                onClick={() => setDetailExpanded((open) => !open)}
+              >
+                <span>证据明细</span>
+                <span className="timeline-detail-toggle-meta">
+                  {state.kind === 'loading'
+                    ? '加载中…'
+                    : state.kind === 'ready'
+                      ? `${items.length} 条 · 默认折叠`
+                      : '—'}
+                </span>
+              </button>
+              {detailExpanded ? (
+                <div className="timeline-detail-body" id="timeline-detail-body">
+                  {state.kind === 'loading' ? (
+                    <div className="timeline-skeleton" role="status" aria-label="正在加载时间轴">
+                      <span /><span /><span />
+                    </div>
+                  ) : null}
+                  {mayBeTruncated ? (
+                    <div className="timeline-alert timeline-alert--info" role="status">
+                      <AlertTriangle size={18} />
+                      <span>
+                        默认加载时间范围内<strong>最近</strong>最多 500 条/类{truncationDetail ? `（${truncationDetail}）` : ''}。
+                        {canLoadOlder ? ' 可继续加载更早证据。' : ' 可缩小时间范围查看完整证据。'}
+                      </span>
+                      {canLoadOlder ? (
+                        <button type="button" className="timeline-load-older" disabled={loadingOlder} onClick={() => void loadOlder()}>
+                          {loadingOlder ? '加载中…' : '加载更早'}
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {state.kind === 'ready' && items.length > 0 ? (
+                    <TimelineSpineList
+                      activeIndex={activeIndex}
+                      locationNames={locationNames}
+                      onSelect={seekCursor}
+                      rows={rows}
+                      segmentNames={segmentNames}
+                    />
+                  ) : null}
+                  {state.kind === 'ready' && items.length === 0 ? (
+                    <p className="timeline-detail-empty">当前范围无证据条目可展示。</p>
+                  ) : null}
+                </div>
               ) : null}
             </div>
-          ) : null}
-          {state.kind === 'ready' && items.length > 0 ? (
-            <TimelineSpineList
-              activeIndex={activeIndex}
-              locationNames={locationNames}
-              onSelect={seekCursor}
-              rows={rows}
-              segmentNames={segmentNames}
-            />
           ) : null}
         </div>
       </div>

@@ -29,6 +29,15 @@ function localInputValueForTest(date: Date) {
   return local.toISOString().slice(0, 16);
 }
 
+/** Detail list is collapsed by default — expand when a test needs spine rows. */
+async function expandEvidenceDetail() {
+  const toggle = await screen.findByRole('button', { name: /证据明细/i });
+  if (toggle.getAttribute('aria-expanded') !== 'true') {
+    fireEvent.click(toggle);
+  }
+  return toggle;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getPlayerTimeline).mockResolvedValue(empty);
@@ -92,6 +101,7 @@ describe('PlayerTimeline', () => {
     vi.mocked(api.getPlayerTimeline).mockResolvedValue(payload);
     render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await expandEvidenceDetail();
 
     expect(await screen.findByText('玩家加入')).toBeInTheDocument();
     const items = screen.getAllByRole('listitem').map((node) => node.textContent);
@@ -136,6 +146,7 @@ describe('PlayerTimeline', () => {
 	});
 	render(<PlayerTimeline players={players} refreshKey={0} />);
 	fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+	await expandEvidenceDetail();
 	expect(await screen.findByText('提醒发送失败')).toBeInTheDocument();
 	expect(screen.getByText('限制执行成功')).toBeInTheDocument();
 	expect(screen.getByText('玩家属性变更')).toBeInTheDocument();
@@ -152,6 +163,7 @@ describe('PlayerTimeline', () => {
     });
     render(<PlayerTimeline players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await expandEvidenceDetail();
     await screen.findByText('玩家加入');
     expect(screen.queryByText(/Observation gap/i)).not.toBeInTheDocument();
   });
@@ -175,6 +187,9 @@ describe('PlayerTimeline', () => {
     expect(screen.getByText('2 个坐标')).toBeInTheDocument();
     expect(mapReplay.querySelector('.leaflet-container')).not.toBeNull();
     expect(screen.getByLabelText(/时间轴光标/i)).toHaveValue('0');
+    // Detail list stays collapsed until opened.
+    expect(screen.queryByTestId('timeline-spine-window')).not.toBeInTheDocument();
+    await expandEvidenceDetail();
     expect(screen.getByText('100, 200')).toBeInTheDocument();
     expect(screen.getByText('180, 260')).toBeInTheDocument();
   });
@@ -219,6 +234,7 @@ describe('PlayerTimeline', () => {
     });
     render(<PlayerTimeline players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await expandEvidenceDetail();
     expect(await screen.findByText(/新轨迹段/i)).toBeInTheDocument();
   });
 
@@ -227,6 +243,7 @@ describe('PlayerTimeline', () => {
     render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
     const select = screen.getByRole('combobox', { name: /玩家/i });
     fireEvent.change(select, { target: { value: 'u/1' } });
+    await expandEvidenceDetail();
     await screen.findByText('192.0.2.1:8211');
     fireEvent.change(screen.getByRole('textbox', { name: /搜索已知玩家/i }), { target: { value: 'Morgan' } });
     expect(select).toHaveValue('u/1');
@@ -241,6 +258,7 @@ describe('PlayerTimeline', () => {
     });
     render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await expandEvidenceDetail();
     expect(await screen.findByText(/默认加载时间范围内/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /加载更早/i })).toBeInTheDocument();
   });
@@ -250,7 +268,9 @@ describe('PlayerTimeline', () => {
     vi.mocked(api.getPlayerTimeline).mockReturnValueOnce(request.promise);
     const { rerender } = render(<PlayerTimeline players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
-    expect(await screen.findByRole('status', { name: /正在加载时间轴/i })).toBeInTheDocument();
+    // List skeleton is deferred; loading is still visible on map + detail toggle.
+    expect(await screen.findByText(/正在加载轨迹证据/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /证据明细/i })).toHaveTextContent(/加载中/);
     request.reject(new api.ApiError('player not found', 404));
     expect(await screen.findByRole('alert')).toHaveTextContent(/该玩家已不在观察记录中/i);
     vi.mocked(api.getPlayerTimeline).mockRejectedValueOnce(new Error('database offline'));
@@ -300,7 +320,8 @@ describe('PlayerTimeline', () => {
     render(<PlayerTimeline players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
     await waitFor(() => expect(screen.getByLabelText(/时间轴光标/)).not.toBeDisabled());
-    expect(screen.getByTestId('timeline-spine-window')).toBeInTheDocument();
+    // Collapsed by default so playback does not drag a long list into view.
+    expect(screen.queryByTestId('timeline-spine-window')).not.toBeInTheDocument();
     scrollIntoView.mockClear();
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole('button', { name: /播放/i }));
@@ -365,6 +386,7 @@ describe('PlayerTimeline', () => {
     vi.mocked(api.getPlayerTimeline).mockResolvedValue({ ...empty, events });
     render(<PlayerTimeline players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await expandEvidenceDetail();
     await waitFor(() => expect(screen.getByTestId('timeline-spine-window')).toBeInTheDocument());
     const focusButtons = screen.getAllByRole('button', { name: /将回放光标移动到第/i });
     // Only a window of rows is mounted — far less than 80.
@@ -428,10 +450,30 @@ describe('PlayerTimeline', () => {
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
     await waitFor(() => expect(screen.getByLabelText(/时间轴光标/)).not.toBeDisabled());
     expect(screen.getByLabelText(/时间轴光标/)).toHaveValue('0');
+    await expandEvidenceDetail();
     // Jump to second trajectory row via list crosshair (same index resolution as map seek)
     const focusButtons = screen.getAllByRole('button', { name: /将回放光标移动到第/i });
     fireEvent.click(focusButtons[2]!); // event + traj0 + traj1 → index 2
     expect(screen.getByLabelText(/时间轴光标/)).toHaveValue('2');
+  });
+
+  it('keeps evidence detail collapsed until expanded', async () => {
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue({
+      ...empty,
+      events: [
+        { id: 'e1', event_type: 'player_joined', occurred_at: '2026-07-13T08:00:00Z', observed_at: '2026-07-13T08:00:00Z', source: 'guard', confidence: 'observed', summary: 'a' },
+      ],
+    });
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    const toggle = await screen.findByRole('button', { name: /证据明细/i });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('timeline-spine-window')).not.toBeInTheDocument();
+    expect(screen.queryByText('玩家加入')).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(await screen.findByTestId('timeline-spine-window')).toBeInTheDocument();
+    expect(screen.getByText('玩家加入')).toBeInTheDocument();
   });
 
   it('steps the cursor with 下一步 and 上一步', async () => {
