@@ -230,10 +230,12 @@ type Observation struct {
 }
 
 type Save struct {
-	Enabled       bool     `yaml:"enabled" json:"enabled"`
-	Path          string   `yaml:"path,omitempty" json:"path,omitempty"`
-	WorkerCommand string   `yaml:"worker_command,omitempty" json:"worker_command,omitempty"`
-	WorkerTimeout Duration `yaml:"worker_timeout,omitempty" json:"worker_timeout,omitempty"`
+	Enabled        bool     `yaml:"enabled" json:"enabled"`
+	Path           string   `yaml:"path,omitempty" json:"path,omitempty"`
+	WorkerCommand  string   `yaml:"worker_command,omitempty" json:"worker_command,omitempty"`
+	WorkerTimeout  Duration `yaml:"worker_timeout,omitempty" json:"worker_timeout,omitempty"`
+	// ImportInterval runs automatic save imports when enabled (0 = only manual admin import).
+	ImportInterval Duration `yaml:"import_interval,omitempty" json:"import_interval,omitempty"`
 }
 
 func (c Config) Password() string { return c.password }
@@ -311,8 +313,9 @@ func defaults() Config {
 			RawRetention:                  Duration{90 * 24 * time.Hour},
 		},
 		Save: Save{
-			WorkerCommand: "palrest-save-worker",
-			WorkerTimeout: Duration{30 * time.Second},
+			WorkerCommand:  "palrest-save-worker",
+			WorkerTimeout:  Duration{30 * time.Second},
+			ImportInterval: Duration{15 * time.Minute},
 		},
 	}
 }
@@ -396,6 +399,9 @@ func (c *Config) validate(lookup func(string) (string, bool)) error {
 	}
 	if c.Save.WorkerTimeout.Duration <= 0 {
 		return fmt.Errorf("save.worker_timeout must be positive")
+	}
+	if c.Save.ImportInterval.Duration < 0 {
+		return fmt.Errorf("save.import_interval must be non-negative")
 	}
 	if c.Save.Enabled {
 		if strings.TrimSpace(c.Save.Path) == "" {

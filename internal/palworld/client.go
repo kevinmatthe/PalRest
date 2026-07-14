@@ -14,6 +14,8 @@ import (
 )
 
 const maxResponseBytes = 1 << 20
+// game-data payloads include full actor tables and can exceed 1 MiB.
+const maxGameDataResponseBytes = 32 << 20
 
 type Client struct {
 	baseURL  string
@@ -172,7 +174,20 @@ func (c *Client) Settings(ctx context.Context) (domain.ServerSettings, error) {
 	return domain.ServerSettings{Values: values}, nil
 }
 
+// GameData fetches /game-data and normalizes guild base hubs (PalBox) + player guild membership.
+func (c *Client) GameData(ctx context.Context) (GameDataSnapshot, error) {
+	var payload gameDataPayload
+	if err := c.getJSONLimited(ctx, "/game-data", &payload, false, maxGameDataResponseBytes); err != nil {
+		return GameDataSnapshot{}, fmt.Errorf("get Palworld game-data: %w", err)
+	}
+	return normalizeGameData(payload, time.Now().UTC()), nil
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, destination any, useNumber bool) error {
+	return c.getJSONLimited(ctx, path, destination, useNumber, maxResponseBytes)
+}
+
+func (c *Client) getJSONLimited(ctx context.Context, path string, destination any, useNumber bool, maxBytes int64) error {
 	req, err := c.request(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return err
@@ -185,12 +200,12 @@ func (c *Client) getJSON(ctx context.Context, path string, destination any, useN
 	if err := checkStatus(resp); err != nil {
 		return err
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return fmt.Errorf("read Palworld response %s: %w", path, err)
 	}
-	if len(body) > maxResponseBytes {
-		return fmt.Errorf("Palworld response %s exceeds %d bytes", path, maxResponseBytes)
+	if int64(len(body)) > maxBytes {
+		return fmt.Errorf("Palworld response %s exceeds %d bytes", path, maxBytes)
 	}
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 || trimmed[0] != '{' {

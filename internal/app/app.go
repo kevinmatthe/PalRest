@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,9 +38,12 @@ type App struct {
 	poller       *poller.Poller
 	saveWorker   *saveworker.Runner
 	saveImporter *saveworker.Importer
+	liveGameData *observation.LiveGameData
+	client       *palworld.Client
 	httpServer   *http.Server
 	pollerDone   chan struct{}
 	watcherDone  chan struct{}
+	auxDone      chan struct{}
 	closeOnce    sync.Once
 	closeErr     error
 }
@@ -110,6 +115,8 @@ func New(configPath string) (*App, error) {
 		}
 		saveImporter = saveworker.NewImporter(saveRunner, repo, time.Now)
 	}
+	liveGameData := observation.NewLiveGameData()
+	worldPOIs := &observation.WorldPOIProvider{Save: repo, Live: liveGameData}
 	pollOptions := []poller.Option{
 		poller.WithPlayerObserver(playerObservations),
 		poller.WithServerObservations(client, serverObservations),
@@ -126,10 +133,11 @@ func New(configPath string) (*App, error) {
 	}
 	app := &App{
 		configPath: configPath, config: cfg, repo: repo, policies: policies, guard: guardService, analytics: analyticsService, poller: poll, saveWorker: saveRunner, saveImporter: saveImporter,
-		pollerDone: make(chan struct{}), watcherDone: make(chan struct{}),
+		liveGameData: liveGameData, client: client,
+		pollerDone: make(chan struct{}), watcherDone: make(chan struct{}), auxDone: make(chan struct{}),
 	}
 	adminUser, adminPass := cfg.AdminCredentials()
-	apiOptions := []any{poll}
+	apiOptions := []any{poll, worldPOIs}
 	if saveImporter != nil {
 		apiOptions = append(apiOptions, saveImporter)
 	}
@@ -164,6 +172,10 @@ func (a *App) Run(ctx context.Context) error {
 		defer close(a.watcherDone)
 		a.watchConfig(runCtx)
 	}()
+	go func() {
+		defer close(a.auxDone)
+		a.runAuxLoops(runCtx)
+	}()
 
 	var runErr error
 	serverResultPending := true
@@ -182,7 +194,83 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	<-a.pollerDone
 	<-a.watcherDone
+	if a.auxDone != nil {
+		<-a.auxDone
+	}
 	return errors.Join(runErr, shutdownErr, a.Close())
+}
+
+// runAuxLoops samples live /game-data and optionally auto-imports saves.
+// Failures never stop Guard polling.
+func (a *App) runAuxLoops(ctx context.Context) {
+	cfg := a.CurrentConfig()
+	gameInterval := cfg.Observation.ServerDocumentInterval.Duration
+	if gameInterval <= 0 {
+		gameInterval = 5 * time.Minute
+	}
+	// First game-data sample soon after start (10s) so POIs appear without long wait.
+	gameTicker := time.NewTicker(10 * time.Second)
+	defer gameTicker.Stop()
+	var saveTicker *time.Ticker
+	var saveC <-chan time.Time
+	if a.saveImporter != nil && cfg.Save.ImportInterval.Duration > 0 {
+		saveTicker = time.NewTicker(cfg.Save.ImportInterval.Duration)
+		defer saveTicker.Stop()
+		saveC = saveTicker.C
+		// Kick an import shortly after boot.
+		go a.runSaveImportOnce(ctx)
+	}
+	firstGame := true
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-gameTicker.C:
+			if firstGame {
+				firstGame = false
+				gameTicker.Reset(gameInterval)
+			}
+			a.sampleGameDataOnce(ctx)
+		case <-saveC:
+			a.runSaveImportOnce(ctx)
+		}
+	}
+}
+
+func (a *App) sampleGameDataOnce(ctx context.Context) {
+	if a.client == nil || a.liveGameData == nil {
+		return
+	}
+	timeout := a.CurrentConfig().Server.RequestTimeout.Duration
+	if timeout < 15*time.Second {
+		timeout = 15 * time.Second
+	}
+	sampleCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	observation.SampleGameData(sampleCtx, a.client, a.liveGameData, slog.Default())
+}
+
+func (a *App) runSaveImportOnce(ctx context.Context) {
+	if a.saveImporter == nil {
+		return
+	}
+	cfg := a.CurrentConfig()
+	if !cfg.Save.Enabled || strings.TrimSpace(cfg.Save.Path) == "" {
+		return
+	}
+	timeout := cfg.Save.WorkerTimeout.Duration
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	// Allow worker wall time slightly beyond configured timeout.
+	importCtx, cancel := context.WithTimeout(ctx, timeout+15*time.Second)
+	defer cancel()
+	result, err := a.saveImporter.Import(importCtx, cfg.Save.Path)
+	if err != nil {
+		slog.Warn("auto save import failed", "err", err, "path", cfg.Save.Path)
+		return
+	}
+	slog.Info("auto save import ok", "import_id", result.ImportID, "inserted", result.Inserted, "fingerprint", result.Fingerprint)
 }
 
 func (a *App) watchConfig(ctx context.Context) {

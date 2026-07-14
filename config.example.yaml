@@ -30,9 +30,12 @@ save:
   path: /data/pal-saves/Level.sav
   worker_command: palrest-save-worker
   worker_timeout: 30s
+  # When enabled, automatically re-import on this interval (0 = manual only).
+  import_interval: 15m
 
 # Optional bootstrap defaults. They are used only when the database has no
 # policy document; later edits are made in WebUI and stored in SQLite.
+# Live /game-data (PalBox guild bases) is sampled on the observation.server_document_interval cadence.
 policy:
   timezone: Asia/Shanghai
   default:

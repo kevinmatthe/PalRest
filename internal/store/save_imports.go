@@ -382,6 +382,8 @@ type WorldPOI struct {
 	X         float64 `json:"x"`
 	Y         float64 `json:"y"`
 	GuildName string  `json:"guild_name,omitempty"`
+	GuildID   string  `json:"guild_id,omitempty"`
+	Source    string  `json:"source,omitempty"` // "save_import" | "game_data"
 }
 
 type PlayerWorldPOIs struct {
@@ -454,6 +456,8 @@ func (r *Repository) ListPlayerWorldPOIs(ctx context.Context, userID string) (Pl
 				X:         camp.LocationX,
 				Y:         camp.LocationY,
 				GuildName: guild.Name,
+				GuildID:   guild.SaveGuildID,
+				Source:    "save_import",
 			})
 		}
 	}
