@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import 'leaflet.markercluster';
+import 'leaflet.markercluster/dist/MarkerCluster.css';
+import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import { AlertTriangle, Compass, Crosshair, Map as MapIcon, Radio, Route, Search, ShieldAlert } from 'lucide-react';
 import { ApiError, getPlayerTimeline, type Player, type PlayerTimelineResponse, type TimelineEvent } from '../api';
+import { knownMapLocation as resolveLandmark } from '../map/mapLandmarks';
+import { nextCursorIndex, playIntervalMs, PLAY_SPEEDS, type PlaySpeed } from '../map/mapPlayback';
+import { hybridTrajectoryWindow, pingColor } from '../map/mapTrajectory';
 
 type Props = { includePrivate?: boolean; players: Player[]; refreshKey: number };
 type TimelineState =
@@ -19,7 +25,6 @@ type LogItem =
 type LogRow = { item: LogItem; separator: string };
 type TrajectorySample = PlayerTimelineResponse['trajectories'][number];
 type MapPoint = { key: string; sample: TrajectorySample; latLng: L.LatLngExpression };
-type MapBounds = { minX: number; maxX: number; minY: number; maxY: number };
 
 const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
 // Same Leaflet CRS.Simple coordinate transform used by zaigie/palworld-server-tool.
@@ -159,52 +164,12 @@ function trajectorySamples(items: LogItem[]) {
   return items.filter((item): item is Extract<LogItem, { kind: 'trajectory' }> => item.kind === 'trajectory').map((item) => item.item);
 }
 
-function trajectoryBounds(samples: TrajectorySample[]): MapBounds | null {
-  if (!samples.length) return null;
-  const xs = samples.map((sample) => sample.x);
-  const ys = samples.map((sample) => sample.y);
-  let minX = Math.min(...xs);
-  let maxX = Math.max(...xs);
-  let minY = Math.min(...ys);
-  let maxY = Math.max(...ys);
-  const padX = Math.max((maxX - minX) * 0.12, 100);
-  const padY = Math.max((maxY - minY) * 0.12, 100);
-  minX -= padX;
-  maxX += padX;
-  minY -= padY;
-  maxY += padY;
-  if (minX === maxX) {
-    minX -= 1;
-    maxX += 1;
-  }
-  if (minY === maxY) {
-    minY -= 1;
-    maxY += 1;
-  }
-  return { minX, maxX, minY, maxY };
-}
-
-function projectSample(sample: TrajectorySample, bounds: MapBounds): { x: number; y: number } {
-  const x = ((sample.x - bounds.minX) / (bounds.maxX - bounds.minX)) * 100;
-  const y = 64 - ((sample.y - bounds.minY) / (bounds.maxY - bounds.minY)) * 64;
-  return { x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) };
-}
-
 function projectWorldSample(sample: TrajectorySample): L.LatLngExpression {
   const [maxX, maxY, minX, minY] = PALWORLD_LANDSCAPE;
   if (sample.x >= -256 && sample.x <= 256) return [sample.x, sample.y];
   const x = -256 + (256 * (sample.x - minX)) / (maxX - minX);
   const y = (256 * (sample.y - minY)) / (maxY - minY);
   return [x, y];
-}
-
-function splitRouteSegments(points: MapPoint[]) {
-  return points.reduce<MapPoint[][]>((segments, point) => {
-    const current = segments.at(-1);
-    if (!current || current.at(-1)?.sample.segment_id !== point.sample.segment_id) segments.push([point]);
-    else current.push(point);
-    return segments;
-  }, []);
 }
 
 function latestPointAt(samples: TrajectorySample[], activeAt: string | undefined) {
@@ -263,11 +228,18 @@ function mapLocationLabel(sample: TrajectorySample) {
   return landmark || '地图坐标位置';
 }
 
-function knownMapLocation(_sample: TrajectorySample): string {
-  // This hook is intentionally centralized so licensed map assets or a location
-  // translation table can replace coordinate-only labels without touching UI code.
-  return '';
+function knownMapLocation(sample: TrajectorySample): string {
+  return resolveLandmark(sample);
 }
+
+const PING_LEGEND: Array<{ label: string; fill: string }> = [
+  { label: '<50', fill: pingColor(20).fill },
+  { label: '50–80', fill: pingColor(60).fill },
+  { label: '80–120', fill: pingColor(100).fill },
+  { label: '120–200', fill: pingColor(150).fill },
+  { label: '>200', fill: pingColor(250).fill },
+  { label: '未知', fill: pingColor(Number.NaN).fill },
+];
 
 export function PlayerTimeline({ includePrivate = false, players, refreshKey }: Props) {
   const range = useMemo(defaultRange, []);
@@ -277,6 +249,8 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   const [end, setEnd] = useState(range.end);
   const [state, setState] = useState<TimelineState>({ kind: 'idle' });
   const [cursorIndex, setCursorIndex] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState<PlaySpeed>(1);
   const requestID = useRef(0);
   const lastRefreshKey = useRef(refreshKey);
   const rangeError = validateRange(start, end);
@@ -285,6 +259,17 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
     if (!term) return players;
     return players.filter((player) => player.user_id === selectedID || [player.name, player.account_name, player.user_id, player.player_id].some((value) => value.toLowerCase().includes(term)));
   }, [players, search, selectedID]);
+
+  function applyPresetHours(hours: number) {
+    const nextEnd = new Date();
+    setEnd(localInputValue(nextEnd));
+    setStart(localInputValue(new Date(nextEnd.getTime() - hours * 3600_000)));
+  }
+
+  function seekCursor(index: number) {
+    setPlaying(false);
+    setCursorIndex(index);
+  }
 
   useEffect(() => {
     if (lastRefreshKey.current !== refreshKey) {
@@ -329,7 +314,20 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
 
   useEffect(() => {
     setCursorIndex(0);
+    setPlaying(false);
   }, [selectedID, start, end, refreshKey]);
+
+  useEffect(() => {
+    if (!playing || items.length < 2) return;
+    const id = window.setInterval(() => {
+      setCursorIndex((current) => {
+        const { index, done } = nextCursorIndex(current, items.length);
+        if (done) setPlaying(false);
+        return index;
+      });
+    }, playIntervalMs(speed));
+    return () => window.clearInterval(id);
+  }, [playing, speed, items.length]);
 
   return (
     <section className="timeline-recorder" aria-labelledby="timeline-heading">
@@ -354,6 +352,11 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
               {visiblePlayers.map((player) => <option value={player.user_id} key={player.user_id}>{player.name || player.account_name || player.user_id} · {player.account_name || player.user_id}</option>)}
             </select>
           </label>
+          <div className="timeline-presets" role="group" aria-label="时间范围预设">
+            <button type="button" onClick={() => applyPresetHours(1)}>最近 1 小时</button>
+            <button type="button" onClick={() => applyPresetHours(24)}>最近 24 小时</button>
+            <button type="button" onClick={() => applyPresetHours(7 * 24)}>最近 7 天</button>
+          </div>
           <label className="timeline-field"><span>开始</span><input type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} /></label>
           <label className="timeline-field"><span>结束</span><input type="datetime-local" value={end} onChange={(event) => setEnd(event.target.value)} /></label>
           <p className="timeline-range-note">本地时间 · 最长 31 天 · 每类最多 500 条</p>
@@ -363,7 +366,11 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             activeIndex={activeIndex}
             items={items}
             loading={state.kind === 'loading'}
-            onCursorChange={setCursorIndex}
+            onCursorChange={seekCursor}
+            playing={playing}
+            speed={speed}
+            onPlayingChange={setPlaying}
+            onSpeedChange={setSpeed}
             selected={Boolean(selectedID)}
           />
           {!selectedID ? <EmptyState icon={<Compass size={28} />} text="选择玩家后查看轨迹和事件。" /> : null}
@@ -373,7 +380,7 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
           {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="当前时间范围没有观察记录。" /> : null}
           {mayBeTruncated ? <div className="timeline-alert timeline-alert--info" role="status"><AlertTriangle size={18} /> 某类数据达到 500 条响应上限，结果可能已截断。</div> : null}
           {state.kind === 'ready' && items.length > 0 ? <ol className="timeline-spine" aria-label="按时间排序的观察记录">
-            {rows.map(({ item, separator }, index) => <TimelineEntry active={index === activeIndex} index={index} key={item.key} item={item} locationLabel={item.kind === 'trajectory' ? locationNames.get(trajectoryKey(item.item)) : undefined} onSelect={setCursorIndex} segmentLabel={item.kind === 'trajectory' ? segmentNames.get(item.item.segment_id) : undefined} separator={separator} />)}
+            {rows.map(({ item, separator }, index) => <TimelineEntry active={index === activeIndex} index={index} key={item.key} item={item} locationLabel={item.kind === 'trajectory' ? locationNames.get(trajectoryKey(item.item)) : undefined} onSelect={seekCursor} segmentLabel={item.kind === 'trajectory' ? segmentNames.get(item.item.segment_id) : undefined} separator={separator} />)}
           </ol> : null}
         </div>
       </div>
@@ -381,22 +388,45 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   );
 }
 
-function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: { activeIndex: number; items: LogItem[]; loading: boolean; onCursorChange: (index: number) => void; selected: boolean }) {
+function TimelineMap({
+  activeIndex,
+  items,
+  loading,
+  onCursorChange,
+  playing,
+  speed,
+  onPlayingChange,
+  onSpeedChange,
+  selected,
+}: {
+  activeIndex: number;
+  items: LogItem[];
+  loading: boolean;
+  onCursorChange: (index: number) => void;
+  playing: boolean;
+  speed: PlaySpeed;
+  onPlayingChange: (playing: boolean) => void;
+  onSpeedChange: (speed: PlaySpeed) => void;
+  selected: boolean;
+}) {
   const mapElementRef = useRef<HTMLDivElement>(null);
   const leafletRef = useRef<L.Map | null>(null);
-  const overlayLayerRef = useRef<L.LayerGroup | null>(null);
+  const clusterGroupRef = useRef<L.MarkerClusterGroup | null>(null);
+  const lineLayerRef = useRef<L.LayerGroup | null>(null);
+  const focusLayerRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const samples = useMemo(() => trajectorySamples(items), [items]);
   const [mapAvailable, setMapAvailable] = useState(true);
+  const [colorMode, setColorMode] = useState<'position' | 'ping'>('position');
   const points = useMemo<MapPoint[]>(() => {
     return samples.map((sample) => {
       return { key: `${sample.segment_id}:${sample.observed_at}:${sample.source_ref}`, latLng: projectWorldSample(sample), sample };
     });
   }, [samples]);
-  const segments = useMemo(() => splitRouteSegments(points), [points]);
   const activeItem = items[activeIndex];
   const activeSample = latestPointAt(samples, activeItem?.at);
   const activePoint = activeSample ? projectWorldSample(activeSample) : undefined;
+  const activeSampleKey = activeSample ? trajectoryKey(activeSample) : '';
   const startMS = items.length ? Math.min(...items.map((item) => Date.parse(item.at))) : 0;
   const endMS = items.length ? Math.max(...items.map((item) => Date.parse(item.at))) : 1;
   const cursorLeft = activeItem ? timelinePercent(activeItem.at, startMS, endMS) : 0;
@@ -425,54 +455,75 @@ function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: 
     tileLayer.on('tileerror', () => setMapAvailable(false));
     tileLayer.addTo(map);
     map.fitBounds(PALWORLD_TILE_BOUNDS);
-    const overlay = L.layerGroup().addTo(map);
+    const clusterGroup = L.markerClusterGroup({ showCoverageOnHover: false });
+    const lineLayer = L.layerGroup();
+    const focusLayer = L.layerGroup();
+    clusterGroup.addTo(map);
+    lineLayer.addTo(map);
+    focusLayer.addTo(map);
     leafletRef.current = map;
     tileLayerRef.current = tileLayer;
-    overlayLayerRef.current = overlay;
+    clusterGroupRef.current = clusterGroup;
+    lineLayerRef.current = lineLayer;
+    focusLayerRef.current = focusLayer;
     return () => {
       map.remove();
       leafletRef.current = null;
       tileLayerRef.current = null;
-      overlayLayerRef.current = null;
+      clusterGroupRef.current = null;
+      lineLayerRef.current = null;
+      focusLayerRef.current = null;
     };
   }, []);
 
   useEffect(() => {
     const map = leafletRef.current;
-    const overlay = overlayLayerRef.current;
-    if (!map || !overlay) return;
-    overlay.clearLayers();
-    segments.forEach((segment) => {
-      if (segment.length > 1) {
-        L.polyline(segment.map((point) => point.latLng), {
-          color: '#0f7285',
-          opacity: 0.88,
-          weight: 4,
-          lineCap: 'round',
-          lineJoin: 'round',
-        }).addTo(overlay);
-      }
-    });
+    const clusterGroup = clusterGroupRef.current;
+    const lineLayer = lineLayerRef.current;
+    const focusLayer = focusLayerRef.current;
+    if (!map || !clusterGroup || !lineLayer || !focusLayer) return;
+
+    clusterGroup.clearLayers();
+    lineLayer.clearLayers();
+    focusLayer.clearLayers();
+
+    const lineSamples = hybridTrajectoryWindow(samples, activeItem?.at);
+    if (lineSamples.length > 1) {
+      L.polyline(lineSamples.map((sample) => projectWorldSample(sample)), {
+        color: '#0f7285',
+        opacity: 0.88,
+        weight: 2,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(lineLayer);
+    }
+
     points.forEach((point) => {
+      if (trajectoryKey(point.sample) === activeSampleKey) return;
+      const colors = colorMode === 'ping'
+        ? pingColor(point.sample.ping)
+        : { fill: '#fffdf7', stroke: '#0f7285' };
       L.circleMarker(point.latLng, {
         radius: 4,
-        color: '#0f7285',
-        fillColor: '#fffdf7',
+        color: colors.stroke,
+        fillColor: colors.fill,
         fillOpacity: 1,
         weight: 2,
-      }).addTo(overlay);
+      }).addTo(clusterGroup);
     });
-    if (activePoint) {
+
+    if (activePoint && activeSample) {
+      const ping = colorMode === 'ping' ? pingColor(activeSample.ping) : null;
       L.circleMarker(activePoint, {
         radius: 8,
         color: '#8d5a0f',
-        fillColor: '#ca8519',
+        fillColor: ping?.fill ?? '#ca8519',
         fillOpacity: 0.92,
         weight: 3,
-      }).addTo(overlay);
+      }).addTo(focusLayer);
       map.panTo(activePoint, { animate: false });
     }
-  }, [activePoint, points, segments]);
+  }, [activeItem?.at, activePoint, activeSample, activeSampleKey, colorMode, points, samples]);
 
   return <section className="timeline-map-panel" aria-label="地图回放">
     <div className="timeline-map-header">
@@ -480,8 +531,25 @@ function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: 
         <p className="eyebrow">地图回放</p>
         <h3>{activeLabel}</h3>
       </div>
-      <span className="timeline-map-count"><Route size={15} /> {samples.length} 个坐标</span>
+      <div className="timeline-map-header-actions">
+        <div className="timeline-color-mode" role="group" aria-label="点位颜色模式">
+          <button type="button" aria-pressed={colorMode === 'position'} onClick={() => setColorMode('position')}>位置</button>
+          <button type="button" aria-pressed={colorMode === 'ping'} onClick={() => setColorMode('ping')}>延迟</button>
+        </div>
+        <span className="timeline-map-count"><Route size={15} /> {samples.length} 个坐标</span>
+      </div>
     </div>
+    {colorMode === 'ping' ? (
+      <div className="timeline-ping-legend" aria-label="延迟图例">
+        <span className="timeline-ping-legend-title">延迟</span>
+        {PING_LEGEND.map((entry) => (
+          <span className="timeline-ping-legend-item" key={entry.label}>
+            <span className="timeline-ping-swatch" style={{ background: entry.fill }} aria-hidden="true" />
+            {entry.label}
+          </span>
+        ))}
+      </div>
+    ) : null}
     <div className="timeline-map-surface">
       <div aria-label="Palworld 完整游戏地图" className="timeline-leaflet-map" data-testid="timeline-map" ref={mapElementRef} role="img" />
       {!mapAvailable ? <div className="timeline-map-missing" role="status">真实地图瓦片加载失败：本地 <code>webui/public/map/tiles</code> 与 palworld.gg 均无法读取，请检查 Git LFS 或网络。</div> : null}
@@ -492,7 +560,28 @@ function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: 
         {items.map((item, index) => <span className={`timeline-cursor-tick timeline-cursor-tick--${item.kind}`} key={item.key} style={{ left: `${timelinePercent(item.at, startMS, endMS)}%` }} data-active={index === activeIndex ? 'true' : undefined} />)}
         <span className="timeline-cursor-now" style={{ left: `${cursorLeft}%` }} />
       </div>
-      <input aria-label="时间轴光标" disabled={items.length < 2} max={Math.max(items.length - 1, 0)} min={0} onChange={(event) => onCursorChange(Number(event.target.value))} type="range" value={activeIndex} />
+      <div className="timeline-transport">
+        <button
+          type="button"
+          aria-label={playing ? '暂停' : '播放'}
+          disabled={items.length < 2}
+          onClick={() => onPlayingChange(!playing)}
+        >
+          {playing ? '暂停' : '播放'}
+        </button>
+        <label>
+          <span className="sr-only">倍速</span>
+          <select
+            aria-label="播放倍速"
+            value={speed}
+            disabled={items.length < 2}
+            onChange={(event) => onSpeedChange(Number(event.target.value) as PlaySpeed)}
+          >
+            {PLAY_SPEEDS.map((value) => <option key={value} value={value}>{value}×</option>)}
+          </select>
+        </label>
+        <input aria-label="时间轴光标" disabled={items.length < 2} max={Math.max(items.length - 1, 0)} min={0} onChange={(event) => onCursorChange(Number(event.target.value))} type="range" value={activeIndex} />
+      </div>
       <div className="timeline-map-meta">
         <span><MapIcon size={15} /> {activeSample ? mapLocationLabel(activeSample) : '无地图位置'}</span>
         <span>{activeItem ? formatTimelineDateTime(activeItem.at) : '无光标时间'}</span>

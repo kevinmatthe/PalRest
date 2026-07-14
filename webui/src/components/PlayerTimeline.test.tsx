@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api';
 import type { Player, PlayerTimelineResponse } from '../api';
+import { MAP_LANDMARKS } from '../map/mapLandmarks';
 import { PlayerTimeline, tileErrorTransition } from './PlayerTimeline';
 
 vi.mock('../api', async (load) => ({
@@ -264,5 +265,90 @@ describe('PlayerTimeline', () => {
     fireEvent.change(screen.getByLabelText(/开始/i), { target: { value: '2026-07-14T00:00' } });
     expect(await screen.findByRole('alert')).toHaveTextContent(/晚于开始时间/i);
     expect(api.getPlayerTimeline).not.toHaveBeenCalled();
+  });
+
+  it('applies range presets without manual datetime typing', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-07-14T12:00:00'));
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.click(screen.getByRole('button', { name: /最近 1 小时/i }));
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await waitFor(() => expect(api.getPlayerTimeline).toHaveBeenCalled());
+    const [, startIso, endIso] = vi.mocked(api.getPlayerTimeline).mock.calls.at(-1)!;
+    const start = Date.parse(startIso as string);
+    const end = Date.parse(endIso as string);
+    expect(end - start).toBe(60 * 60 * 1000);
+  });
+
+  it('advances cursor while playing and stops at the end', async () => {
+    const payload: PlayerTimelineResponse = {
+      user_id: 'u/1',
+      events: [
+        { id: 'e1', event_type: 'player_joined', occurred_at: '2026-07-13T08:00:00Z', observed_at: '2026-07-13T08:00:00Z', source: 'guard', confidence: 'observed', summary: 'a' },
+        { id: 'e2', event_type: 'player_left', occurred_at: '2026-07-13T09:00:00Z', observed_at: '2026-07-13T09:00:00Z', source: 'guard', confidence: 'observed', summary: 'b' },
+        { id: 'e3', event_type: 'player_joined', occurred_at: '2026-07-13T10:00:00Z', observed_at: '2026-07-13T10:00:00Z', source: 'guard', confidence: 'observed', summary: 'c' },
+      ],
+      trajectories: [],
+      private_samples: [],
+    };
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue(payload);
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await waitFor(() => expect(screen.getByLabelText(/时间轴光标/)).not.toBeDisabled());
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: /播放/i }));
+    expect(screen.getByRole('button', { name: /暂停/i })).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+    expect(screen.getByLabelText(/时间轴光标/)).toHaveValue('1');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+    expect(screen.getByLabelText(/时间轴光标/)).toHaveValue('2');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+    expect(screen.getByRole('button', { name: /播放/i })).toBeInTheDocument();
+  });
+
+  it('toggles delay color mode legend', async () => {
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue({
+      ...empty,
+      trajectories: [
+        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T08:00:00Z', x: 100, y: 200, ping: 20, level: 1, source_ref: 'one', runtime_epoch: 0 },
+      ],
+    });
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await screen.findByTestId('timeline-map');
+    expect(screen.queryByLabelText(/延迟图例/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^延迟$/i }));
+    expect(screen.getByLabelText(/延迟图例/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^位置$/i }));
+    expect(screen.queryByLabelText(/延迟图例/i)).not.toBeInTheDocument();
+  });
+
+  it('shows 靠近 landmark label for sample on known coordinates', async () => {
+    const landmark = MAP_LANDMARKS[0]!;
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue({
+      ...empty,
+      trajectories: [
+        {
+          user_id: 'u/1',
+          segment_id: 's1',
+          observed_at: '2026-07-13T08:00:00Z',
+          x: landmark.x,
+          y: landmark.y,
+          ping: 20,
+          level: 1,
+          source_ref: 'one',
+          runtime_epoch: 0,
+        },
+      ],
+    });
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await waitFor(() => expect(screen.getAllByText(/靠近/).length).toBeGreaterThan(0));
   });
 });
