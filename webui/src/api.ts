@@ -254,6 +254,26 @@ export function getPlayerTimeline(userID: string, start: string, end: string, li
   return getJSON<PlayerTimelineResponse>(`${prefix}/${encodeURIComponent(userID)}/timeline?${query}`, signal);
 }
 
+export type WorldPOI = {
+  id: string;
+  name_zh: string;
+  kind: 'fast_travel' | 'boss_tower' | 'guild_base';
+  x: number;
+  y: number;
+  guild_name?: string;
+};
+
+export type PlayerWorldPOIsResponse = {
+  user_id: string;
+  source: string;
+  as_of?: string;
+  pois: WorldPOI[];
+};
+
+export async function getPlayerWorldPOIs(userID: string, signal?: AbortSignal): Promise<PlayerWorldPOIsResponse> {
+  return getJSON<PlayerWorldPOIsResponse>(`/api/v1/players/${encodeURIComponent(userID)}/world-pois`, signal);
+}
+
 export function getPolicies(signal?: AbortSignal) {
   return getJSON<Policies>('/api/v1/policies', signal);
 }

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Compass, Crosshair, Radio, Search, ShieldAlert } from 'lucide-react';
-import { ApiError, getPlayerTimeline, type Player, type PlayerTimelineResponse, type TimelineEvent } from '../api';
-import { summarizeBehavior } from '../behavior/behaviorMetrics';
+import { ApiError, getPlayerTimeline, getPlayerWorldPOIs, type Player, type PlayerTimelineResponse, type TimelineEvent } from '../api';
+import { analyzeTrajectoryBehavior, staticLandmarksToPOIs } from '../behavior/behaviorPOIs';
+import type { BehaviorPOI } from '../behavior/behaviorTypes';
 import { nextCursorIndex, playStepDelayMs, prevCursorIndex, type PlayMode, type PlaySpeed } from '../map/mapPlayback';
 import { DEFAULT_ROW_ESTIMATE_PX, scrollTopForIndex, virtualWindow } from '../map/timelineVirtual';
 import { BehaviorSummaryPanel } from './BehaviorSummaryPanel';
@@ -123,6 +124,7 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   const [speed, setSpeed] = useState<PlaySpeed>(1);
   const [playMode, setPlayMode] = useState<PlayMode>('index');
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [guildPOIs, setGuildPOIs] = useState<BehaviorPOI[]>([]);
   const requestID = useRef(0);
   const lastRefreshKey = useRef(refreshKey);
   const cursorIndexRef = useRef(cursorIndex);
@@ -144,6 +146,32 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
     setPlaying(false);
     setCursorIndex(index);
   }
+
+  useEffect(() => {
+    if (!selectedID) {
+      setGuildPOIs([]);
+      return;
+    }
+    const controller = new AbortController();
+    void getPlayerWorldPOIs(selectedID, controller.signal)
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setGuildPOIs(
+          (data.pois ?? []).map((p) => ({
+            id: p.id,
+            nameZh: p.name_zh,
+            kind: p.kind,
+            x: p.x,
+            y: p.y,
+            guildName: p.guild_name,
+          })),
+        );
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setGuildPOIs([]);
+      });
+    return () => controller.abort();
+  }, [selectedID]);
 
   useEffect(() => {
     if (lastRefreshKey.current !== refreshKey) {
@@ -180,17 +208,24 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   }, [includePrivate, selectedID, start, end, refreshKey, rangeError]);
 
   const items = useMemo(() => state.kind === 'ready' ? mergeTimeline(state.data, includePrivate) : [], [includePrivate, state]);
+  const pois = useMemo(() => {
+    const staticPois = staticLandmarksToPOIs();
+    const byId = new Map(staticPois.map((p) => [p.id, p]));
+    for (const g of guildPOIs) byId.set(g.id, g);
+    return [...byId.values()];
+  }, [guildPOIs]);
   const behaviorSummary = useMemo(() => {
     if (!selectedID || rangeError) return null;
     const parsedStart = parseLocalDateTime(start).date;
     const parsedEnd = parseLocalDateTime(end).date;
     if (!parsedStart || !parsedEnd) return null;
-    return summarizeBehavior(trajectorySamples(items), {
+    return analyzeTrajectoryBehavior(trajectorySamples(items), {
       windowStartMs: parsedStart.getTime(),
       windowEndMs: parsedEnd.getTime(),
       includeEdges: true,
+      pois,
     });
-  }, [selectedID, rangeError, start, end, items]);
+  }, [selectedID, rangeError, start, end, items, pois]);
   const rows = useMemo(() => annotateTrajectoryEvidence(items), [items]);
   const segmentNames = useMemo(() => segmentLabels(items), [items]);
   const locationNames = useMemo(() => trajectoryLocationLabels(items), [items]);

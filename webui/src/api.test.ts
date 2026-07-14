@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getAnalyticsActivity, getAnalyticsSummary, getPlayerTimeline } from './api';
-import type { AnalyticsActivity, AnalyticsSummary, PlayerTimelineResponse } from './api';
+import { getAnalyticsActivity, getAnalyticsSummary, getPlayerTimeline, getPlayerWorldPOIs } from './api';
+import type { AnalyticsActivity, AnalyticsSummary, PlayerTimelineResponse, PlayerWorldPOIsResponse } from './api';
 
 const summaryFixture = {
   online_count: 1, as_of: null, today_observed_ms: 60_000, peak_count: 2, peak_at: null,
@@ -67,5 +67,20 @@ describe('timeline API', () => {
     await getPlayerTimeline('steam/id one', '2026-07-12T08:00:00Z', '2026-07-13T08:00:00Z', 500, undefined, true);
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/admin/players/steam%2Fid%20one/timeline?start=2026-07-12T08%3A00%3A00Z&end=2026-07-13T08%3A00%3A00Z&limit=500');
+  });
+
+  it('requests public world POIs for a player', async () => {
+    const payload = {
+      user_id: 'steam/id one',
+      source: 'save_import',
+      as_of: '2026-07-14T00:00:00Z',
+      pois: [{ id: 'guild:1:base:2', name_zh: 'Base', kind: 'guild_base', x: 1, y: 2, guild_name: 'G' }],
+    } satisfies PlayerWorldPOIsResponse;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(payload)));
+    const controller = new AbortController();
+
+    await expect(getPlayerWorldPOIs('steam/id one', controller.signal)).resolves.toEqual(payload);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/players/steam%2Fid%20one/world-pois');
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ signal: controller.signal }));
   });
 });

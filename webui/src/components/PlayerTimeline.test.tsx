@@ -8,6 +8,7 @@ import { PlayerTimeline, tileErrorTransition } from './PlayerTimeline';
 vi.mock('../api', async (load) => ({
   ...(await load<typeof import('../api')>()),
   getPlayerTimeline: vi.fn(),
+  getPlayerWorldPOIs: vi.fn().mockResolvedValue({ user_id: '', source: 'none', pois: [] }),
 }));
 
 const players = [
@@ -31,6 +32,7 @@ function localInputValueForTest(date: Date) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getPlayerTimeline).mockResolvedValue(empty);
+  vi.mocked(api.getPlayerWorldPOIs).mockResolvedValue({ user_id: '', source: 'none', pois: [] });
 });
 afterEach(() => {
   vi.useRealTimers();
