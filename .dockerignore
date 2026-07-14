@@ -1,7 +1,14 @@
-.git
+# Allow .git so the webui map-tiles stage can run git lfs pull.
+# Ignore bulky / irrelevant paths from the playtime-guard build context.
 .worktrees
 config.yaml
 data
+data.1
 coverage.out
 pal-saves
 docs
+*.md
+webui/node_modules
+webui/dist
+webui/.vite
+node_modules
