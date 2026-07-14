@@ -16,10 +16,10 @@
 
 | Priority | ID | Task | ROI | Effort | Status |
 |----------|-----|------|-----|--------|--------|
-| P0 | O1 | Incremental map layers on cursor (no full marker rebuild while scrubbing/playing) | High | M | ☐ |
-| P0 | O2 | Neutral teal MarkerCluster chrome (not size traffic-light) | High | S | ☐ |
-| P1 | O3 | Active list row `scrollIntoView` while cursor moves | High | S | ☐ |
-| P1 | O4 | Step prev/next + Space/Arrow keyboard shortcuts | High | S | ☐ |
+| P0 | O1 | Incremental map layers on cursor (no full marker rebuild while scrubbing/playing) | High | M | ✅ |
+| P0 | O2 | Neutral teal MarkerCluster chrome (not size traffic-light) | High | S | ✅ |
+| P1 | O3 | Active list row `scrollIntoView` while cursor moves | High | S | ✅ |
+| P1 | O4 | Step prev/next + Space/Arrow keyboard shortcuts | High | S | ✅ |
 | P1 | O5 | Timeline tick track: canvas/SVG or pixel-merge (avoid 500 DOM spans) | Med | M | ☐ |
 | P1 | O6 | Unified location fallback copy + real zh landmark names (data) | Med | M | ☐ |
 | P1 | O7 | Map follow lock (only pan when focus leaves viewport) | Med | S | ☐ |
@@ -79,7 +79,11 @@ See matrix; detail when scheduled.
 
 | Date (UTC) | ID | Result | Commit / notes |
 |------------|-----|--------|----------------|
-| 2026-07-14 | — | Plan created | this file |
+| 2026-07-14 | — | Plan created | `71f7047` this file |
+| 2026-07-14 | O1 | Done — cluster rebuild only on `points`/`colorMode`; cursor updates focus/line + exclude key | `6de0197` |
+| 2026-07-14 | O2 | Done — `iconCreateFunction` + `.timeline-marker-cluster` teal CSS; dropped Default.css | `6de0197` |
+| 2026-07-14 | O3 | Done — active `TimelineEntry` `scrollIntoView({ block: 'nearest' })` (jsdom-safe) | `6de0197` |
+| 2026-07-14 | O4 | Done — 上一步/下一步、`prevCursorIndex`、Space/←/→ on section | `6de0197` |
 
 ---
 
