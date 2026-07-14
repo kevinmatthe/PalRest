@@ -33,6 +33,39 @@ export type BehaviorClassMs = {
   traveling: number;
 };
 
+export type BehaviorPOIKind = 'fast_travel' | 'boss_tower' | 'guild_base';
+export type BehaviorPOI = {
+  id: string;
+  nameZh: string;
+  kind: BehaviorPOIKind;
+  x: number;
+  y: number;
+  guildName?: string;
+};
+export type POIDwell = {
+  poiId: string;
+  nameZh: string;
+  kind: BehaviorPOIKind;
+  dwellMs: number;
+  sampleHits: number;
+};
+export type TeleportSuspect = {
+  fromLandmarkId?: string;
+  fromNameZh?: string;
+  toLandmarkId?: string;
+  toNameZh?: string;
+  dist: number;
+  dtMs: number;
+  reason: 'gap_hop' | 'long_jump';
+  at: string;
+};
+export const TELEPORT_MIN_DIST = 50_000;
+export const POI_DWELL_TOP_N = 5;
+export const TELEPORT_TOP_N = 5;
+export const POI_RADIUS_FT = 25_000;
+export const POI_RADIUS_TOWER = 30_000;
+export const POI_RADIUS_GUILD = 40_000;
+
 export type BehaviorSummary = {
   sampleCount: number;
   segmentCount: number;
@@ -49,6 +82,11 @@ export type BehaviorSummary = {
   gapShareOfWindow: number;
   dominantClass: BehaviorDominantClass;
   edges: BehaviorEdge[];
+  poiDwells: POIDwell[];
+  activityAnchor?: POIDwell;
+  teleportSuspects: TeleportSuspect[];
+  poiHitRate: number;
+  guildPresence?: { guildName?: string; baseCount: number; dwellMs: number };
 };
 
 export type SummarizeBehaviorOptions = {

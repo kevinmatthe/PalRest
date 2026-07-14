@@ -20,6 +20,9 @@ function summary(partial: Partial<BehaviorSummary> = {}): BehaviorSummary {
     gapShareOfWindow: 0,
     dominantClass: 'traveling',
     edges: [],
+    poiDwells: [],
+    teleportSuspects: [],
+    poiHitRate: 0,
     ...partial,
   };
 }

@@ -153,5 +153,8 @@ export function summarizeBehavior(
     gapShareOfWindow: windowMs > 0 ? gapMs / windowMs : 0,
     dominantClass: pickDominantClass(classMs),
     edges,
+    poiDwells: [],
+    teleportSuspects: [],
+    poiHitRate: 0,
   };
 }
