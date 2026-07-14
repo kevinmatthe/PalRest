@@ -322,7 +322,10 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
     const id = window.setInterval(() => {
       setCursorIndex((current) => {
         const { index, done } = nextCursorIndex(current, items.length);
-        if (done) setPlaying(false);
+        if (done) {
+          // schedule outside pure updater
+          queueMicrotask(() => setPlaying(false));
+        }
         return index;
       });
     }, playIntervalMs(speed));
@@ -425,7 +428,6 @@ function TimelineMap({
   }, [samples]);
   const activeItem = items[activeIndex];
   const activeSample = latestPointAt(samples, activeItem?.at);
-  const activePoint = activeSample ? projectWorldSample(activeSample) : undefined;
   const activeSampleKey = activeSample ? trajectoryKey(activeSample) : '';
   const startMS = items.length ? Math.min(...items.map((item) => Date.parse(item.at))) : 0;
   const endMS = items.length ? Math.max(...items.map((item) => Date.parse(item.at))) : 1;
@@ -487,7 +489,9 @@ function TimelineMap({
     lineLayer.clearLayers();
     focusLayer.clearLayers();
 
-    const lineSamples = hybridTrajectoryWindow(samples, activeItem?.at);
+    const activeAt = activeItem?.at;
+    const activeSample = latestPointAt(samples, activeAt);
+    const lineSamples = hybridTrajectoryWindow(samples, activeAt);
     if (lineSamples.length > 1) {
       L.polyline(lineSamples.map((sample) => projectWorldSample(sample)), {
         color: '#0f7285',
@@ -512,7 +516,8 @@ function TimelineMap({
       }).addTo(clusterGroup);
     });
 
-    if (activePoint && activeSample) {
+    if (activeSample) {
+      const activePoint = projectWorldSample(activeSample);
       const ping = colorMode === 'ping' ? pingColor(activeSample.ping) : null;
       L.circleMarker(activePoint, {
         radius: 8,
@@ -523,7 +528,7 @@ function TimelineMap({
       }).addTo(focusLayer);
       map.panTo(activePoint, { animate: false });
     }
-  }, [activeItem?.at, activePoint, activeSample, activeSampleKey, colorMode, points, samples]);
+  }, [activeItem?.at, activeSampleKey, colorMode, points, samples]);
 
   return <section className="timeline-map-panel" aria-label="地图回放">
     <div className="timeline-map-header">
