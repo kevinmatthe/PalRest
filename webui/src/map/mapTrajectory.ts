@@ -126,15 +126,20 @@ export function pingColor(ping: number): { bin: PingBin; fill: string; stroke: s
   return { bin, ...PING_STYLES[bin] };
 }
 
-export const TRAJ_PAST_WEIGHT = 4.5;
-export const TRAJ_FUTURE_WEIGHT = 2.5;
-export const TRAJ_PAST_COLOR = '#0f8fa3';
-export const TRAJ_FUTURE_COLOR = '#0f7285';
-export const TRAJ_FUTURE_OPACITY = 0.35;
-export const TRAJ_PAST_OPACITY = 0.95;
-export const TRAJ_TIP_COLOR = '#ca8519';
-export const TRAJ_DASH_ARRAY = '10 14';
-export const TRAJ_DASH_ANIM_MS = 900;
+/** Past / current path — bright cyan, thicker, high contrast on the map. */
+export const TRAJ_PAST_WEIGHT = 5.5;
+export const TRAJ_PAST_COLOR = '#14c4d8';
+export const TRAJ_PAST_OPACITY = 1;
+export const TRAJ_DASH_ARRAY = '12 10';
+export const TRAJ_DASH_ANIM_MS = 800;
+/** Gold tip into the focus sample (end of past). */
+export const TRAJ_TIP_COLOR = '#f0b429';
+export const TRAJ_TIP_WEIGHT = 6.5;
+/** Future path — violet (matches next-neighbor breath), dashed, clearly not past. */
+export const TRAJ_FUTURE_WEIGHT = 3.5;
+export const TRAJ_FUTURE_COLOR = '#8b5cf6';
+export const TRAJ_FUTURE_OPACITY = 0.78;
+export const TRAJ_FUTURE_DASH_ARRAY = '5 9';
 export const FOCUS_PULSE_RADIUS = 14;
 export const FOCUS_PULSE_COLOR = '#ca8519';
 export const FOCUS_PULSE_WEIGHT = 2;

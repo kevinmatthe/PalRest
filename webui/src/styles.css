@@ -418,12 +418,29 @@ select:focus-visible {
 .timeline-cluster-count-tip::before {
   border-top-color: #fff6dd !important;
 }
+/* Past = bright cyan flow; future = violet dashed — high contrast pair. */
 .timeline-traj-past {
-  stroke-dasharray: 10 14;
-  animation: timeline-traj-dash 900ms linear infinite;
+  stroke-dasharray: 12 10;
+  animation: timeline-traj-dash 800ms linear infinite;
+}
+.timeline-traj-past-glow {
+  opacity: 0.35;
+}
+.timeline-traj-future {
+  stroke-dasharray: 5 9;
+  animation: timeline-traj-future-dash 1100ms linear infinite;
+}
+.timeline-traj-future-glow {
+  opacity: 0.28;
+}
+.timeline-traj-tip {
+  filter: drop-shadow(0 0 3px rgba(240, 180, 41, 0.85));
 }
 @keyframes timeline-traj-dash {
-  to { stroke-dashoffset: -24; }
+  to { stroke-dashoffset: -22; }
+}
+@keyframes timeline-traj-future-dash {
+  to { stroke-dashoffset: -14; }
 }
 /* Role-colored breath rings; hit fires once per cursor update, then soft loop. */
 .timeline-breath {
@@ -496,7 +513,8 @@ select:focus-visible {
   border-bottom-color: #ca8519;
 }
 @media (prefers-reduced-motion: reduce) {
-  .timeline-traj-past { animation: none; }
+  .timeline-traj-past,
+  .timeline-traj-future { animation: none; }
   .timeline-breath.timeline-breath-run { animation: none; stroke-opacity: 0.7; }
 }
 .timeline-transport button,

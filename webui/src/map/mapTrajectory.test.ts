@@ -10,6 +10,8 @@ import {
   pingColor,
   splitTrajectoryPastFuture,
   TRAJ_DASH_ARRAY,
+  TRAJ_FUTURE_COLOR,
+  TRAJ_FUTURE_DASH_ARRAY,
   TRAJ_FUTURE_OPACITY,
   TRAJ_FUTURE_WEIGHT,
   TRAJ_PAST_COLOR,
@@ -152,12 +154,14 @@ describe('defaults', () => {
 });
 
 describe('trajectory style constants', () => {
-  it('past is thicker and more opaque than future', () => {
+  it('past is thicker and more opaque than future, with distinct hues', () => {
     expect(TRAJ_PAST_WEIGHT).toBeGreaterThan(TRAJ_FUTURE_WEIGHT);
     expect(TRAJ_PAST_OPACITY).toBeGreaterThan(TRAJ_FUTURE_OPACITY);
-    expect(TRAJ_DASH_ARRAY).toBe('10 14');
+    expect(TRAJ_PAST_COLOR).not.toBe(TRAJ_FUTURE_COLOR);
     expect(TRAJ_PAST_COLOR).toMatch(/^#/);
+    expect(TRAJ_FUTURE_COLOR).toMatch(/^#/);
     expect(TRAJ_TIP_COLOR).toMatch(/^#/);
+    expect(TRAJ_DASH_ARRAY).not.toBe(TRAJ_FUTURE_DASH_ARRAY);
   });
 
   it('breath roles use distinct stroke colors', () => {

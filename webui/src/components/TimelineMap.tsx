@@ -21,12 +21,14 @@ import {
   splitTrajectoryPastFuture,
   TRAJ_DASH_ARRAY,
   TRAJ_FUTURE_COLOR,
+  TRAJ_FUTURE_DASH_ARRAY,
   TRAJ_FUTURE_OPACITY,
   TRAJ_FUTURE_WEIGHT,
   TRAJ_PAST_COLOR,
   TRAJ_PAST_OPACITY,
   TRAJ_PAST_WEIGHT,
   TRAJ_TIP_COLOR,
+  TRAJ_TIP_WEIGHT,
 } from '../map/mapTrajectory';
 import { mergeTimelineTicks, timelinePercent } from '../map/timelineTicks';
 import { bearingDeg, midpointLatLng, shouldPanToFocus, travelBearingEndpoints } from '../map/mapView';
@@ -346,16 +348,36 @@ export function TimelineMap({
     const projectAll = (list: typeof lineSamples) => list.map((s) => projectWorldSample(s));
 
     if (split.future.length >= 2) {
+      // Soft underlay so future stays readable on dark tiles.
+      L.polyline(projectAll(split.future), {
+        color: TRAJ_FUTURE_COLOR,
+        opacity: 0.28,
+        weight: TRAJ_FUTURE_WEIGHT + 3,
+        lineCap: 'round',
+        lineJoin: 'round',
+        className: 'timeline-traj-future-glow',
+        interactive: false,
+      }).addTo(lineLayer);
       L.polyline(projectAll(split.future), {
         color: TRAJ_FUTURE_COLOR,
         opacity: TRAJ_FUTURE_OPACITY,
         weight: TRAJ_FUTURE_WEIGHT,
         lineCap: 'round',
         lineJoin: 'round',
+        dashArray: TRAJ_FUTURE_DASH_ARRAY,
         className: 'timeline-traj-future',
       }).addTo(lineLayer);
     }
     if (split.past.length >= 2) {
+      L.polyline(projectAll(split.past), {
+        color: TRAJ_PAST_COLOR,
+        opacity: 0.35,
+        weight: TRAJ_PAST_WEIGHT + 4,
+        lineCap: 'round',
+        lineJoin: 'round',
+        className: 'timeline-traj-past-glow',
+        interactive: false,
+      }).addTo(lineLayer);
       L.polyline(projectAll(split.past), {
         color: TRAJ_PAST_COLOR,
         opacity: TRAJ_PAST_OPACITY,
@@ -369,7 +391,7 @@ export function TimelineMap({
       L.polyline(projectAll(tip), {
         color: TRAJ_TIP_COLOR,
         opacity: 1,
-        weight: TRAJ_PAST_WEIGHT,
+        weight: TRAJ_TIP_WEIGHT,
         lineCap: 'round',
         lineJoin: 'round',
         className: 'timeline-traj-tip',
