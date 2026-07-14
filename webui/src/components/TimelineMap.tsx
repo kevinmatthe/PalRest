@@ -4,7 +4,11 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import { Map as MapIcon, Route } from 'lucide-react';
-import { revealFocusMarker } from '../map/mapClusterReveal';
+import {
+  clearExpandState,
+  expandClusterForExactPoints,
+  type ExpandState,
+} from '../map/mapClusterReveal';
 import { MAP_LANDMARKS } from '../map/mapLandmarks';
 import { PLAY_SPEEDS, type PlayMode, type PlaySpeed } from '../map/mapPlayback';
 import {
@@ -131,11 +135,13 @@ export function TimelineMap({
   const trackRef = useRef<HTMLDivElement>(null);
   const leafletRef = useRef<L.Map | null>(null);
   const clusterGroupRef = useRef<L.MarkerClusterGroup | null>(null);
+  const expandedLayerRef = useRef<L.LayerGroup | null>(null);
   const lineLayerRef = useRef<L.LayerGroup | null>(null);
   const focusLayerRef = useRef<L.LayerGroup | null>(null);
   const landmarkLayerRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const markersByKeyRef = useRef(new Map<string, SampleCircleMarker>());
+  const expandStateRef = useRef<ExpandState>({ markers: [] });
   const activeSampleKeyRef = useRef('');
   const onSeekTrajectoryRef = useRef(onSeekTrajectory);
   onSeekTrajectoryRef.current = onSeekTrajectory;
@@ -199,7 +205,9 @@ export function TimelineMap({
       showCoverageOnHover: false,
       maxClusterRadius: MAX_CLUSTER_RADIUS,
       disableClusteringAtZoom: DISABLE_CLUSTERING_AT_ZOOM,
-      spiderfyOnMaxZoom: true,
+      // No spiderfy: we expand clusters by rendering true coordinates instead.
+      spiderfyOnMaxZoom: false,
+      spiderfyOnEveryZoom: false,
       zoomToBoundsOnClick: true,
       animate: !(typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches),
       iconCreateFunction(cluster) {
@@ -237,16 +245,20 @@ export function TimelineMap({
       layer.closeTooltip();
       layer.unbindTooltip();
     });
+    // Exact-coordinate siblings of the focused cluster (no radial spiderfy).
+    const expandedLayer = L.layerGroup();
     const lineLayer = L.layerGroup();
     const focusLayer = L.layerGroup();
     const landmarkLayer = L.layerGroup();
     clusterGroup.addTo(map);
+    expandedLayer.addTo(map);
     landmarkLayer.addTo(map);
     lineLayer.addTo(map);
     focusLayer.addTo(map);
     leafletRef.current = map;
     tileLayerRef.current = tileLayer;
     clusterGroupRef.current = clusterGroup;
+    expandedLayerRef.current = expandedLayer;
     lineLayerRef.current = lineLayer;
     focusLayerRef.current = focusLayer;
     landmarkLayerRef.current = landmarkLayer;
@@ -255,10 +267,12 @@ export function TimelineMap({
       leafletRef.current = null;
       tileLayerRef.current = null;
       clusterGroupRef.current = null;
+      expandedLayerRef.current = null;
       lineLayerRef.current = null;
       focusLayerRef.current = null;
       landmarkLayerRef.current = null;
       markersByKeyRef.current.clear();
+      clearExpandState(expandStateRef.current);
     };
   }, []);
 
@@ -283,7 +297,11 @@ export function TimelineMap({
 
   useEffect(() => {
     const clusterGroup = clusterGroupRef.current;
-    if (!clusterGroup) return;
+    const expandedLayer = expandedLayerRef.current;
+    if (!clusterGroup || !expandedLayer) return;
+    // Markers are recreated; drop expansion bookkeeping (old layers are gone).
+    expandedLayer.clearLayers();
+    clearExpandState(expandStateRef.current);
     clusterGroup.clearLayers();
     markersByKeyRef.current.clear();
     points.forEach((point) => {
@@ -300,28 +318,25 @@ export function TimelineMap({
       marker.options.sampleKey = point.key;
       marker.on('click', () => onSeekTrajectoryRef.current(point.sample));
       markersByKeyRef.current.set(point.key, marker);
-      // Keep focus samples inside the cluster so spiderfy can reveal them.
       clusterGroup.addLayer(marker);
     });
-    // Re-apply focus chip styling + spiderfy after full rebuild.
     clusterGroup.refreshClusters();
     const focusMarker = markersByKeyRef.current.get(activeSampleKeyRef.current);
-    // @types/leaflet.markercluster omits group.unspiderfy; runtime has it via include().
-    revealFocusMarker(clusterGroup as unknown as Parameters<typeof revealFocusMarker>[0], focusMarker);
+    expandClusterForExactPoints(clusterGroup, expandedLayer, expandStateRef.current, focusMarker);
   }, [colorMode, points]);
 
   useEffect(() => {
     const map = leafletRef.current;
     const clusterGroup = clusterGroupRef.current;
+    const expandedLayer = expandedLayerRef.current;
     const lineLayer = lineLayerRef.current;
     const focusLayer = focusLayerRef.current;
-    if (!map || !clusterGroup || !lineLayer || !focusLayer) return;
+    if (!map || !clusterGroup || !expandedLayer || !lineLayer || !focusLayer) return;
 
-    // Refresh cluster chips so the parent of the focus sample gets is-focus,
-    // then spiderfy that parent so the sample itself is visible and highlightable.
-    clusterGroup.refreshClusters();
+    // Expand focus cluster into exact-coordinate points (not spiderfy).
     const focusMarker = markersByKeyRef.current.get(activeSampleKey);
-    revealFocusMarker(clusterGroup as unknown as Parameters<typeof revealFocusMarker>[0], focusMarker);
+    expandClusterForExactPoints(clusterGroup, expandedLayer, expandStateRef.current, focusMarker);
+    clusterGroup.refreshClusters();
 
     lineLayer.clearLayers();
     const activeAt = activeItem?.at;
