@@ -12,6 +12,7 @@ import {
 import { MAP_LANDMARKS } from '../map/mapLandmarks';
 import { PLAY_SPEEDS, type PlayMode, type PlaySpeed } from '../map/mapPlayback';
 import {
+  ARROW_EDGE_SIZE_PX,
   ARROW_SIZE_PX,
   BREATH_COLORS,
   collectBreathTargets,
@@ -28,7 +29,7 @@ import {
   TRAJ_TIP_COLOR,
 } from '../map/mapTrajectory';
 import { mergeTimelineTicks, timelinePercent } from '../map/timelineTicks';
-import { bearingDeg, shouldPanToFocus } from '../map/mapView';
+import { bearingDeg, midpointLatLng, shouldPanToFocus, travelBearingEndpoints } from '../map/mapView';
 import {
   eventLabel,
   formatTimelineDateTime,
@@ -414,17 +415,41 @@ export function TimelineMap({
         className: 'timeline-focus-core',
       }).addTo(focusLayer);
 
-      if (split.past.length >= 2) {
-        const from = projectWorldSample(split.past[split.past.length - 2]!);
-        const to = projectWorldSample(split.past[split.past.length - 1]!);
+      // Direction arrows: prev→focus (arrive) preferred; else focus→next (leave).
+      // Also place mid-edge chevrons so travel sense is visible around neighbors.
+      const prevTarget = breathTargets.find((t) => t.role === 'prev');
+      const nextTarget = breathTargets.find((t) => t.role === 'next');
+      const prevPoint = prevTarget ? projectWorldSample(prevTarget.sample) : undefined;
+      const nextPoint = nextTarget ? projectWorldSample(nextTarget.sample) : undefined;
+
+      const addArrow = (
+        at: L.LatLngExpression,
+        from: L.LatLngExpression,
+        to: L.LatLngExpression,
+        tone: 'focus' | 'prev' | 'next',
+        size: number,
+        nudgePx: number,
+      ) => {
         const deg = bearingDeg(from, to);
+        if (!Number.isFinite(deg)) return;
         const icon = L.divIcon({
-          className: 'timeline-traj-arrow',
-          html: `<div class="timeline-traj-arrow-inner" style="transform:rotate(${deg}deg)"></div>`,
-          iconSize: [ARROW_SIZE_PX, ARROW_SIZE_PX],
-          iconAnchor: [ARROW_SIZE_PX / 2, ARROW_SIZE_PX / 2],
+          className: `timeline-traj-arrow timeline-traj-arrow--${tone}`,
+          html: `<div class="timeline-traj-arrow-inner" style="transform:rotate(${deg}deg) translateY(-${nudgePx}px)"></div>`,
+          iconSize: [size, size],
+          iconAnchor: [size / 2, size / 2],
         });
-        L.marker(activePoint, { icon, interactive: false, keyboard: false }).addTo(focusLayer);
+        L.marker(at, { icon, interactive: false, keyboard: false, zIndexOffset: 600 }).addTo(focusLayer);
+      };
+
+      const travel = travelBearingEndpoints(prevPoint, activePoint, nextPoint);
+      if (travel) {
+        addArrow(activePoint, travel.from, travel.to, 'focus', ARROW_SIZE_PX, 12);
+      }
+      if (prevPoint) {
+        addArrow(midpointLatLng(prevPoint, activePoint), prevPoint, activePoint, 'prev', ARROW_EDGE_SIZE_PX, 0);
+      }
+      if (nextPoint) {
+        addArrow(midpointLatLng(activePoint, nextPoint), activePoint, nextPoint, 'next', ARROW_EDGE_SIZE_PX, 0);
       }
 
       // Force SVG path CSS animations to restart on every cursor step.

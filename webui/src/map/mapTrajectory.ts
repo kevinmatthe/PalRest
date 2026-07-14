@@ -138,8 +138,9 @@ export const TRAJ_DASH_ANIM_MS = 900;
 export const FOCUS_PULSE_RADIUS = 14;
 export const FOCUS_PULSE_COLOR = '#ca8519';
 export const FOCUS_PULSE_WEIGHT = 2;
-export const ARROW_SIZE_PX = 12;
+export const ARROW_SIZE_PX = 22;
 export const ARROW_COLOR = '#ca8519';
+export const ARROW_EDGE_SIZE_PX = 16;
 
 /** Breath-highlight roles for focus / trajectory neighbors / expanded siblings. */
 export type BreathRole = 'focus' | 'prev' | 'next' | 'sibling';

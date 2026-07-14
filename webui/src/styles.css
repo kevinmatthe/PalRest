@@ -459,18 +459,41 @@ select:focus-visible {
   50% { stroke-opacity: 0.95; }
 }
 .timeline-traj-arrow {
-  background: transparent;
-  border: none;
+  background: transparent !important;
+  border: none !important;
 }
 .timeline-traj-arrow-inner {
   width: 0;
   height: 0;
   margin: 0 auto;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
-  border-bottom: 10px solid #ca8519;
-  transform-origin: 50% 60%;
-  filter: drop-shadow(0 0 1px #8d5a0f);
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-bottom: 14px solid #ca8519;
+  transform-origin: 50% 70%;
+  filter:
+    drop-shadow(0 0 0 1.5px #fffdf7)
+    drop-shadow(0 0 2px rgba(141, 90, 15, 0.85));
+}
+.timeline-traj-arrow--prev .timeline-traj-arrow-inner {
+  border-left-width: 5px;
+  border-right-width: 5px;
+  border-bottom-width: 11px;
+  border-bottom-color: #0f8fa3;
+  filter:
+    drop-shadow(0 0 0 1px #fffdf7)
+    drop-shadow(0 0 2px rgba(15, 114, 133, 0.7));
+}
+.timeline-traj-arrow--next .timeline-traj-arrow-inner {
+  border-left-width: 5px;
+  border-right-width: 5px;
+  border-bottom-width: 11px;
+  border-bottom-color: #8b5cf6;
+  filter:
+    drop-shadow(0 0 0 1px #fffdf7)
+    drop-shadow(0 0 2px rgba(109, 40, 217, 0.7));
+}
+.timeline-traj-arrow--focus .timeline-traj-arrow-inner {
+  border-bottom-color: #ca8519;
 }
 @media (prefers-reduced-motion: reduce) {
   .timeline-traj-past { animation: none; }
