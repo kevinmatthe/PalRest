@@ -27,13 +27,13 @@ import {
 
 type MapPoint = { key: string; sample: TrajectorySample; latLng: L.LatLngExpression };
 
-const PING_LEGEND: Array<{ label: string; fill: string }> = [
-  { label: '<50', fill: pingColor(20).fill },
-  { label: '50–80', fill: pingColor(60).fill },
-  { label: '80–120', fill: pingColor(100).fill },
-  { label: '120–200', fill: pingColor(150).fill },
-  { label: '>200', fill: pingColor(250).fill },
-  { label: '未知', fill: pingColor(Number.NaN).fill },
+const PING_LEGEND: Array<{ label: string; fill: string; glyph: string }> = [
+  { label: '<50', fill: pingColor(20).fill, glyph: pingColor(20).glyph },
+  { label: '50–80', fill: pingColor(60).fill, glyph: pingColor(60).glyph },
+  { label: '80–120', fill: pingColor(100).fill, glyph: pingColor(100).glyph },
+  { label: '120–200', fill: pingColor(150).fill, glyph: pingColor(150).glyph },
+  { label: '>200', fill: pingColor(250).fill, glyph: pingColor(250).glyph },
+  { label: '未知', fill: pingColor(Number.NaN).fill, glyph: pingColor(Number.NaN).glyph },
 ];
 
 export function tileErrorTransition(alreadyFellBack: boolean, coords: { x: number; y: number; z: number }): { action: 'retry'; src: string } | { action: 'fail' } {
@@ -236,9 +236,9 @@ export function TimelineMap({
     points.forEach((point) => {
       const colors = colorMode === 'ping'
         ? pingColor(point.sample.ping)
-        : { fill: '#fffdf7', stroke: '#0f7285' };
+        : { fill: '#fffdf7', stroke: '#0f7285', radius: 4 };
       const marker = L.circleMarker(point.latLng, {
-        radius: 4,
+        radius: colors.radius,
         color: colors.stroke,
         fillColor: colors.fill,
         fillOpacity: 1,
@@ -287,7 +287,7 @@ export function TimelineMap({
       const activePoint = projectWorldSample(focusSample);
       const ping = colorMode === 'ping' ? pingColor(focusSample.ping) : null;
       L.circleMarker(activePoint, {
-        radius: 8,
+        radius: ping ? Math.max(8, ping.radius + 3) : 8,
         color: '#8d5a0f',
         fillColor: ping?.fill ?? '#ca8519',
         fillOpacity: 0.92,
@@ -327,6 +327,7 @@ export function TimelineMap({
         {PING_LEGEND.map((entry) => (
           <span className="timeline-ping-legend-item" key={entry.label}>
             <span className="timeline-ping-swatch" style={{ background: entry.fill }} aria-hidden="true" />
+            <span className="timeline-ping-glyph" aria-hidden="true">{entry.glyph}</span>
             {entry.label}
           </span>
         ))}

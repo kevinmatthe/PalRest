@@ -356,6 +356,7 @@ select:focus-visible {
   border: 1px solid rgba(24, 35, 31, 0.25);
   border-radius: 999px;
 }
+.timeline-ping-glyph { font-size: 0.8rem; line-height: 1; color: #33443c; }
 .timeline-transport {
   display: grid;
   grid-template-columns: auto auto auto auto auto minmax(0, 1fr);

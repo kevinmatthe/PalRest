@@ -58,13 +58,18 @@ export function hybridTrajectoryWindow<T extends TrajectoryPointLike>(
 
 export type PingBin = 'lt50' | '50_80' | '80_120' | '120_200' | 'gt200' | 'unknown';
 
-const PING_STYLES: Record<PingBin, { fill: string; stroke: string }> = {
-  lt50: { fill: '#2f9e44', stroke: '#1b5e2a' },
-  '50_80': { fill: '#82c91e', stroke: '#5c8a14' },
-  '80_120': { fill: '#f59f00', stroke: '#b37100' },
-  '120_200': { fill: '#f76707', stroke: '#b34a05' },
-  gt200: { fill: '#e03131', stroke: '#9b2020' },
-  unknown: { fill: '#868e96', stroke: '#495057' },
+/**
+ * Colorblind-friendlier ramp (blue → cyan → gold → vermillion → magenta),
+ * inspired by Okabe–Ito / blue-orange sequences rather than pure green→red.
+ * Radius adds a redundant non-color channel for the same bins.
+ */
+const PING_STYLES: Record<PingBin, { fill: string; stroke: string; radius: number; glyph: string }> = {
+  lt50: { fill: '#0072B2', stroke: '#004b75', radius: 3, glyph: '●' },
+  '50_80': { fill: '#56B4E9', stroke: '#2b7aa8', radius: 3.5, glyph: '◆' },
+  '80_120': { fill: '#E69F00', stroke: '#9a6a00', radius: 4, glyph: '▲' },
+  '120_200': { fill: '#D55E00', stroke: '#8f3e00', radius: 5, glyph: '■' },
+  gt200: { fill: '#CC79A7', stroke: '#8a4f70', radius: 6, glyph: '✖' },
+  unknown: { fill: '#999999', stroke: '#555555', radius: 3.5, glyph: '?' },
 };
 
 export function pingBin(ping: number): PingBin {
@@ -76,7 +81,7 @@ export function pingBin(ping: number): PingBin {
   return 'gt200';
 }
 
-export function pingColor(ping: number): { bin: PingBin; fill: string; stroke: string } {
+export function pingColor(ping: number): { bin: PingBin; fill: string; stroke: string; radius: number; glyph: string } {
   const bin = pingBin(ping);
   return { bin, ...PING_STYLES[bin] };
 }

@@ -42,4 +42,12 @@ describe('MAP_LANDMARKS', () => {
   it('ships full reference coordinate set', () => {
     expect(MAP_LANDMARKS.length).toBeGreaterThanOrEqual(146);
   });
+
+  it('uses Chinese tower names and regional FT labels', () => {
+    const tower = MAP_LANDMARKS.find((lm) => lm.id === 'tw-0');
+    expect(tower?.nameZh).toMatch(/塔/);
+    expect(tower?.nameZh).not.toMatch(/^首领塔 \d+$/);
+    const ft = MAP_LANDMARKS.find((lm) => lm.id === 'ft-0');
+    expect(ft?.nameZh).toMatch(/·/);
+  });
 });

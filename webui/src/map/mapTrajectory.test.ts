@@ -110,7 +110,7 @@ describe('hybridTrajectoryWindow', () => {
 });
 
 describe('pingColor', () => {
-  it('maps traffic-light bins including boundaries', () => {
+  it('maps colorblind-friendly bins with radius/glyph channels', () => {
     expect(pingColor(20).fill).toMatch(/#/);
     expect(pingColor(20).bin).toBe('lt50');
     expect(pingBin(49.9)).toBe('lt50');
@@ -125,6 +125,10 @@ describe('pingColor', () => {
     expect(pingColor(Number.NaN).bin).toBe('unknown');
     expect(pingBin(-1)).toBe('unknown');
     expect(pingColor(20).stroke).toMatch(/#/);
+    // Higher latency → larger marker (redundant encoding).
+    expect(pingColor(20).radius).toBeLessThan(pingColor(250).radius);
+    expect(pingColor(20).glyph).toBeTruthy();
+    expect(pingColor(250).glyph).not.toBe(pingColor(20).glyph);
   });
 });
 

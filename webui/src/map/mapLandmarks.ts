@@ -153,16 +153,37 @@ export const MAP_LANDMARKS: MapLandmark[] = [
   { id: "ft-134", nameZh: "传送点 135", x: -346617.6, y: 191706.6, kind: "fast_travel" },
   { id: "ft-135", nameZh: "传送点 136", x: -278468, y: 212679.4, kind: "fast_travel" },
   { id: "ft-136", nameZh: "传送点 137", x: -302825, y: 241060, kind: "fast_travel" },
-  { id: "tw-0", nameZh: "首领塔 1", x: -266563.2, y: 174506.3, kind: "boss_tower" },
-  { id: "tw-1", nameZh: "首领塔 2", x: -361695, y: -112009, kind: "boss_tower" },
-  { id: "tw-2", nameZh: "首领塔 3", x: 81363, y: 90183, kind: "boss_tower" },
-  { id: "tw-3", nameZh: "首领塔 4", x: 29975.3, y: 413325, kind: "boss_tower" },
-  { id: "tw-4", nameZh: "首领塔 5", x: -321596.2, y: 209085, kind: "boss_tower" },
-  { id: "tw-5", nameZh: "首领塔 6", x: -778215.9, y: -36026, kind: "boss_tower" },
-  { id: "tw-6", nameZh: "首领塔 7", x: -889805.2, y: -435828, kind: "boss_tower" },
-  { id: "tw-7", nameZh: "首领塔 8", x: -29427.6, y: -115900.1, kind: "boss_tower" },
-  { id: "tw-8", nameZh: "首领塔 9", x: -108093.8, y: 77936.1, kind: "boss_tower" },
+  { id: "tw-0", nameZh: "西原之塔", x: -266563.2, y: 174506.3, kind: "boss_tower" },
+  { id: "tw-1", nameZh: "竹林之塔", x: -361695, y: -112009, kind: "boss_tower" },
+  { id: "tw-2", nameZh: "湖心之塔", x: 81363, y: 90183, kind: "boss_tower" },
+  { id: "tw-3", nameZh: "冰封之塔", x: 29975.3, y: 413325, kind: "boss_tower" },
+  { id: "tw-4", nameZh: "荒漠之塔", x: -321596.2, y: 209085, kind: "boss_tower" },
+  { id: "tw-5", nameZh: "雷鸣之塔", x: -778215.9, y: -36026, kind: "boss_tower" },
+  { id: "tw-6", nameZh: "火山之塔", x: -889805.2, y: -435828, kind: "boss_tower" },
+  { id: "tw-7", nameZh: "南境之塔", x: -29427.6, y: -115900.1, kind: "boss_tower" },
+  { id: "tw-8", nameZh: "初始之塔", x: -108093.8, y: 77936.1, kind: "boss_tower" },
 ];
+
+/** Coarse regional label for FT points (best-effort; not official POI names). */
+export function regionNameZh(x: number, y: number): string {
+  if (y >= 280_000) return '雪原';
+  if (y <= -280_000) return '火山带';
+  if (x <= -700_000) return '远西';
+  if (x >= 50_000 && y >= 50_000) return '东北';
+  if (x >= 50_000) return '东陆';
+  if (x <= -350_000 && y >= 0) return '西陆';
+  if (x <= -350_000) return '西南';
+  if (y >= 80_000) return '北陆';
+  if (y <= -80_000) return '南陆';
+  return '中央';
+}
+
+// Enrich generic FT labels with region for better Chinese readability.
+for (const lm of MAP_LANDMARKS) {
+  if (lm.kind === 'fast_travel' && /^传送点 \d+$/.test(lm.nameZh)) {
+    lm.nameZh = `${regionNameZh(lm.x, lm.y)} · ${lm.nameZh}`;
+  }
+}
 
 export function nearestLandmark(
   point: { x: number; y: number },
