@@ -88,9 +88,9 @@ See matrix; detail when scheduled.
 | 2026-07-14 | O10 | Done — cluster marker click → `seekTrajectorySample` | `47f0de1` |
 | 2026-07-14 | O12 | Done — README root context + `git lfs pull` + runtime fallback | `47f0de1` |
 | 2026-07-14 | O3-fix | Done — disable list `scrollIntoView` while autoplay (`followActive={!playing}`) so the map stays visible | `843d64f` |
-| 2026-07-14 | O5 | Done — `mergeTimelineTicks` pixel-bucket ticks; ResizeObserver track width |  |
-| 2026-07-14 | O8 | Done — `TimelineMap.tsx` + `timelineShared.ts`; shell owns data/playback |  |
-| 2026-07-14 | O6 | Partial — unified `LOCATION_COORDINATE_FALLBACK` (`地图坐标位置`); FT/tower still numbered v1 names |  |
+| 2026-07-14 | O5 | Done — `mergeTimelineTicks` pixel-bucket ticks; ResizeObserver track width | `c592823` |
+| 2026-07-14 | O8 | Done — `TimelineMap.tsx` + `timelineShared.ts`; shell owns data/playback | `c592823` |
+| 2026-07-14 | O6 | Partial — unified `LOCATION_COORDINATE_FALLBACK` (`地图坐标位置`); FT/tower still numbered v1 names | `c592823` |
 
 ---
 
