@@ -5,6 +5,13 @@ import {
   hybridTrajectoryWindow,
   pingBin,
   pingColor,
+  TRAJ_DASH_ARRAY,
+  TRAJ_FUTURE_OPACITY,
+  TRAJ_FUTURE_WEIGHT,
+  TRAJ_PAST_COLOR,
+  TRAJ_PAST_OPACITY,
+  TRAJ_PAST_WEIGHT,
+  TRAJ_TIP_COLOR,
   type TrajectoryPointLike,
 } from './mapTrajectory';
 
@@ -82,7 +89,7 @@ describe('hybridTrajectoryWindow', () => {
     expect(hybridTrajectoryWindow([base[0]!], base[0]!.observed_at)).toHaveLength(1);
   });
 
-  it('uses design defaults of 10min window and 12 max points', () => {
+  it('uses design defaults of 10min window and 16 max points', () => {
     // 1 point/min for 30 minutes on one segment; cursor mid-window
     const many = Array.from({ length: 31 }, (_, i) =>
       pt({
@@ -94,9 +101,10 @@ describe('hybridTrajectoryWindow', () => {
     );
     const cursor = many[15]!.observed_at; // 10:15
     const got = hybridTrajectoryWindow(many, cursor);
-    // default window ±10min → indices 5..25 (21 pts), then cap to 12 past-preferring around 15
+    // ±10min → indices 5..25 (21 pts), cap 16 past-preferring around 15
+    // ceil(15/2)=8 past + anchor + floor(15/2)=7 future → indices 7..22
     expect(got).toHaveLength(DEFAULT_TRAJECTORY_MAX_POINTS);
-    expect(got.map((p) => p.x)).toEqual([9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(got.map((p) => p.x)).toEqual([7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
     // points outside ±10min of cursor are excluded before cap
     const far = hybridTrajectoryWindow(
       [
@@ -135,6 +143,16 @@ describe('pingColor', () => {
 describe('defaults', () => {
   it('exports design defaults', () => {
     expect(DEFAULT_TRAJECTORY_WINDOW_MS).toBe(10 * 60_000);
-    expect(DEFAULT_TRAJECTORY_MAX_POINTS).toBe(12);
+    expect(DEFAULT_TRAJECTORY_MAX_POINTS).toBe(16);
+  });
+});
+
+describe('trajectory style constants', () => {
+  it('past is thicker and more opaque than future', () => {
+    expect(TRAJ_PAST_WEIGHT).toBeGreaterThan(TRAJ_FUTURE_WEIGHT);
+    expect(TRAJ_PAST_OPACITY).toBeGreaterThan(TRAJ_FUTURE_OPACITY);
+    expect(TRAJ_DASH_ARRAY).toBe('10 14');
+    expect(TRAJ_PAST_COLOR).toMatch(/^#/);
+    expect(TRAJ_TIP_COLOR).toMatch(/^#/);
   });
 });

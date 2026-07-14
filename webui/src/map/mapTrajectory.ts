@@ -7,7 +7,7 @@ export type TrajectoryPointLike = {
 };
 
 export const DEFAULT_TRAJECTORY_WINDOW_MS = 10 * 60_000;
-export const DEFAULT_TRAJECTORY_MAX_POINTS = 12;
+export const DEFAULT_TRAJECTORY_MAX_POINTS = 16;
 
 export type HybridOptions = {
   windowMs?: number;
@@ -85,3 +85,18 @@ export function pingColor(ping: number): { bin: PingBin; fill: string; stroke: s
   const bin = pingBin(ping);
   return { bin, ...PING_STYLES[bin] };
 }
+
+export const TRAJ_PAST_WEIGHT = 4.5;
+export const TRAJ_FUTURE_WEIGHT = 2.5;
+export const TRAJ_PAST_COLOR = '#0f8fa3';
+export const TRAJ_FUTURE_COLOR = '#0f7285';
+export const TRAJ_FUTURE_OPACITY = 0.35;
+export const TRAJ_PAST_OPACITY = 0.95;
+export const TRAJ_TIP_COLOR = '#ca8519';
+export const TRAJ_DASH_ARRAY = '10 14';
+export const TRAJ_DASH_ANIM_MS = 900;
+export const FOCUS_PULSE_RADIUS = 14;
+export const FOCUS_PULSE_COLOR = '#ca8519';
+export const FOCUS_PULSE_WEIGHT = 2;
+export const ARROW_SIZE_PX = 12;
+export const ARROW_COLOR = '#ca8519';
