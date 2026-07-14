@@ -5,6 +5,7 @@ import {
   hybridTrajectoryWindow,
   pingBin,
   pingColor,
+  splitTrajectoryPastFuture,
   TRAJ_DASH_ARRAY,
   TRAJ_FUTURE_OPACITY,
   TRAJ_FUTURE_WEIGHT,
@@ -154,5 +155,43 @@ describe('trajectory style constants', () => {
     expect(TRAJ_DASH_ARRAY).toBe('10 14');
     expect(TRAJ_PAST_COLOR).toMatch(/^#/);
     expect(TRAJ_TIP_COLOR).toMatch(/^#/);
+  });
+});
+
+describe('splitTrajectoryPastFuture', () => {
+  const windowPts = [
+    pt({ observed_at: '2026-07-14T10:00:00.000Z', segment_id: 's1', x: 0, y: 0 }),
+    pt({ observed_at: '2026-07-14T10:05:00.000Z', segment_id: 's1', x: 1, y: 0 }),
+    pt({ observed_at: '2026-07-14T10:10:00.000Z', segment_id: 's1', x: 2, y: 0 }),
+    pt({ observed_at: '2026-07-14T10:15:00.000Z', segment_id: 's1', x: 3, y: 0 }),
+  ];
+
+  it('returns empty split for empty window', () => {
+    const s = splitTrajectoryPastFuture([], '2026-07-14T10:10:00.000Z');
+    expect(s.past).toEqual([]);
+    expect(s.future).toEqual([]);
+    expect(s.anchor).toBeUndefined();
+    expect(s.anchorIndex).toBe(-1);
+  });
+
+  it('shares single point on both past and future', () => {
+    const s = splitTrajectoryPastFuture([windowPts[0]!], windowPts[0]!.observed_at);
+    expect(s.past).toHaveLength(1);
+    expect(s.future).toHaveLength(1);
+    expect(s.past[0]).toBe(s.future[0]);
+    expect(s.anchorIndex).toBe(0);
+  });
+
+  it('splits at anchor: past ends with anchor, future starts with anchor', () => {
+    const s = splitTrajectoryPastFuture(windowPts, '2026-07-14T10:10:00.000Z');
+    expect(s.anchorIndex).toBe(2);
+    expect(s.past.map((p) => p.x)).toEqual([0, 1, 2]);
+    expect(s.future.map((p) => p.x)).toEqual([2, 3]);
+  });
+
+  it('uses latest sample at or before activeAt as anchor', () => {
+    const s = splitTrajectoryPastFuture(windowPts, '2026-07-14T10:12:00.000Z');
+    expect(s.anchorIndex).toBe(2);
+    expect(s.anchor?.x).toBe(2);
   });
 });

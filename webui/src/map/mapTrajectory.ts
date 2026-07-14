@@ -56,6 +56,46 @@ export function hybridTrajectoryWindow<T extends TrajectoryPointLike>(
   return sameSegment.slice(start, end);
 }
 
+export type TrajectorySplit<T> = {
+  past: T[];
+  future: T[];
+  anchor: T | undefined;
+  anchorIndex: number;
+};
+
+export function splitTrajectoryPastFuture<T extends TrajectoryPointLike>(
+  windowSamples: T[],
+  activeAt: string | undefined,
+): TrajectorySplit<T> {
+  if (!windowSamples.length) {
+    return { past: [], future: [], anchor: undefined, anchorIndex: -1 };
+  }
+  const anchor = anchorSample(windowSamples, activeAt);
+  let anchorIndex = anchor
+    ? windowSamples.findIndex((s) => s === anchor || s.observed_at === anchor.observed_at)
+    : -1;
+  if (anchorIndex < 0) {
+    const activeMS = activeAt ? Date.parse(activeAt) : Number.NaN;
+    if (Number.isFinite(activeMS)) {
+      for (let i = windowSamples.length - 1; i >= 0; i -= 1) {
+        const t = Date.parse(windowSamples[i]!.observed_at);
+        if (Number.isFinite(t) && t <= activeMS) {
+          anchorIndex = i;
+          break;
+        }
+      }
+    }
+    if (anchorIndex < 0) anchorIndex = 0;
+  }
+  const resolved = windowSamples[anchorIndex]!;
+  return {
+    past: windowSamples.slice(0, anchorIndex + 1),
+    future: windowSamples.slice(anchorIndex),
+    anchor: resolved,
+    anchorIndex,
+  };
+}
+
 export type PingBin = 'lt50' | '50_80' | '80_120' | '120_200' | 'gt200' | 'unknown';
 
 /**
