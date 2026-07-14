@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
@@ -128,8 +128,6 @@ export type TimelineMapProps = {
   highlightedPOIId?: string | null;
   /** Pan/zoom target from list clicks; fit once per key. */
   focusTarget?: MapFocusTarget | null;
-  /** Floating panel over the map (e.g. behavior summary). */
-  sidePanel?: ReactNode;
 };
 
 export function TimelineMap({
@@ -150,7 +148,6 @@ export function TimelineMap({
   highlightedTeleport = null,
   highlightedPOIId = null,
   focusTarget = null,
-  sidePanel = null,
 }: TimelineMapProps) {
   const mapElementRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -291,7 +288,19 @@ export function TimelineMap({
     behaviorOverlayRef.current = behaviorOverlay;
     focusLayerRef.current = focusLayer;
     landmarkLayerRef.current = landmarkLayer;
+    const invalidate = () => {
+      try {
+        map.invalidateSize({ animate: false });
+      } catch {
+        /* map torn down */
+      }
+    };
+    // Layout can change (toolbar / dock); keep tiles aligned to the container.
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => invalidate()) : null;
+    ro?.observe(mapElementRef.current);
+    requestAnimationFrame(invalidate);
     return () => {
+      ro?.disconnect();
       map.remove();
       leafletRef.current = null;
       tileLayerRef.current = null;
@@ -694,7 +703,6 @@ export function TimelineMap({
       <div aria-label="Palworld 完整游戏地图" className="timeline-leaflet-map" data-testid="timeline-map" ref={mapElementRef} role="img" />
       {!mapAvailable ? <div className="timeline-map-missing" role="status">真实地图瓦片加载失败：本地 <code>webui/public/map/tiles</code> 与 palworld.gg 均无法读取，请检查 Git LFS 或网络。</div> : null}
       {!points.length ? <div className="timeline-map-empty">{loading ? '正在加载轨迹证据。' : selected ? '当前时间范围没有位置样本，已显示完整地图。' : '选择玩家后叠加轨迹。'}</div> : null}
-      {sidePanel ? <div className="timeline-map-side-panel">{sidePanel}</div> : null}
     </div>
     <div className="timeline-cursor">
       <div className="timeline-cursor-track" aria-hidden="true" ref={trackRef} data-testid="timeline-cursor-track">

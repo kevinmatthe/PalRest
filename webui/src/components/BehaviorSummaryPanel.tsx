@@ -17,8 +17,8 @@ export type BehaviorSummaryPanelProps = {
   summary: BehaviorSummary | null;
   loading: boolean;
   selected: boolean;
-  /** Compact floating panel over the map. */
-  variant?: 'inline' | 'overlay';
+  /** inline = page flow; dock = side column outside map; overlay = legacy over-map. */
+  variant?: 'inline' | 'overlay' | 'dock';
   /** Index into summary.teleportSuspects currently shown on the map; null = none. */
   highlightedTeleportIndex?: number | null;
   onHighlightTeleport?: (index: number | null) => void;
@@ -50,7 +50,7 @@ export function BehaviorSummaryPanel({
 
   return (
     <section
-      className={`behavior-summary${variant === 'overlay' ? ' behavior-summary--overlay' : ''}`}
+      className={`behavior-summary${variant === 'overlay' || variant === 'dock' ? ` behavior-summary--${variant}` : ''}`}
       aria-label="行为摘要"
     >
       <header className="behavior-summary-header">

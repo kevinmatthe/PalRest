@@ -436,29 +436,37 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   }
 
   return (
-    <section className="timeline-recorder" aria-labelledby="timeline-heading" onKeyDown={onTimelineKeyDown}>
-      <header className="timeline-heading">
+    <section className="timeline-recorder timeline-recorder--map-first" aria-labelledby="timeline-heading" onKeyDown={onTimelineKeyDown}>
+      <header className="timeline-heading timeline-heading--compact">
         <div>
           <p className="eyebrow">{includePrivate ? '管理员观察记录' : '公开观察记录'}</p>
           <h2 id="timeline-heading">玩家观察时间轴</h2>
-          <p>仅展示已记录的证据，不自动补全缺口。</p>
         </div>
         {includePrivate ? <span className="timeline-private"><ShieldAlert size={16} /> 管理员私有视图</span> : null}
       </header>
-      <div className="timeline-layout">
-        <aside className="timeline-filters" aria-label="时间轴筛选">
-          <label className="timeline-field">
-            <span>搜索已知玩家</span>
-            <span className="timeline-input-with-icon"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="名称、账号或 ID" /></span>
-          </label>
-          <label className="timeline-field">
-            <span>玩家</span>
-            <select value={selectedID} onChange={(event) => setSelectedID(event.target.value)}>
-              <option value="">请选择玩家…</option>
-              {visiblePlayers.map((player) => <option value={player.user_id} key={player.user_id}>{player.name || player.account_name || player.user_id} · {player.account_name || player.user_id}</option>)}
-            </select>
-          </label>
+
+      <div className="timeline-toolbar" aria-label="时间轴筛选">
+        <label className="timeline-field timeline-field--inline">
+          <span className="sr-only">搜索已知玩家</span>
+          <span className="timeline-input-with-icon">
+            <Search size={16} />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索玩家" aria-label="搜索已知玩家" />
+          </span>
+        </label>
+        <label className="timeline-field timeline-field--inline timeline-field--player">
+          <span className="sr-only">玩家</span>
+          <select value={selectedID} onChange={(event) => setSelectedID(event.target.value)} aria-label="玩家">
+            <option value="">请选择玩家…</option>
+            {visiblePlayers.map((player) => (
+              <option value={player.user_id} key={player.user_id}>
+                {player.name || player.account_name || player.user_id} · {player.account_name || player.user_id}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="timeline-toolbar-window">
           <TimeWindowControl
+            compact
             start={start}
             end={end}
             onRangeChange={(nextStart, nextEnd) => {
@@ -470,8 +478,11 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             showExact={showExactRange}
             onShowExactChange={setShowExactRange}
           />
-        </aside>
-        <div className="timeline-log">
+        </div>
+      </div>
+
+      <div className="timeline-stage">
+        <div className="timeline-stage-map">
           <TimelineMap
             activeIndex={activeIndex}
             items={items}
@@ -490,82 +501,85 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             highlightedTeleport={highlightedTeleport}
             highlightedPOIId={highlightedPOIId}
             focusTarget={mapFocusTarget}
-            sidePanel={
-              selectedID ? (
-                <BehaviorSummaryPanel
-                  variant="overlay"
-                  selected
-                  loading={state.kind === 'loading'}
-                  summary={behaviorSummary}
-                  highlightedTeleportIndex={highlightedTeleportIndex}
-                  onHighlightTeleport={highlightTeleport}
-                  highlightedPOIId={highlightedPOIId}
-                  onFocusPOI={focusPOI}
-                />
-              ) : null
-            }
           />
-          {!selectedID ? <EmptyState icon={<Compass size={28} />} text="选择玩家后查看轨迹和事件。" /> : null}
-          {state.kind === 'not-found' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> 该玩家已不在观察记录中。</div> : null}
-          {state.kind === 'error' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> {state.message}</div> : null}
-          {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="当前时间范围没有观察记录。" /> : null}
-          {selectedID && state.kind !== 'idle' && state.kind !== 'not-found' ? (
-            <div className="timeline-detail-section">
-              <button
-                type="button"
-                className="timeline-detail-toggle"
-                aria-expanded={detailExpanded}
-                aria-controls="timeline-detail-body"
-                disabled={state.kind === 'loading'}
-                onClick={() => setDetailExpanded((open) => !open)}
-              >
-                <span>证据明细</span>
-                <span className="timeline-detail-toggle-meta">
-                  {state.kind === 'loading'
-                    ? '加载中…'
-                    : state.kind === 'ready'
-                      ? `${items.length} 条 · 默认折叠`
-                      : '—'}
-                </span>
-              </button>
-              {detailExpanded ? (
-                <div className="timeline-detail-body" id="timeline-detail-body">
-                  {state.kind === 'loading' ? (
-                    <div className="timeline-skeleton" role="status" aria-label="正在加载时间轴">
-                      <span /><span /><span />
-                    </div>
-                  ) : null}
-                  {mayBeTruncated ? (
-                    <div className="timeline-alert timeline-alert--info" role="status">
-                      <AlertTriangle size={18} />
-                      <span>
-                        默认加载时间范围内<strong>最近</strong>最多 500 条/类{truncationDetail ? `（${truncationDetail}）` : ''}。
-                        {canLoadOlder ? ' 可继续加载更早证据。' : ' 可缩小时间范围查看完整证据。'}
-                      </span>
-                      {canLoadOlder ? (
-                        <button type="button" className="timeline-load-older" disabled={loadingOlder} onClick={() => void loadOlder()}>
-                          {loadingOlder ? '加载中…' : '加载更早'}
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {state.kind === 'ready' && items.length > 0 ? (
-                    <TimelineSpineList
-                      activeIndex={activeIndex}
-                      locationNames={locationNames}
-                      onSelect={seekCursor}
-                      rows={rows}
-                      segmentNames={segmentNames}
-                    />
-                  ) : null}
-                  {state.kind === 'ready' && items.length === 0 ? (
-                    <p className="timeline-detail-empty">当前范围无证据条目可展示。</p>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
         </div>
+        {selectedID ? (
+          <aside className="timeline-behavior-dock" aria-label="行为摘要面板">
+            <BehaviorSummaryPanel
+              variant="dock"
+              selected
+              loading={state.kind === 'loading'}
+              summary={behaviorSummary}
+              highlightedTeleportIndex={highlightedTeleportIndex}
+              onHighlightTeleport={highlightTeleport}
+              highlightedPOIId={highlightedPOIId}
+              onFocusPOI={focusPOI}
+            />
+          </aside>
+        ) : null}
+      </div>
+
+      <div className="timeline-below">
+        {!selectedID ? <EmptyState icon={<Compass size={28} />} text="选择玩家后查看轨迹和事件。" /> : null}
+        {state.kind === 'not-found' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> 该玩家已不在观察记录中。</div> : null}
+        {state.kind === 'error' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> {state.message}</div> : null}
+        {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="当前时间范围没有观察记录。" /> : null}
+        {selectedID && state.kind !== 'idle' && state.kind !== 'not-found' ? (
+          <div className="timeline-detail-section">
+            <button
+              type="button"
+              className="timeline-detail-toggle"
+              aria-expanded={detailExpanded}
+              aria-controls="timeline-detail-body"
+              disabled={state.kind === 'loading'}
+              onClick={() => setDetailExpanded((open) => !open)}
+            >
+              <span>证据明细</span>
+              <span className="timeline-detail-toggle-meta">
+                {state.kind === 'loading'
+                  ? '加载中…'
+                  : state.kind === 'ready'
+                    ? `${items.length} 条 · 默认折叠`
+                    : '—'}
+              </span>
+            </button>
+            {detailExpanded ? (
+              <div className="timeline-detail-body" id="timeline-detail-body">
+                {state.kind === 'loading' ? (
+                  <div className="timeline-skeleton" role="status" aria-label="正在加载时间轴">
+                    <span /><span /><span />
+                  </div>
+                ) : null}
+                {mayBeTruncated ? (
+                  <div className="timeline-alert timeline-alert--info" role="status">
+                    <AlertTriangle size={18} />
+                    <span>
+                      默认加载时间范围内<strong>最近</strong>最多 500 条/类{truncationDetail ? `（${truncationDetail}）` : ''}。
+                      {canLoadOlder ? ' 可继续加载更早证据。' : ' 可缩小时间范围查看完整证据。'}
+                    </span>
+                    {canLoadOlder ? (
+                      <button type="button" className="timeline-load-older" disabled={loadingOlder} onClick={() => void loadOlder()}>
+                        {loadingOlder ? '加载中…' : '加载更早'}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {state.kind === 'ready' && items.length > 0 ? (
+                  <TimelineSpineList
+                    activeIndex={activeIndex}
+                    locationNames={locationNames}
+                    onSelect={seekCursor}
+                    rows={rows}
+                    segmentNames={segmentNames}
+                  />
+                ) : null}
+                {state.kind === 'ready' && items.length === 0 ? (
+                  <p className="timeline-detail-empty">当前范围无证据条目可展示。</p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </section>
   );

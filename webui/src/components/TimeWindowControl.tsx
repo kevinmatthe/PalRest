@@ -22,6 +22,8 @@ export type TimeWindowControlProps = {
   toLocalInput: (date: Date) => string;
   showExact?: boolean;
   onShowExactChange?: (open: boolean) => void;
+  /** Dense horizontal toolbar layout. */
+  compact?: boolean;
 };
 
 function readRange(
@@ -46,6 +48,7 @@ export function TimeWindowControl({
   toLocalInput,
   showExact = false,
   onShowExactChange,
+  compact = false,
 }: TimeWindowControlProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ pointerId: number; grabOffset: number } | null>(null);
@@ -127,7 +130,7 @@ export function TimeWindowControl({
   }
 
   return (
-    <div className="timeline-window-control">
+    <div className={`timeline-window-control${compact ? ' timeline-window-control--compact' : ''}`}>
       <div className="timeline-presets" role="group" aria-label="观察窗口长度">
         {WINDOW_PRESETS.map((preset) => (
           <button

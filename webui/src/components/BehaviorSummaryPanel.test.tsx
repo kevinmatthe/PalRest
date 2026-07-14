@@ -258,7 +258,7 @@ describe('BehaviorSummaryPanel', () => {
       />,
     );
 
-    expect(document.querySelector('.behavior-summary--overlay')).toBeTruthy();
+    expect(document.querySelector('.behavior-summary--overlay, .behavior-summary--dock')).toBeTruthy();
     const dwellBtn = screen.getByRole('button', { name: /初始之塔/ });
     await user.click(dwellBtn);
     expect(onFocusPOI).toHaveBeenCalledWith('tw-1');
