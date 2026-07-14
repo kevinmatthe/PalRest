@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Compass, Crosshair, Radio, Search, ShieldAlert } from 'lucide-react';
 import { ApiError, getPlayerTimeline, type Player, type PlayerTimelineResponse, type TimelineEvent } from '../api';
+import { summarizeBehavior } from '../behavior/behaviorMetrics';
 import { nextCursorIndex, playStepDelayMs, prevCursorIndex, type PlayMode, type PlaySpeed } from '../map/mapPlayback';
 import { DEFAULT_ROW_ESTIMATE_PX, scrollTopForIndex, virtualWindow } from '../map/timelineVirtual';
+import { BehaviorSummaryPanel } from './BehaviorSummaryPanel';
 import { TimelineMap, tileErrorTransition } from './TimelineMap';
 import {
   confidenceLabel,
@@ -178,6 +180,17 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   }, [includePrivate, selectedID, start, end, refreshKey, rangeError]);
 
   const items = useMemo(() => state.kind === 'ready' ? mergeTimeline(state.data, includePrivate) : [], [includePrivate, state]);
+  const behaviorSummary = useMemo(() => {
+    if (!selectedID || rangeError) return null;
+    const parsedStart = parseLocalDateTime(start).date;
+    const parsedEnd = parseLocalDateTime(end).date;
+    if (!parsedStart || !parsedEnd) return null;
+    return summarizeBehavior(trajectorySamples(items), {
+      windowStartMs: parsedStart.getTime(),
+      windowEndMs: parsedEnd.getTime(),
+      includeEdges: true,
+    });
+  }, [selectedID, rangeError, start, end, items]);
   const rows = useMemo(() => annotateTrajectoryEvidence(items), [items]);
   const segmentNames = useMemo(() => segmentLabels(items), [items]);
   const locationNames = useMemo(() => trajectoryLocationLabels(items), [items]);
@@ -377,6 +390,11 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             onPlayingChange={setPlaying}
             onSpeedChange={setSpeed}
             selected={Boolean(selectedID)}
+          />
+          <BehaviorSummaryPanel
+            selected={Boolean(selectedID)}
+            loading={state.kind === 'loading'}
+            summary={behaviorSummary}
           />
           {!selectedID ? <EmptyState icon={<Compass size={28} />} text="选择玩家后查看轨迹和事件。" /> : null}
           {state.kind === 'loading' ? <div className="timeline-skeleton" role="status" aria-label="正在加载时间轴"><span /><span /><span /></div> : null}
