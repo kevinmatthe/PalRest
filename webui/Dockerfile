@@ -19,8 +19,10 @@ COPY webui/index.html webui/tsconfig.json webui/tsconfig.node.json webui/vite.co
 COPY webui/src ./src
 COPY webui/public ./public
 COPY --from=map-tiles /work/webui/public/map ./public/map
+# Pointer-only trees still build: runtime falls back to palworld.gg per tile.
+# Prefer host/CI `git lfs pull` (or a successful map-tiles stage) for local hits.
 RUN if [ -f public/map/tiles/0/0/0.png ] && head -c 50 public/map/tiles/0/0/0.png | grep -q 'git-lfs'; then \
-      echo "ERROR: map tiles are still Git LFS pointers after pull stage" >&2; exit 1; \
+      echo "WARNING: map tiles are still Git LFS pointers; image will rely on runtime tile fallback" >&2; \
     fi
 RUN npm run build
 
