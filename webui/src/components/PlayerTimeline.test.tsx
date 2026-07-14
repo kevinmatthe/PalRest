@@ -346,7 +346,7 @@ describe('PlayerTimeline', () => {
       event_type: 'player_joined' as const,
       occurred_at: new Date(Date.UTC(2026, 6, 13, 8, 0, index)).toISOString(),
       observed_at: new Date(Date.UTC(2026, 6, 13, 8, 0, index)).toISOString(),
-      source: 'guard',
+      source: 'guard' as const,
       confidence: 'observed' as const,
       summary: `row-${index}`,
     }));
