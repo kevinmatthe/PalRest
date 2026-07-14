@@ -380,6 +380,7 @@ select:focus-visible {
   color: #6a4210;
   background: #fff2d5;
 }
+/* Compact cluster chips: no count text (tooltip on hover). */
 .timeline-marker-cluster {
   display: flex;
   align-items: center;
@@ -387,20 +388,36 @@ select:focus-visible {
   border: 2px solid #fffdf7;
   border-radius: 999px;
   background: #0f7285;
-  color: #fffdf7;
-  font-weight: 800;
-  box-shadow: 0 0 0 1px rgba(15, 114, 133, 0.35), 0 0.2rem 0.45rem rgba(24, 35, 31, 0.18);
+  box-shadow: 0 0 0 1px rgba(15, 114, 133, 0.3), 0 0.12rem 0.3rem rgba(24, 35, 31, 0.16);
+  transition: background 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
 }
-.timeline-marker-cluster div {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.timeline-marker-cluster-dot {
   width: 100%;
   height: 100%;
+  border-radius: 999px;
+  background: inherit;
 }
-.timeline-marker-cluster--sm { font-size: 0.75rem; }
-.timeline-marker-cluster--md { font-size: 0.85rem; }
-.timeline-marker-cluster--lg { font-size: 0.95rem; }
+.timeline-marker-cluster.is-focus {
+  border-color: #fff6dd;
+  background: #ca8519;
+  box-shadow:
+    0 0 0 2px rgba(202, 133, 25, 0.55),
+    0 0 0 5px rgba(202, 133, 25, 0.22),
+    0 0.15rem 0.4rem rgba(24, 35, 31, 0.2);
+}
+.timeline-cluster-count-tip {
+  padding: 0.15rem 0.4rem;
+  border: 1px solid #8d5a0f;
+  border-radius: 0.3rem;
+  color: #3a2a10;
+  background: #fff6dd;
+  font-size: 0.75rem;
+  font-weight: 800;
+  box-shadow: 0 0.2rem 0.45rem rgba(24, 35, 31, 0.16);
+}
+.timeline-cluster-count-tip::before {
+  border-top-color: #fff6dd !important;
+}
 .timeline-traj-past {
   stroke-dasharray: 10 14;
   animation: timeline-traj-dash 900ms linear infinite;

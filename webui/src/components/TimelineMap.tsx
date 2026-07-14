@@ -4,7 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import { Map as MapIcon, Route } from 'lucide-react';
-import { syncFocusClusterExclusion, type ClusterLike, type ExclusionState } from '../map/mapClusterExclusion';
+import { revealFocusMarker } from '../map/mapClusterReveal';
 import { MAP_LANDMARKS } from '../map/mapLandmarks';
 import { PLAY_SPEEDS, type PlayMode, type PlaySpeed } from '../map/mapPlayback';
 import {
@@ -44,8 +44,12 @@ import {
 
 type MapPoint = { key: string; sample: TrajectorySample; latLng: L.LatLngExpression };
 
-const MAX_CLUSTER_RADIUS = 48;
+const MAX_CLUSTER_RADIUS = 40;
 const DISABLE_CLUSTERING_AT_ZOOM = 4;
+/** Normalized cluster chip sizes (px) — no count labels by default. */
+const CLUSTER_ICON_PX = { sm: 16, md: 18, lg: 20 } as const;
+
+type SampleCircleMarker = L.CircleMarker & { options: L.CircleMarkerOptions & { sampleKey?: string } };
 
 const PING_LEGEND: Array<{ label: string; fill: string; glyph: string }> = [
   { label: '<50', fill: pingColor(20).fill, glyph: pingColor(20).glyph },
@@ -131,8 +135,7 @@ export function TimelineMap({
   const focusLayerRef = useRef<L.LayerGroup | null>(null);
   const landmarkLayerRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
-  const markersByKeyRef = useRef(new Map<string, L.CircleMarker>());
-  const exclusionStateRef = useRef<ExclusionState>({ excludedKey: '' });
+  const markersByKeyRef = useRef(new Map<string, SampleCircleMarker>());
   const activeSampleKeyRef = useRef('');
   const onSeekTrajectoryRef = useRef(onSeekTrajectory);
   onSeekTrajectoryRef.current = onSeekTrajectory;
@@ -196,15 +199,43 @@ export function TimelineMap({
       showCoverageOnHover: false,
       maxClusterRadius: MAX_CLUSTER_RADIUS,
       disableClusteringAtZoom: DISABLE_CLUSTERING_AT_ZOOM,
+      spiderfyOnMaxZoom: true,
+      zoomToBoundsOnClick: true,
+      animate: !(typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches),
       iconCreateFunction(cluster) {
         const count = cluster.getChildCount();
-        const size = count < 10 ? 'sm' : count < 50 ? 'md' : 'lg';
+        const sizeKey = count < 10 ? 'sm' : count < 50 ? 'md' : 'lg';
+        const px = CLUSTER_ICON_PX[sizeKey];
+        const activeKey = activeSampleKeyRef.current;
+        const containsFocus = !!activeKey && cluster.getAllChildMarkers().some((child) => {
+          const key = (child as unknown as SampleCircleMarker).options.sampleKey;
+          return key === activeKey;
+        });
         return L.divIcon({
-          html: `<div><span>${count}</span></div>`,
-          className: `timeline-marker-cluster timeline-marker-cluster--${size}`,
-          iconSize: L.point(size === 'sm' ? 36 : size === 'md' ? 44 : 52, size === 'sm' ? 36 : size === 'md' ? 44 : 52),
+          html: '<div class="timeline-marker-cluster-dot" aria-hidden="true"></div>',
+          className: `timeline-marker-cluster timeline-marker-cluster--${sizeKey}${containsFocus ? ' is-focus' : ''}`,
+          iconSize: L.point(px, px),
+          iconAnchor: L.point(px / 2, px / 2),
         });
       },
+    });
+    // Count only on hover — keep the default chip free of numbers.
+    clusterGroup.on('clustermouseover', (event) => {
+      const layer = event.layer as L.MarkerCluster;
+      const count = layer.getChildCount();
+      layer
+        .bindTooltip(`${count}`, {
+          direction: 'top',
+          opacity: 0.95,
+          className: 'timeline-cluster-count-tip',
+          offset: L.point(0, -4),
+        })
+        .openTooltip();
+    });
+    clusterGroup.on('clustermouseout', (event) => {
+      const layer = event.layer as L.MarkerCluster;
+      layer.closeTooltip();
+      layer.unbindTooltip();
     });
     const lineLayer = L.layerGroup();
     const focusLayer = L.layerGroup();
@@ -228,7 +259,6 @@ export function TimelineMap({
       focusLayerRef.current = null;
       landmarkLayerRef.current = null;
       markersByKeyRef.current.clear();
-      exclusionStateRef.current = { excludedKey: '' };
     };
   }, []);
 
@@ -266,18 +296,18 @@ export function TimelineMap({
         fillColor: colors.fill,
         fillOpacity: 1,
         weight: 2,
-      });
+      }) as SampleCircleMarker;
+      marker.options.sampleKey = point.key;
       marker.on('click', () => onSeekTrajectoryRef.current(point.sample));
       markersByKeyRef.current.set(point.key, marker);
+      // Keep focus samples inside the cluster so spiderfy can reveal them.
       clusterGroup.addLayer(marker);
     });
-    exclusionStateRef.current.excludedKey = '';
-    syncFocusClusterExclusion({
-      clusterGroup: clusterGroup as unknown as ClusterLike,
-      markersByKey: markersByKeyRef.current,
-      activeSampleKey: activeSampleKeyRef.current,
-      state: exclusionStateRef.current,
-    });
+    // Re-apply focus chip styling + spiderfy after full rebuild.
+    clusterGroup.refreshClusters();
+    const focusMarker = markersByKeyRef.current.get(activeSampleKeyRef.current);
+    // @types/leaflet.markercluster omits group.unspiderfy; runtime has it via include().
+    revealFocusMarker(clusterGroup as unknown as Parameters<typeof revealFocusMarker>[0], focusMarker);
   }, [colorMode, points]);
 
   useEffect(() => {
@@ -287,12 +317,11 @@ export function TimelineMap({
     const focusLayer = focusLayerRef.current;
     if (!map || !clusterGroup || !lineLayer || !focusLayer) return;
 
-    syncFocusClusterExclusion({
-      clusterGroup: clusterGroup as unknown as ClusterLike,
-      markersByKey: markersByKeyRef.current,
-      activeSampleKey,
-      state: exclusionStateRef.current,
-    });
+    // Refresh cluster chips so the parent of the focus sample gets is-focus,
+    // then spiderfy that parent so the sample itself is visible and highlightable.
+    clusterGroup.refreshClusters();
+    const focusMarker = markersByKeyRef.current.get(activeSampleKey);
+    revealFocusMarker(clusterGroup as unknown as Parameters<typeof revealFocusMarker>[0], focusMarker);
 
     lineLayer.clearLayers();
     const activeAt = activeItem?.at;
