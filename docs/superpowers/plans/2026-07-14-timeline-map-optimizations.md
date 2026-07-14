@@ -84,6 +84,9 @@ See matrix; detail when scheduled.
 | 2026-07-14 | O2 | Done — `iconCreateFunction` + `.timeline-marker-cluster` teal CSS; dropped Default.css | `6de0197` |
 | 2026-07-14 | O3 | Done — active `TimelineEntry` `scrollIntoView({ block: 'nearest' })` (jsdom-safe) | `6de0197` |
 | 2026-07-14 | O4 | Done — 上一步/下一步、`prevCursorIndex`、Space/←/→ on section | `6de0197` |
+| 2026-07-14 | O7 | Done — `shouldPanToFocus` inset viewport; pan only when outside | `47f0de1` |
+| 2026-07-14 | O10 | Done — cluster marker click → `seekTrajectorySample` | `47f0de1` |
+| 2026-07-14 | O12 | Done — README root context + `git lfs pull` + runtime fallback | `47f0de1` |
 
 ---
 
