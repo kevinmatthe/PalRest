@@ -147,51 +147,31 @@ export function enrichBehaviorWithPOIs(
       touch(ha).dwellMs += Math.min(dtMs, tActiveCapMs);
     }
 
-    const isGap = a.segment_id !== b.segment_id || dtMs > tGapMs;
+    // Teleport suspects: only large spatial jumps. Segment churn alone is not enough
+    // (runtime segment ids change on server restart and produced false yellow arcs).
+    if (dist < teleportMinDist) continue;
     const ftA = ha?.kind === 'fast_travel' ? ha : undefined;
     const ftB = hb?.kind === 'fast_travel' ? hb : undefined;
-    const ftInvolved = Boolean(ftA || ftB);
-    if (!ftInvolved) continue;
-    if (ha && hb && ha.id === hb.id) continue;
+    // Require FT context on at least one end to avoid random long walks looking like teleports.
+    if (!ftA && !ftB) continue;
+    if (ftA && ftB && ftA.id === ftB.id) continue;
 
-    // Prefer labeling with FT ends when present; otherwise fall back to any hit.
-    const fromPoi = ftA ?? ha;
-    const toPoi = ftB ?? hb;
-
-    if (isGap) {
-      const differentFtHits = Boolean(ftA && ftB && ftA.id !== ftB.id);
-      if (dist >= teleportMinDist || differentFtHits) {
-        teleports.push({
-          fromLandmarkId: fromPoi?.id,
-          fromNameZh: fromPoi?.nameZh,
-          toLandmarkId: toPoi?.id,
-          toNameZh: toPoi?.nameZh,
-          fromX: fromPoi?.x ?? a.x,
-          fromY: fromPoi?.y ?? a.y,
-          toX: toPoi?.x ?? b.x,
-          toY: toPoi?.y ?? b.y,
-          dist,
-          dtMs,
-          reason: 'gap_hop',
-          at: b.observed_at,
-        });
-      }
-    } else if (dist >= teleportMinDist) {
-      teleports.push({
-        fromLandmarkId: fromPoi?.id,
-        fromNameZh: fromPoi?.nameZh,
-        toLandmarkId: toPoi?.id,
-        toNameZh: toPoi?.nameZh,
-        fromX: fromPoi?.x ?? a.x,
-        fromY: fromPoi?.y ?? a.y,
-        toX: toPoi?.x ?? b.x,
-        toY: toPoi?.y ?? b.y,
-        dist,
-        dtMs,
-        reason: 'long_jump',
-        at: b.observed_at,
-      });
-    }
+    const isGap = a.segment_id !== b.segment_id || dtMs > tGapMs;
+    // Draw the player's actual jump (sample coords), not FT landmark centers.
+    teleports.push({
+      fromLandmarkId: ftA?.id ?? ha?.id,
+      fromNameZh: ftA?.nameZh ?? ha?.nameZh,
+      toLandmarkId: ftB?.id ?? hb?.id,
+      toNameZh: ftB?.nameZh ?? hb?.nameZh,
+      fromX: a.x,
+      fromY: a.y,
+      toX: b.x,
+      toY: b.y,
+      dist,
+      dtMs,
+      reason: isGap ? 'gap_hop' : 'long_jump',
+      at: b.observed_at,
+    });
   }
 
   const dwellList: POIDwell[] = [...dwellById.values()]

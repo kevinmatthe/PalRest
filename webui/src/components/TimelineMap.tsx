@@ -445,17 +445,26 @@ export function TimelineMap({
           !Number.isFinite(hop.fromX) || !Number.isFinite(hop.fromY)
           || !Number.isFinite(hop.toX) || !Number.isFinite(hop.toY)
         ) continue;
-        L.polyline(
+        // Skip degenerate arcs (same projected cell).
+        if (hop.fromX === hop.toX && hop.fromY === hop.toY) continue;
+        const line = L.polyline(
           [projectWorldXY(hop.fromX!, hop.fromY!), projectWorldXY(hop.toX!, hop.toY!)],
           {
             color: '#f59e0b',
-            opacity: 0.85,
+            opacity: 0.75,
             weight: 2.5,
             dashArray: '8 10',
             className: 'timeline-behavior-teleport',
-            interactive: false,
           },
-        ).addTo(behaviorOverlay);
+        );
+        const fromLabel = hop.fromNameZh ?? '野外';
+        const toLabel = hop.toNameZh ?? '野外';
+        const reason = hop.reason === 'gap_hop' ? '跨段' : '大跳';
+        line.bindTooltip(`疑似传送 · ${reason} · ${fromLabel} → ${toLabel}`, {
+          sticky: true,
+          opacity: 0.95,
+        });
+        line.addTo(behaviorOverlay);
       }
     }
 

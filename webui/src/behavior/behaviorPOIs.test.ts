@@ -158,6 +158,23 @@ describe('enrichBehaviorWithPOIs', () => {
     expect(s.teleportSuspects[0]!.reason).toBe('gap_hop');
     expect(s.teleportSuspects[0]!.fromLandmarkId).toBe('ft-a');
     expect(s.teleportSuspects[0]!.toLandmarkId).toBe('ft-b');
+    // Map arcs use player sample positions, not FT landmark centers.
+    expect(s.teleportSuspects[0]!.fromX).toBe(0);
+    expect(s.teleportSuspects[0]!.toX).toBe(100_000);
+  });
+
+  it('does not flag small segment-change near two FTs without large jump', () => {
+    // Nearby FTs within radius can both hit, but short move must not draw a yellow arc.
+    const closeFTs: BehaviorPOI[] = [
+      { id: 'ft-1', nameZh: '近A', kind: 'fast_travel', x: 0, y: 0 },
+      { id: 'ft-2', nameZh: '近B', kind: 'fast_travel', x: 20_000, y: 0 },
+    ];
+    const samples = [
+      pt({ observed_at: t0, segment_id: 's1', x: 0, y: 0 }),
+      pt({ observed_at: t2, segment_id: 's2', x: 15_000, y: 0 }), // dist 15k < 50k min
+    ];
+    const s = enrichBehaviorWithPOIs(summarizeBehavior(samples), samples, closeFTs);
+    expect(s.teleportSuspects).toEqual([]);
   });
 });
 
