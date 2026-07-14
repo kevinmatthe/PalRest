@@ -36,6 +36,7 @@ import { PlayerUsage } from './components/PlayerUsage';
 import { PolicyManager } from './components/PolicyManager';
 import { AnalyticsDashboard } from './components/AnalyticsDashboard';
 import { PlayerTimeline } from './components/PlayerTimeline';
+import { LiveMap } from './components/LiveMap';
 import { policyCondition } from './policyCondition';
 import './styles.css';
 
@@ -60,9 +61,10 @@ export function App() {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [manualRefreshKey, setManualRefreshKey] = useState(0);
   const [adminBusy, setAdminBusy] = useState(false);
-  const [view, setView] = useState<'dashboard' | 'analytics' | 'timeline' | 'policy'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'analytics' | 'timeline' | 'live' | 'policy'>('dashboard');
   const [analyticsCadenceKey, setAnalyticsCadenceKey] = useState(0);
   const [timelineRefreshKey, setTimelineRefreshKey] = useState(0);
+  const [timelineSelectedID, setTimelineSelectedID] = useState('');
 
   useEffect(() => {
     let mounted = true;
@@ -202,13 +204,30 @@ export function App() {
       {view !== 'policy' ? <nav className="view-tabs" aria-label="Console views">
         <button type="button" aria-current={view === 'dashboard' ? 'page' : undefined} onClick={() => setView('dashboard')}>Overview</button>
         <button type="button" aria-current={view === 'analytics' ? 'page' : undefined} onClick={() => setView('analytics')}>Analytics</button>
+        <button type="button" aria-current={view === 'live' ? 'page' : undefined} onClick={() => setView('live')}>实时地图</button>
         <button type="button" aria-current={view === 'timeline' ? 'page' : undefined} onClick={() => setView('timeline')}>时间轴</button>
       </nav> : null}
 
       {view === 'policy' && data?.admin.authenticated ? (
         <PolicyManager policies={data.policies} players={data.players} busy={adminBusy} onSave={onSavePolicies} onBack={() => setView('dashboard')} />
       ) : view === 'analytics' ? <AnalyticsDashboard players={data?.players ?? []} refreshKey={manualRefreshKey + analyticsCadenceKey} />
-        : view === 'timeline' ? <PlayerTimeline includePrivate={data?.admin.authenticated ?? false} players={data?.players ?? []} refreshKey={manualRefreshKey + timelineRefreshKey} /> : <>
+        : view === 'live' ? (
+          <LiveMap
+            refreshKey={manualRefreshKey}
+            onOpenPlayer={(userID) => {
+              setTimelineSelectedID(userID);
+              setView('timeline');
+            }}
+          />
+        )
+        : view === 'timeline' ? (
+          <PlayerTimeline
+            includePrivate={data?.admin.authenticated ?? false}
+            players={data?.players ?? []}
+            refreshKey={manualRefreshKey + timelineRefreshKey}
+            initialSelectedID={timelineSelectedID}
+          />
+        ) : <>
       <section className="status-grid" aria-label="Service status">
         <MetricCard icon={<Users size={20} />} label="Online players" value={activePlayers.toString()} detail={`API reports ${data?.status.online_count ?? 0}`} />
         <MetricCard icon={<CircleGauge size={20} />} label="Near limit" value={atRiskPlayers.toString()} detail="10 minutes or less" tone={atRiskPlayers > 0 ? 'warn' : 'ok'} />

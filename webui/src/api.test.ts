@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getAnalyticsActivity, getAnalyticsSummary, getPlayerTimeline, getPlayerWorldPOIs } from './api';
+import { getAnalyticsActivity, getAnalyticsSummary, getLivePositions, getPlayerTimeline, getPlayerWorldPOIs } from './api';
 import type { AnalyticsActivity, AnalyticsSummary, PlayerTimelineResponse, PlayerWorldPOIsResponse } from './api';
 
 const summaryFixture = {
@@ -82,5 +82,17 @@ describe('timeline API', () => {
     await expect(getPlayerWorldPOIs('steam/id one', controller.signal)).resolves.toEqual(payload);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/players/steam%2Fid%20one/world-pois');
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ signal: controller.signal }));
+  });
+
+  it('requests live positions for the world map', async () => {
+    const payload = {
+      as_of: '2026-07-14T12:00:00Z',
+      online_count: 1,
+      positioned: 1,
+      players: [{ user_id: 'u1', name: 'A', x: 1, y: 2, ping: 10, level: 3 }],
+    };
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(payload)));
+    await expect(getLivePositions()).resolves.toEqual(payload);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/live/positions');
   });
 });

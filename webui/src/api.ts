@@ -313,6 +313,28 @@ export async function getPlayerWorldPOIs(userID: string, signal?: AbortSignal): 
   return getJSON<PlayerWorldPOIsResponse>(`/api/v1/players/${encodeURIComponent(userID)}/world-pois`, signal);
 }
 
+export type LivePositionPlayer = {
+  user_id: string;
+  player_id?: string;
+  name: string;
+  account_name?: string;
+  x: number;
+  y: number;
+  ping?: number;
+  level?: number;
+};
+
+export type LivePositionsResponse = {
+  as_of?: string;
+  online_count: number;
+  positioned: number;
+  players: LivePositionPlayer[];
+};
+
+export function getLivePositions(signal?: AbortSignal) {
+  return getJSON<LivePositionsResponse>('/api/v1/live/positions', signal);
+}
+
 export function getPolicies(signal?: AbortSignal) {
   return getJSON<Policies>('/api/v1/policies', signal);
 }

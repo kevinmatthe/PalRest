@@ -48,12 +48,16 @@ export function trajectorySamples(items: LogItem[]) {
   return items.filter((item): item is Extract<LogItem, { kind: 'trajectory' }> => item.kind === 'trajectory').map((item) => item.item);
 }
 
-export function projectWorldSample(sample: TrajectorySample): [number, number] {
+export function projectWorldXY(worldX: number, worldY: number): [number, number] {
   const [maxX, maxY, minX, minY] = PALWORLD_LANDSCAPE;
-  if (sample.x >= -256 && sample.x <= 256) return [sample.x, sample.y];
-  const x = -256 + (256 * (sample.x - minX)) / (maxX - minX);
-  const y = (256 * (sample.y - minY)) / (maxY - minY);
+  if (worldX >= -256 && worldX <= 256) return [worldX, worldY];
+  const x = -256 + (256 * (worldX - minX)) / (maxX - minX);
+  const y = (256 * (worldY - minY)) / (maxY - minY);
   return [x, y];
+}
+
+export function projectWorldSample(sample: TrajectorySample): [number, number] {
+  return projectWorldXY(sample.x, sample.y);
 }
 
 export function latestPointAt(samples: TrajectorySample[], activeAt: string | undefined) {

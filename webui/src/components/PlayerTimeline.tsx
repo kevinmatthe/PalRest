@@ -23,7 +23,13 @@ import {
 
 export { tileErrorTransition };
 
-type Props = { includePrivate?: boolean; players: Player[]; refreshKey: number };
+type Props = {
+  includePrivate?: boolean;
+  players: Player[];
+  refreshKey: number;
+  /** Pre-select a player (e.g. from live map). */
+  initialSelectedID?: string;
+};
 type TimelineState =
   | { kind: 'idle' }
   | { kind: 'loading' }
@@ -113,9 +119,9 @@ function trajectoryLocationLabels(items: LogItem[]) {
   return labels;
 }
 
-export function PlayerTimeline({ includePrivate = false, players, refreshKey }: Props) {
+export function PlayerTimeline({ includePrivate = false, players, refreshKey, initialSelectedID = '' }: Props) {
   const range = useMemo(defaultRange, []);
-  const [selectedID, setSelectedID] = useState('');
+  const [selectedID, setSelectedID] = useState(initialSelectedID);
   const [search, setSearch] = useState('');
   const [start, setStart] = useState(range.start);
   const [end, setEnd] = useState(range.end);
@@ -226,6 +232,10 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
       pois,
     });
   }, [selectedID, rangeError, start, end, items, pois]);
+
+  useEffect(() => {
+    if (initialSelectedID) setSelectedID(initialSelectedID);
+  }, [initialSelectedID]);
 
   useEffect(() => {
     setDetailExpanded(false);

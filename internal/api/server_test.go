@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -122,10 +123,69 @@ func TestHealthIsDegradedAfterInvalidConfigReload(t *testing.T) {
 	}
 }
 
+func TestLivePositionsReturnsOnlineCoords(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	server := New(
+		fakeHealth{},
+		fakeStatus{domain.PollStatus{StartedAt: now.Add(-time.Hour), LastSuccess: now, OnlineCount: 2, ConfigVersion: 1}},
+		fakeSnapshots{[]domain.PlayerSnapshot{
+			{
+				Player: domain.Player{UserID: "steam_online", Name: "Avery", LocationX: 1000, LocationY: -2000, Ping: 22, Level: 12},
+				Online: true,
+			},
+			{
+				Player: domain.Player{UserID: "steam_offline", Name: "Bo", LocationX: 9, LocationY: 9},
+				Online: false,
+			},
+			{
+				Player: domain.Player{UserID: "steam_nocoords", Name: "Cy", LocationX: math.NaN(), LocationY: 1},
+				Online: true,
+			},
+		}},
+		fakeAnalyticsQueries{},
+		fakeAnalyticsOnline{},
+		fakePolicies{},
+		fakeResetter{},
+		fakeAdminStore{},
+		"",
+		"",
+		func() config.Config { return config.Config{} },
+	)
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/live/positions", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	var body struct {
+		AsOf        string `json:"as_of"`
+		OnlineCount int    `json:"online_count"`
+		Positioned  int    `json:"positioned"`
+		Players     []struct {
+			UserID string  `json:"user_id"`
+			Name   string  `json:"name"`
+			X      float64 `json:"x"`
+			Y      float64 `json:"y"`
+		} `json:"players"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.OnlineCount != 2 || body.Positioned != 1 || len(body.Players) != 1 {
+		t.Fatalf("body=%+v", body)
+	}
+	if body.Players[0].UserID != "steam_online" || body.Players[0].X != 1000 || body.Players[0].Y != -2000 {
+		t.Fatalf("player=%+v", body.Players[0])
+	}
+	if body.AsOf == "" {
+		t.Fatal("expected as_of from last success")
+	}
+}
+
 func TestReadOnlyRoutesAndUnknownPlayer(t *testing.T) {
 	server := testServer()
 	paths := map[string]int{
 		"/api/v1/status":             http.StatusOK,
+		"/api/v1/live/positions":     http.StatusOK,
 		"/api/v1/players":            http.StatusOK,
 		"/api/v1/players/steam_1":    http.StatusOK,
 		"/api/v1/players/missing":    http.StatusNotFound,

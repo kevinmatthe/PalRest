@@ -126,6 +126,7 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 	mux.HandleFunc("GET /api/v1/players/{userID}", server.getPlayer)
 	mux.HandleFunc("GET /api/v1/players/{userID}/timeline", server.getPlayerTimeline)
 	mux.HandleFunc("GET /api/v1/players/{userID}/world-pois", server.getPlayerWorldPOIs)
+	mux.HandleFunc("GET /api/v1/live/positions", server.getLivePositions)
 	mux.HandleFunc("GET /api/v1/analytics/summary", server.getAnalyticsSummary)
 	mux.HandleFunc("GET /api/v1/analytics/activity", server.getAnalyticsActivity)
 	mux.HandleFunc("GET /api/v1/analytics/behavior", server.getAnalyticsBehavior)
