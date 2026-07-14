@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
 import { BehaviorSummaryPanel } from './BehaviorSummaryPanel';
 import type { BehaviorSummary } from '../behavior/behaviorTypes';
 
@@ -151,5 +152,63 @@ describe('BehaviorSummaryPanel', () => {
     expect(
       screen.queryByText(/未匹配到传送点、首领塔或公会据点附近的驻留/),
     ).not.toBeInTheDocument();
+  });
+
+  it('lets user toggle a suspected-teleport row to show/hide the map arc', async () => {
+    const user = userEvent.setup();
+    const onHighlightTeleport = vi.fn();
+    const teleports = summary({
+      teleportSuspects: [
+        {
+          fromNameZh: '中央 · 传送点 1',
+          toNameZh: '火山 · 传送点 2',
+          dist: 120_000,
+          dtMs: 2_000,
+          reason: 'long_jump',
+          at: '2026-07-14T01:00:00Z',
+          fromX: 0,
+          fromY: 0,
+          toX: 100_000,
+          toY: 0,
+        },
+      ],
+    });
+
+    const { rerender } = render(
+      <BehaviorSummaryPanel
+        loading={false}
+        selected
+        summary={teleports}
+        highlightedTeleportIndex={null}
+        onHighlightTeleport={onHighlightTeleport}
+      />,
+    );
+
+    expect(screen.getByText(/点击一条可在地图上显示\/隐藏连线/)).toBeInTheDocument();
+    const btn = screen.getByRole('button', { name: /中央 · 传送点 1 → 火山 · 传送点 2/ });
+    expect(btn).toHaveAttribute('aria-pressed', 'false');
+
+    await user.click(btn);
+    expect(onHighlightTeleport).toHaveBeenCalledWith(0);
+
+    rerender(
+      <BehaviorSummaryPanel
+        loading={false}
+        selected
+        summary={teleports}
+        highlightedTeleportIndex={0}
+        onHighlightTeleport={onHighlightTeleport}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /中央 · 传送点 1 → 火山 · 传送点 2/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(
+      screen.getByRole('button', { name: /中央 · 传送点 1 → 火山 · 传送点 2/ }),
+    ).toHaveClass('is-active');
+
+    await user.click(screen.getByRole('button', { name: /中央 · 传送点 1 → 火山 · 传送点 2/ }));
+    expect(onHighlightTeleport).toHaveBeenLastCalledWith(null);
   });
 });

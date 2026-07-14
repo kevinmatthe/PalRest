@@ -125,6 +125,7 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   const [playMode, setPlayMode] = useState<PlayMode>('index');
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [guildPOIs, setGuildPOIs] = useState<BehaviorPOI[]>([]);
+  const [highlightedTeleportIndex, setHighlightedTeleportIndex] = useState<number | null>(null);
   const requestID = useRef(0);
   const lastRefreshKey = useRef(refreshKey);
   const cursorIndexRef = useRef(cursorIndex);
@@ -226,6 +227,16 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
       pois,
     });
   }, [selectedID, rangeError, start, end, items, pois]);
+
+  useEffect(() => {
+    setHighlightedTeleportIndex(null);
+  }, [selectedID, start, end, behaviorSummary?.teleportSuspects.length]);
+
+  const highlightedTeleport = useMemo(() => {
+    if (highlightedTeleportIndex == null || !behaviorSummary) return null;
+    return behaviorSummary.teleportSuspects[highlightedTeleportIndex] ?? null;
+  }, [behaviorSummary, highlightedTeleportIndex]);
+
   const rows = useMemo(() => annotateTrajectoryEvidence(items), [items]);
   const segmentNames = useMemo(() => segmentLabels(items), [items]);
   const locationNames = useMemo(() => trajectoryLocationLabels(items), [items]);
@@ -426,11 +437,14 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             onSpeedChange={setSpeed}
             selected={Boolean(selectedID)}
             behaviorSummary={behaviorSummary}
+            highlightedTeleport={highlightedTeleport}
           />
           <BehaviorSummaryPanel
             selected={Boolean(selectedID)}
             loading={state.kind === 'loading'}
             summary={behaviorSummary}
+            highlightedTeleportIndex={highlightedTeleportIndex}
+            onHighlightTeleport={setHighlightedTeleportIndex}
           />
           {!selectedID ? <EmptyState icon={<Compass size={28} />} text="选择玩家后查看轨迹和事件。" /> : null}
           {state.kind === 'loading' ? <div className="timeline-skeleton" role="status" aria-label="正在加载时间轴"><span /><span /><span /></div> : null}

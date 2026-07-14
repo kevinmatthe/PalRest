@@ -17,9 +17,18 @@ export type BehaviorSummaryPanelProps = {
   summary: BehaviorSummary | null;
   loading: boolean;
   selected: boolean;
+  /** Index into summary.teleportSuspects currently shown on the map; null = none. */
+  highlightedTeleportIndex?: number | null;
+  onHighlightTeleport?: (index: number | null) => void;
 };
 
-export function BehaviorSummaryPanel({ summary, loading, selected }: BehaviorSummaryPanelProps) {
+export function BehaviorSummaryPanel({
+  summary,
+  loading,
+  selected,
+  highlightedTeleportIndex = null,
+  onHighlightTeleport,
+}: BehaviorSummaryPanelProps) {
   if (!selected) return null;
 
   return (
@@ -144,15 +153,26 @@ export function BehaviorSummaryPanel({ summary, loading, selected }: BehaviorSum
           {summary.teleportSuspects.length > 0 ? (
             <div className="behavior-poi-block">
               <h4 className="behavior-poi-heading">疑似传送</h4>
-              <ol className="behavior-poi-list">
-                {summary.teleportSuspects.map((t, i) => (
-                  <li key={`${t.at}-${i}`}>
-                    <span className="behavior-poi-name">{formatTeleportLine(t)}</span>
-                    <span className="behavior-teleport-reason">
-                      {formatTeleportReason(t.reason)}
-                    </span>
-                  </li>
-                ))}
+              <p className="behavior-poi-hint">点击一条可在地图上显示/隐藏连线</p>
+              <ol className="behavior-poi-list behavior-poi-list--clickable">
+                {summary.teleportSuspects.map((t, i) => {
+                  const active = highlightedTeleportIndex === i;
+                  return (
+                    <li key={`${t.at}-${i}`}>
+                      <button
+                        type="button"
+                        className={`behavior-teleport-item${active ? ' is-active' : ''}`}
+                        aria-pressed={active}
+                        onClick={() => onHighlightTeleport?.(active ? null : i)}
+                      >
+                        <span className="behavior-poi-name">{formatTeleportLine(t)}</span>
+                        <span className="behavior-teleport-reason">
+                          {formatTeleportReason(t.reason)}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
               </ol>
             </div>
           ) : null}

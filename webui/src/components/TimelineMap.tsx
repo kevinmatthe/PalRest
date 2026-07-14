@@ -5,7 +5,7 @@ import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import { Map as MapIcon, Route } from 'lucide-react';
 import { edgeClassBetween } from '../behavior/behaviorMetrics';
-import { BEHAVIOR_EDGE_COLORS, type BehaviorSummary } from '../behavior/behaviorTypes';
+import { BEHAVIOR_EDGE_COLORS, type BehaviorSummary, type TeleportSuspect } from '../behavior/behaviorTypes';
 import {
   clearExpandState,
   expandClusterForExactPoints,
@@ -116,6 +116,8 @@ export type TimelineMapProps = {
   selected: boolean;
   /** Optional behavior analysis for class-colored path + POI overlay. */
   behaviorSummary?: BehaviorSummary | null;
+  /** Single suspected teleport to draw (from behavior panel click); null = hide. */
+  highlightedTeleport?: TeleportSuspect | null;
 };
 
 export function TimelineMap({
@@ -133,6 +135,7 @@ export function TimelineMap({
   onSpeedChange,
   selected,
   behaviorSummary = null,
+  highlightedTeleport = null,
 }: TimelineMapProps) {
   const mapElementRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -147,6 +150,7 @@ export function TimelineMap({
   const markersByKeyRef = useRef(new Map<string, SampleCircleMarker>());
   const expandStateRef = useRef<ExpandState>({ markers: [] });
   const breathTickRef = useRef(0);
+  const lastTeleportFitKeyRef = useRef('');
   const activeSampleKeyRef = useRef('');
   const onSeekTrajectoryRef = useRef(onSeekTrajectory);
   onSeekTrajectoryRef.current = onSeekTrajectory;
@@ -440,8 +444,47 @@ export function TimelineMap({
           interactive: false,
         }).addTo(behaviorOverlay);
       }
-      // Suspected teleports stay in the behavior summary list only — do not
-      // paint persistent yellow arcs on the map (especially noisy on mobile).
+    }
+
+    // Draw one teleport arc only when the user selects a list item below.
+    if (
+      highlightedTeleport
+      && Number.isFinite(highlightedTeleport.fromX)
+      && Number.isFinite(highlightedTeleport.fromY)
+      && Number.isFinite(highlightedTeleport.toX)
+      && Number.isFinite(highlightedTeleport.toY)
+      && !(highlightedTeleport.fromX === highlightedTeleport.toX && highlightedTeleport.fromY === highlightedTeleport.toY)
+    ) {
+      const hop = highlightedTeleport;
+      const line = L.polyline(
+        [projectWorldXY(hop.fromX!, hop.fromY!), projectWorldXY(hop.toX!, hop.toY!)],
+        {
+          color: '#f59e0b',
+          opacity: 0.9,
+          weight: 3,
+          dashArray: '8 10',
+          className: 'timeline-behavior-teleport',
+        },
+      );
+      const fromLabel = hop.fromNameZh ?? '野外';
+      const toLabel = hop.toNameZh ?? '野外';
+      const reason = hop.reason === 'gap_hop' ? '跨段' : '大跳';
+      line.bindTooltip(`疑似传送 · ${reason} · ${fromLabel} → ${toLabel}`, {
+        sticky: true,
+        opacity: 0.95,
+      });
+      line.addTo(behaviorOverlay);
+      const fitKey = `${hop.at}:${hop.fromX}:${hop.fromY}:${hop.toX}:${hop.toY}`;
+      if (lastTeleportFitKeyRef.current !== fitKey) {
+        lastTeleportFitKeyRef.current = fitKey;
+        try {
+          map.fitBounds(line.getBounds().pad(0.4), { animate: false, maxZoom: 4 });
+        } catch {
+          /* ignore empty bounds */
+        }
+      }
+    } else {
+      lastTeleportFitKeyRef.current = '';
     }
 
     focusLayer.clearLayers();
@@ -536,7 +579,7 @@ export function TimelineMap({
         map.panTo(activePoint, { animate: false });
       }
     }
-  }, [activeItem?.at, activeSampleKey, behaviorSummary, colorMode, samples]);
+  }, [activeItem?.at, activeSampleKey, behaviorSummary, colorMode, highlightedTeleport, samples]);
 
   return <section className="timeline-map-panel" aria-label="地图回放">
     <div className="timeline-map-header">

@@ -1672,6 +1672,45 @@ dd {
   border-color: #c4a8f0;
   color: #5b2d9e;
 }
+.behavior-poi-hint {
+  margin: 0 0 0.35rem;
+  color: #5b6963;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+.behavior-poi-list--clickable {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+.behavior-teleport-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem 0.6rem;
+  width: 100%;
+  min-height: 2.4rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #d5e0d9;
+  border-radius: 0.35rem;
+  background: #fffef9;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.behavior-teleport-item:hover {
+  border-color: #e0b44a;
+  background: #fff9eb;
+}
+.behavior-teleport-item.is-active {
+  border-color: #ca8519;
+  background: #fff2d5;
+  box-shadow: 0 0 0 1px rgba(202, 133, 25, 0.35);
+}
 .behavior-teleport-reason {
   display: inline-flex;
   align-items: center;
