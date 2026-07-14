@@ -98,16 +98,18 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 	}
 	policyUpdater := PolicyUpdater(directPolicyUpdater{analytics: analyticsOnline})
 	var saveImporter SaveImporter
+	observations, _ := adminStore.(ObservationQueries)
+	worldPOIs, _ := adminStore.(WorldPOIQueries)
 	for _, option := range options {
 		switch value := option.(type) {
 		case PolicyUpdater:
 			policyUpdater = value
 		case SaveImporter:
 			saveImporter = value
+		case WorldPOIQueries:
+			worldPOIs = value
 		}
 	}
-	observations, _ := adminStore.(ObservationQueries)
-	worldPOIs, _ := adminStore.(WorldPOIQueries)
 	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, observations: observations, worldPOIs: worldPOIs, saveImporter: saveImporter, auth: auth, config: configFn, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.healthz)
