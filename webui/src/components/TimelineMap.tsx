@@ -4,11 +4,28 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import { Map as MapIcon, Route } from 'lucide-react';
+import { syncFocusClusterExclusion, type ClusterLike, type ExclusionState } from '../map/mapClusterExclusion';
 import { MAP_LANDMARKS } from '../map/mapLandmarks';
 import { PLAY_SPEEDS, type PlayMode, type PlaySpeed } from '../map/mapPlayback';
-import { hybridTrajectoryWindow, pingColor } from '../map/mapTrajectory';
+import {
+  ARROW_SIZE_PX,
+  FOCUS_PULSE_COLOR,
+  FOCUS_PULSE_RADIUS,
+  FOCUS_PULSE_WEIGHT,
+  hybridTrajectoryWindow,
+  pingColor,
+  splitTrajectoryPastFuture,
+  TRAJ_DASH_ARRAY,
+  TRAJ_FUTURE_COLOR,
+  TRAJ_FUTURE_OPACITY,
+  TRAJ_FUTURE_WEIGHT,
+  TRAJ_PAST_COLOR,
+  TRAJ_PAST_OPACITY,
+  TRAJ_PAST_WEIGHT,
+  TRAJ_TIP_COLOR,
+} from '../map/mapTrajectory';
 import { mergeTimelineTicks, timelinePercent } from '../map/timelineTicks';
-import { shouldPanToFocus } from '../map/mapView';
+import { bearingDeg, shouldPanToFocus } from '../map/mapView';
 import {
   eventLabel,
   formatTimelineDateTime,
@@ -26,6 +43,9 @@ import {
 } from './timelineShared';
 
 type MapPoint = { key: string; sample: TrajectorySample; latLng: L.LatLngExpression };
+
+const MAX_CLUSTER_RADIUS = 48;
+const DISABLE_CLUSTERING_AT_ZOOM = 4;
 
 const PING_LEGEND: Array<{ label: string; fill: string; glyph: string }> = [
   { label: '<50', fill: pingColor(20).fill, glyph: pingColor(20).glyph },
@@ -112,7 +132,8 @@ export function TimelineMap({
   const landmarkLayerRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const markersByKeyRef = useRef(new Map<string, L.CircleMarker>());
-  const excludedClusterKeyRef = useRef('');
+  const exclusionStateRef = useRef<ExclusionState>({ excludedKey: '' });
+  const activeSampleKeyRef = useRef('');
   const onSeekTrajectoryRef = useRef(onSeekTrajectory);
   onSeekTrajectoryRef.current = onSeekTrajectory;
   const samples = useMemo(() => trajectorySamples(items), [items]);
@@ -128,6 +149,7 @@ export function TimelineMap({
   const activeItem = items[activeIndex];
   const activeSample = latestPointAt(samples, activeItem?.at);
   const activeSampleKey = activeSample ? trajectoryKey(activeSample) : '';
+  activeSampleKeyRef.current = activeSampleKey;
   const startMS = items.length ? Math.min(...items.map((item) => Date.parse(item.at))) : 0;
   const endMS = items.length ? Math.max(...items.map((item) => Date.parse(item.at))) : 1;
   const cursorLeft = activeItem ? timelinePercent(activeItem.at, startMS, endMS) : 0;
@@ -172,6 +194,8 @@ export function TimelineMap({
     map.fitBounds(PALWORLD_TILE_BOUNDS);
     const clusterGroup = L.markerClusterGroup({
       showCoverageOnHover: false,
+      maxClusterRadius: MAX_CLUSTER_RADIUS,
+      disableClusteringAtZoom: DISABLE_CLUSTERING_AT_ZOOM,
       iconCreateFunction(cluster) {
         const count = cluster.getChildCount();
         const size = count < 10 ? 'sm' : count < 50 ? 'md' : 'lg';
@@ -204,7 +228,7 @@ export function TimelineMap({
       focusLayerRef.current = null;
       landmarkLayerRef.current = null;
       markersByKeyRef.current.clear();
-      excludedClusterKeyRef.current = '';
+      exclusionStateRef.current = { excludedKey: '' };
     };
   }, []);
 
@@ -232,7 +256,6 @@ export function TimelineMap({
     if (!clusterGroup) return;
     clusterGroup.clearLayers();
     markersByKeyRef.current.clear();
-    excludedClusterKeyRef.current = '';
     points.forEach((point) => {
       const colors = colorMode === 'ping'
         ? pingColor(point.sample.ping)
@@ -248,6 +271,13 @@ export function TimelineMap({
       markersByKeyRef.current.set(point.key, marker);
       clusterGroup.addLayer(marker);
     });
+    exclusionStateRef.current.excludedKey = '';
+    syncFocusClusterExclusion({
+      clusterGroup: clusterGroup as unknown as ClusterLike,
+      markersByKey: markersByKeyRef.current,
+      activeSampleKey: activeSampleKeyRef.current,
+      state: exclusionStateRef.current,
+    });
   }, [colorMode, points]);
 
   useEffect(() => {
@@ -257,27 +287,47 @@ export function TimelineMap({
     const focusLayer = focusLayerRef.current;
     if (!map || !clusterGroup || !lineLayer || !focusLayer) return;
 
-    const previousKey = excludedClusterKeyRef.current;
-    if (previousKey && previousKey !== activeSampleKey) {
-      const previous = markersByKeyRef.current.get(previousKey);
-      if (previous && !clusterGroup.hasLayer(previous)) clusterGroup.addLayer(previous);
-    }
-    if (activeSampleKey) {
-      const active = markersByKeyRef.current.get(activeSampleKey);
-      if (active && clusterGroup.hasLayer(active)) clusterGroup.removeLayer(active);
-    }
-    excludedClusterKeyRef.current = activeSampleKey;
+    syncFocusClusterExclusion({
+      clusterGroup: clusterGroup as unknown as ClusterLike,
+      markersByKey: markersByKeyRef.current,
+      activeSampleKey,
+      state: exclusionStateRef.current,
+    });
 
     lineLayer.clearLayers();
     const activeAt = activeItem?.at;
     const lineSamples = hybridTrajectoryWindow(samples, activeAt);
-    if (lineSamples.length > 1) {
-      L.polyline(lineSamples.map((sample) => projectWorldSample(sample)), {
-        color: '#0f7285',
-        opacity: 0.88,
-        weight: 2,
+    const split = splitTrajectoryPastFuture(lineSamples, activeAt);
+    const projectAll = (list: typeof lineSamples) => list.map((s) => projectWorldSample(s));
+
+    if (split.future.length >= 2) {
+      L.polyline(projectAll(split.future), {
+        color: TRAJ_FUTURE_COLOR,
+        opacity: TRAJ_FUTURE_OPACITY,
+        weight: TRAJ_FUTURE_WEIGHT,
         lineCap: 'round',
         lineJoin: 'round',
+        className: 'timeline-traj-future',
+      }).addTo(lineLayer);
+    }
+    if (split.past.length >= 2) {
+      L.polyline(projectAll(split.past), {
+        color: TRAJ_PAST_COLOR,
+        opacity: TRAJ_PAST_OPACITY,
+        weight: TRAJ_PAST_WEIGHT,
+        lineCap: 'round',
+        lineJoin: 'round',
+        dashArray: TRAJ_DASH_ARRAY,
+        className: 'timeline-traj-past',
+      }).addTo(lineLayer);
+      const tip = split.past.slice(-2);
+      L.polyline(projectAll(tip), {
+        color: TRAJ_TIP_COLOR,
+        opacity: 1,
+        weight: TRAJ_PAST_WEIGHT,
+        lineCap: 'round',
+        lineJoin: 'round',
+        className: 'timeline-traj-tip',
       }).addTo(lineLayer);
     }
 
@@ -286,13 +336,38 @@ export function TimelineMap({
     if (focusSample) {
       const activePoint = projectWorldSample(focusSample);
       const ping = colorMode === 'ping' ? pingColor(focusSample.ping) : null;
+
+      L.circleMarker(activePoint, {
+        radius: FOCUS_PULSE_RADIUS,
+        color: FOCUS_PULSE_COLOR,
+        fillOpacity: 0,
+        weight: FOCUS_PULSE_WEIGHT,
+        className: 'timeline-focus-pulse',
+        interactive: false,
+      }).addTo(focusLayer);
+
       L.circleMarker(activePoint, {
         radius: ping ? Math.max(8, ping.radius + 3) : 8,
         color: '#8d5a0f',
         fillColor: ping?.fill ?? '#ca8519',
         fillOpacity: 0.92,
         weight: 3,
+        className: 'timeline-focus-core',
       }).addTo(focusLayer);
+
+      if (split.past.length >= 2) {
+        const from = projectWorldSample(split.past[split.past.length - 2]!);
+        const to = projectWorldSample(split.past[split.past.length - 1]!);
+        const deg = bearingDeg(from, to);
+        const icon = L.divIcon({
+          className: 'timeline-traj-arrow',
+          html: `<div class="timeline-traj-arrow-inner" style="transform:rotate(${deg}deg)"></div>`,
+          iconSize: [ARROW_SIZE_PX, ARROW_SIZE_PX],
+          iconAnchor: [ARROW_SIZE_PX / 2, ARROW_SIZE_PX / 2],
+        });
+        L.marker(activePoint, { icon, interactive: false, keyboard: false }).addTo(focusLayer);
+      }
+
       if (shouldPanToFocus(map.getBounds(), activePoint)) {
         map.panTo(activePoint, { animate: false });
       }

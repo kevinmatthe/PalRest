@@ -401,6 +401,39 @@ select:focus-visible {
 .timeline-marker-cluster--sm { font-size: 0.75rem; }
 .timeline-marker-cluster--md { font-size: 0.85rem; }
 .timeline-marker-cluster--lg { font-size: 0.95rem; }
+.timeline-traj-past {
+  stroke-dasharray: 10 14;
+  animation: timeline-traj-dash 900ms linear infinite;
+}
+@keyframes timeline-traj-dash {
+  to { stroke-dashoffset: -24; }
+}
+.timeline-focus-pulse {
+  animation: timeline-focus-pulse 1.2s ease-out infinite;
+}
+@keyframes timeline-focus-pulse {
+  0% { stroke-opacity: 0.9; }
+  70% { stroke-opacity: 0.15; }
+  100% { stroke-opacity: 0.9; }
+}
+.timeline-traj-arrow {
+  background: transparent;
+  border: none;
+}
+.timeline-traj-arrow-inner {
+  width: 0;
+  height: 0;
+  margin: 0 auto;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 10px solid #ca8519;
+  transform-origin: 50% 60%;
+  filter: drop-shadow(0 0 1px #8d5a0f);
+}
+@media (prefers-reduced-motion: reduce) {
+  .timeline-traj-past { animation: none; }
+  .timeline-focus-pulse { animation: none; stroke-opacity: 0.55; }
+}
 .timeline-transport button,
 .timeline-transport select {
   min-height: 2.25rem;
