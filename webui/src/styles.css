@@ -1496,3 +1496,85 @@ dd {
   .show-detail-mobile .policy-master { display: block; padding: 1.25rem; }
   .mobile-master-back { display: none; }
 }
+
+.behavior-summary {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0.75rem 0 1rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid #c5d0ca;
+  border-radius: 0.45rem;
+  background: #f7fbf9;
+  box-shadow: 0 0.35rem 1rem rgba(41, 51, 45, 0.05);
+}
+.behavior-summary-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.behavior-summary-header h3 { margin: 0; font-size: 1rem; color: #14241f; }
+.behavior-summary-note { margin: 0.2rem 0 0; color: #5b6963; font-size: 0.8rem; font-weight: 600; }
+.behavior-summary-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2rem;
+  padding: 0 0.55rem;
+  border: 1px solid #b7c7be;
+  border-radius: 999px;
+  background: #eef7f3;
+  color: #255a50;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+.behavior-summary-empty { margin: 0; color: #5b6963; font-weight: 650; }
+.behavior-mix {
+  display: flex;
+  overflow: hidden;
+  min-height: 2rem;
+  border-radius: 0.35rem;
+  border: 1px solid #c5d0ca;
+}
+.behavior-mix-seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 0.25rem 0.35rem;
+  color: #fffdf7;
+  font-size: 0.72rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.behavior-mix-seg span { overflow: hidden; text-overflow: ellipsis; }
+.behavior-mix-seg--traveling { background: #8b5cf6; }
+.behavior-mix-seg--local { background: #14c4d8; }
+.behavior-mix-seg--stationary { background: #8a9a93; }
+.behavior-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.55rem 0.75rem;
+  margin: 0;
+}
+.behavior-metrics div {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #d5e0d9;
+  border-radius: 0.35rem;
+  background: #fffef9;
+}
+.behavior-metrics dt { margin: 0; color: #5b6963; font-size: 0.75rem; font-weight: 700; }
+.behavior-metrics dd { margin: 0; color: #14241f; font-size: 0.9rem; font-weight: 800; }
+.behavior-summary-gap {
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid #e0c48a;
+  border-radius: 0.35rem;
+  background: #fff8e8;
+  color: #6a4210;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
