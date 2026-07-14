@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Compass, Crosshair, Radio, Search, ShieldAlert } from 'lucide-react';
 import { ApiError, getPlayerTimeline, type Player, type PlayerTimelineResponse, type TimelineEvent } from '../api';
-import { nextCursorIndex, playIntervalMs, prevCursorIndex, type PlaySpeed } from '../map/mapPlayback';
+import { nextCursorIndex, playStepDelayMs, prevCursorIndex, type PlayMode, type PlaySpeed } from '../map/mapPlayback';
 import { DEFAULT_ROW_ESTIMATE_PX, scrollTopForIndex, virtualWindow } from '../map/timelineVirtual';
 import { TimelineMap, tileErrorTransition } from './TimelineMap';
 import {
@@ -119,8 +119,11 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   const [cursorIndex, setCursorIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<PlaySpeed>(1);
+  const [playMode, setPlayMode] = useState<PlayMode>('index');
   const requestID = useRef(0);
   const lastRefreshKey = useRef(refreshKey);
+  const cursorIndexRef = useRef(cursorIndex);
+  cursorIndexRef.current = cursorIndex;
   const rangeError = validateRange(start, end);
   const visiblePlayers = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -178,7 +181,19 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   const segmentNames = useMemo(() => segmentLabels(items), [items]);
   const locationNames = useMemo(() => trajectoryLocationLabels(items), [items]);
   const activeIndex = items.length ? Math.min(cursorIndex, items.length - 1) : 0;
-  const mayBeTruncated = state.kind === 'ready' && [state.data.events, state.data.trajectories, includePrivate ? state.data.private_samples : []].some((source) => source.length >= 500);
+  const mayBeTruncated = state.kind === 'ready' && (
+    state.data.events.length >= 500
+    || state.data.trajectories.length >= 500
+    || (includePrivate && state.data.private_samples.length >= 500)
+    || (typeof state.data.event_total === 'number' && state.data.event_total > state.data.events.length)
+    || (typeof state.data.trajectory_total === 'number' && state.data.trajectory_total > state.data.trajectories.length)
+    || (includePrivate && typeof state.data.private_sample_total === 'number' && state.data.private_sample_total > state.data.private_samples.length)
+  );
+  const truncationDetail = state.kind === 'ready' ? [
+    typeof state.data.event_total === 'number' ? `事件 ${state.data.events.length}/${state.data.event_total}` : null,
+    typeof state.data.trajectory_total === 'number' ? `轨迹 ${state.data.trajectories.length}/${state.data.trajectory_total}` : null,
+    includePrivate && typeof state.data.private_sample_total === 'number' ? `私有 ${state.data.private_samples.length}/${state.data.private_sample_total}` : null,
+  ].filter(Boolean).join(' · ') : '';
 
   function seekTrajectorySample(sample: TrajectorySample) {
     const key = trajectoryKey(sample);
@@ -193,17 +208,33 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
 
   useEffect(() => {
     if (!playing || items.length < 2) return;
-    const id = window.setInterval(() => {
-      setCursorIndex((current) => {
-        const { index, done } = nextCursorIndex(current, items.length);
+    let cancelled = false;
+    let timer = 0;
+    let current = cursorIndexRef.current;
+    const step = () => {
+      const { index, done } = nextCursorIndex(current, items.length);
+      if (index === current && done) {
+        setPlaying(false);
+        return;
+      }
+      const delay = playStepDelayMs(playMode, speed, items[current]?.at, items[index]?.at);
+      timer = window.setTimeout(() => {
+        if (cancelled) return;
+        current = index;
+        setCursorIndex(index);
         if (done) {
-          queueMicrotask(() => setPlaying(false));
+          setPlaying(false);
+          return;
         }
-        return index;
-      });
-    }, playIntervalMs(speed));
-    return () => window.clearInterval(id);
-  }, [playing, speed, items.length]);
+        step();
+      }, delay);
+    };
+    step();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [playing, speed, playMode, items]);
 
   function stepCursor(direction: -1 | 1) {
     if (items.length < 2) return;
@@ -276,8 +307,10 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             onCursorChange={seekCursor}
             onSeekTrajectory={seekTrajectorySample}
             onStep={stepCursor}
+            playMode={playMode}
             playing={playing}
             speed={speed}
+            onPlayModeChange={setPlayMode}
             onPlayingChange={setPlaying}
             onSpeedChange={setSpeed}
             selected={Boolean(selectedID)}
@@ -287,7 +320,7 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
           {state.kind === 'not-found' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> 该玩家已不在观察记录中。</div> : null}
           {state.kind === 'error' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> {state.message}</div> : null}
           {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="当前时间范围没有观察记录。" /> : null}
-          {mayBeTruncated ? <div className="timeline-alert timeline-alert--info" role="status"><AlertTriangle size={18} /> 某类数据达到 500 条响应上限，结果可能已截断。</div> : null}
+          {mayBeTruncated ? <div className="timeline-alert timeline-alert--info" role="status"><AlertTriangle size={18} /> 结果可能已截断{truncationDetail ? `（${truncationDetail}）` : '（某类达到 500 条上限）'}。可缩小时间范围查看完整证据。</div> : null}
           {state.kind === 'ready' && items.length > 0 ? (
             <TimelineSpineList
               activeIndex={activeIndex}

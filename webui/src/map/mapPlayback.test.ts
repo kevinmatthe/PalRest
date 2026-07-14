@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   BASE_PLAY_INTERVAL_MS,
   PLAY_SPEEDS,
+  TIME_PLAY_COMPRESS,
+  TIME_PLAY_MAX_MS,
+  TIME_PLAY_MIN_MS,
   nextCursorIndex,
   playIntervalMs,
+  playStepDelayMs,
   prevCursorIndex,
   type PlaySpeed,
 } from './mapPlayback';
@@ -55,5 +59,23 @@ describe('prevCursorIndex', () => {
   it('length 0/1 stay done at 0', () => {
     expect(prevCursorIndex(0, 0)).toEqual({ index: 0, done: true });
     expect(prevCursorIndex(0, 1)).toEqual({ index: 0, done: true });
+  });
+});
+
+describe('playStepDelayMs', () => {
+  it('uses fixed intervals in index mode', () => {
+    expect(playStepDelayMs('index', 1, '2026-07-14T10:00:00Z', '2026-07-14T11:00:00Z')).toBe(800);
+    expect(playStepDelayMs('index', 2, 'a', 'b')).toBe(400);
+  });
+
+  it('compresses real deltas in time mode', () => {
+    const hour = 60 * 60 * 1000;
+    const delay = playStepDelayMs('time', 1, '2026-07-14T10:00:00.000Z', '2026-07-14T11:00:00.000Z');
+    expect(delay).toBe(Math.min(TIME_PLAY_MAX_MS, Math.max(TIME_PLAY_MIN_MS, hour / TIME_PLAY_COMPRESS)));
+  });
+
+  it('falls back when timestamps are invalid', () => {
+    expect(playStepDelayMs('time', 1, undefined, undefined)).toBe(800);
+    expect(playStepDelayMs('time', 1, '2026-07-14T11:00:00Z', '2026-07-14T10:00:00Z')).toBe(800);
   });
 });

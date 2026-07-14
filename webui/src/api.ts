@@ -178,6 +178,10 @@ export type PlayerTimelineResponse = {
   events: TimelineEvent[];
   trajectories: TrajectorySample[];
   private_samples: PlayerPrivateSample[];
+  /** Total matching events in range (may exceed events.length when limited). */
+  event_total?: number;
+  trajectory_total?: number;
+  private_sample_total?: number;
 };
 
 export class ApiError extends Error {

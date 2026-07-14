@@ -358,10 +358,26 @@ select:focus-visible {
 }
 .timeline-transport {
   display: grid;
-  grid-template-columns: auto auto auto auto minmax(0, 1fr);
+  grid-template-columns: auto auto auto auto auto minmax(0, 1fr);
   align-items: center;
   gap: 0.5rem;
   min-width: 0;
+}
+.timeline-landmark-toggle {
+  min-height: 2rem;
+  padding: 0 0.7rem;
+  border: 1px solid #b7c7be;
+  border-radius: 999px;
+  color: #5b6963;
+  background: #eef7f3;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.timeline-landmark-toggle[aria-pressed="true"] {
+  border-color: #8d5a0f;
+  color: #6a4210;
+  background: #fff2d5;
 }
 .timeline-marker-cluster {
   display: flex;

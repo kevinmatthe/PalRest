@@ -57,7 +57,12 @@ func (s *Server) getPlayerTimeline(w http.ResponseWriter, r *http.Request) {
 	for _, event := range timeline.Events {
 		events = append(events, safeEvent(event))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "events": events, "trajectories": timeline.Trajectories, "private_samples": []store.PlayerPrivateSample{}})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_id": userID, "events": events, "trajectories": timeline.Trajectories,
+		"private_samples": []store.PlayerPrivateSample{},
+		"event_total": timeline.EventTotal, "trajectory_total": timeline.TrajectoryTotal,
+		"private_sample_total": 0,
+	})
 }
 
 func (s *Server) getAdminPlayerTimeline(w http.ResponseWriter, r *http.Request) {
@@ -90,7 +95,12 @@ func (s *Server) getAdminPlayerTimeline(w http.ResponseWriter, r *http.Request) 
 	for _, event := range timeline.Events {
 		events = append(events, safeEvent(event))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "events": events, "trajectories": timeline.Trajectories, "private_samples": timeline.PrivateSamples})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_id": userID, "events": events, "trajectories": timeline.Trajectories,
+		"private_samples": timeline.PrivateSamples,
+		"event_total": timeline.EventTotal, "trajectory_total": timeline.TrajectoryTotal,
+		"private_sample_total": timeline.PrivateSampleTotal,
+	})
 }
 
 func (s *Server) getAdminServerMetrics(w http.ResponseWriter, r *http.Request) {

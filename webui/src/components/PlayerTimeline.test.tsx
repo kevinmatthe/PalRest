@@ -313,10 +313,30 @@ describe('PlayerTimeline', () => {
       await vi.advanceTimersByTimeAsync(800);
     });
     expect(screen.getByLabelText(/时间轴光标/)).toHaveValue('2');
+    // Final step lands on last index and auto-pauses (timeout chain may need a flush).
     await act(async () => {
       await vi.advanceTimersByTimeAsync(800);
     });
     expect(screen.getByRole('button', { name: /播放/i })).toBeInTheDocument();
+  });
+
+  it('exposes play mode and landmark toggles', async () => {
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue({
+      ...empty,
+      events: [
+        { id: 'e1', event_type: 'player_joined', occurred_at: '2026-07-13T08:00:00Z', observed_at: '2026-07-13T08:00:00Z', source: 'guard', confidence: 'observed', summary: 'a' },
+        { id: 'e2', event_type: 'player_left', occurred_at: '2026-07-13T09:00:00Z', observed_at: '2026-07-13T09:00:00Z', source: 'guard', confidence: 'observed', summary: 'b' },
+      ],
+    });
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await waitFor(() => expect(screen.getByLabelText(/播放模式/i)).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText(/播放模式/i), { target: { value: 'time' } });
+    expect(screen.getByLabelText(/播放模式/i)).toHaveValue('time');
+    const landmark = screen.getByRole('button', { name: /^地标$/i });
+    expect(landmark).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(landmark);
+    expect(landmark).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('virtualizes a long timeline list to a window of rows', async () => {

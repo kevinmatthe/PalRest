@@ -4,7 +4,8 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import { Map as MapIcon, Route } from 'lucide-react';
-import { PLAY_SPEEDS, type PlaySpeed } from '../map/mapPlayback';
+import { MAP_LANDMARKS } from '../map/mapLandmarks';
+import { PLAY_SPEEDS, type PlayMode, type PlaySpeed } from '../map/mapPlayback';
 import { hybridTrajectoryWindow, pingColor } from '../map/mapTrajectory';
 import { mergeTimelineTicks, timelinePercent } from '../map/timelineTicks';
 import { shouldPanToFocus } from '../map/mapView';
@@ -13,6 +14,7 @@ import {
   formatTimelineDateTime,
   latestPointAt,
   mapLocationLabel,
+  PALWORLD_LANDSCAPE,
   PALWORLD_TILE_BOUNDS,
   PALWORLD_TILE_FALLBACK_URL,
   PALWORLD_TILE_URL,
@@ -62,6 +64,14 @@ const FallbackTileLayer = L.TileLayer.extend({
   },
 }) as unknown as new (url: string, options?: L.TileLayerOptions) => L.TileLayer;
 
+function projectWorldXY(x: number, y: number): L.LatLngExpression {
+  const [maxX, maxY, minX, minY] = PALWORLD_LANDSCAPE;
+  if (x >= -256 && x <= 256) return [x, y];
+  const mapX = -256 + (256 * (x - minX)) / (maxX - minX);
+  const mapY = (256 * (y - minY)) / (maxY - minY);
+  return [mapX, mapY];
+}
+
 export type TimelineMapProps = {
   activeIndex: number;
   items: LogItem[];
@@ -69,8 +79,10 @@ export type TimelineMapProps = {
   onCursorChange: (index: number) => void;
   onSeekTrajectory: (sample: TrajectorySample) => void;
   onStep: (direction: -1 | 1) => void;
+  playMode: PlayMode;
   playing: boolean;
   speed: PlaySpeed;
+  onPlayModeChange: (mode: PlayMode) => void;
   onPlayingChange: (playing: boolean) => void;
   onSpeedChange: (speed: PlaySpeed) => void;
   selected: boolean;
@@ -83,8 +95,10 @@ export function TimelineMap({
   onCursorChange,
   onSeekTrajectory,
   onStep,
+  playMode,
   playing,
   speed,
+  onPlayModeChange,
   onPlayingChange,
   onSpeedChange,
   selected,
@@ -95,6 +109,7 @@ export function TimelineMap({
   const clusterGroupRef = useRef<L.MarkerClusterGroup | null>(null);
   const lineLayerRef = useRef<L.LayerGroup | null>(null);
   const focusLayerRef = useRef<L.LayerGroup | null>(null);
+  const landmarkLayerRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const markersByKeyRef = useRef(new Map<string, L.CircleMarker>());
   const excludedClusterKeyRef = useRef('');
@@ -103,6 +118,7 @@ export function TimelineMap({
   const samples = useMemo(() => trajectorySamples(items), [items]);
   const [mapAvailable, setMapAvailable] = useState(true);
   const [colorMode, setColorMode] = useState<'position' | 'ping'>('position');
+  const [showLandmarks, setShowLandmarks] = useState(false);
   const [trackWidthPx, setTrackWidthPx] = useState(320);
   const points = useMemo<MapPoint[]>(() => {
     return samples.map((sample) => {
@@ -168,7 +184,9 @@ export function TimelineMap({
     });
     const lineLayer = L.layerGroup();
     const focusLayer = L.layerGroup();
+    const landmarkLayer = L.layerGroup();
     clusterGroup.addTo(map);
+    landmarkLayer.addTo(map);
     lineLayer.addTo(map);
     focusLayer.addTo(map);
     leafletRef.current = map;
@@ -176,6 +194,7 @@ export function TimelineMap({
     clusterGroupRef.current = clusterGroup;
     lineLayerRef.current = lineLayer;
     focusLayerRef.current = focusLayer;
+    landmarkLayerRef.current = landmarkLayer;
     return () => {
       map.remove();
       leafletRef.current = null;
@@ -183,10 +202,30 @@ export function TimelineMap({
       clusterGroupRef.current = null;
       lineLayerRef.current = null;
       focusLayerRef.current = null;
+      landmarkLayerRef.current = null;
       markersByKeyRef.current.clear();
       excludedClusterKeyRef.current = '';
     };
   }, []);
+
+  useEffect(() => {
+    const layer = landmarkLayerRef.current;
+    if (!layer) return;
+    layer.clearLayers();
+    if (!showLandmarks) return;
+    MAP_LANDMARKS.forEach((lm) => {
+      const marker = L.circleMarker(projectWorldXY(lm.x, lm.y), {
+        radius: lm.kind === 'boss_tower' ? 5 : 3,
+        color: lm.kind === 'boss_tower' ? '#8d5a0f' : '#3d6b7a',
+        fillColor: lm.kind === 'boss_tower' ? '#e8b86d' : '#9fd0db',
+        fillOpacity: 0.85,
+        weight: 1.5,
+        opacity: 0.9,
+      });
+      marker.bindTooltip(lm.nameZh, { direction: 'top', opacity: 0.92 });
+      marker.addTo(layer);
+    });
+  }, [showLandmarks]);
 
   useEffect(() => {
     const clusterGroup = clusterGroupRef.current;
@@ -271,6 +310,14 @@ export function TimelineMap({
           <button type="button" aria-pressed={colorMode === 'position'} onClick={() => setColorMode('position')}>位置</button>
           <button type="button" aria-pressed={colorMode === 'ping'} onClick={() => setColorMode('ping')}>延迟</button>
         </div>
+        <button
+          type="button"
+          className="timeline-landmark-toggle"
+          aria-pressed={showLandmarks}
+          onClick={() => setShowLandmarks((value) => !value)}
+        >
+          地标
+        </button>
         <span className="timeline-map-count"><Route size={15} /> {samples.length} 个坐标</span>
       </div>
     </div>
@@ -315,6 +362,18 @@ export function TimelineMap({
           {playing ? '暂停' : '播放'}
         </button>
         <button type="button" aria-label="下一步" disabled={items.length < 2 || activeIndex >= items.length - 1} onClick={() => onStep(1)}>下一步</button>
+        <label>
+          <span className="sr-only">播放模式</span>
+          <select
+            aria-label="播放模式"
+            value={playMode}
+            disabled={items.length < 2}
+            onChange={(event) => onPlayModeChange(event.target.value as PlayMode)}
+          >
+            <option value="index">按条</option>
+            <option value="time">按时间</option>
+          </select>
+        </label>
         <label>
           <span className="sr-only">倍速</span>
           <select

@@ -55,14 +55,19 @@ type PlayerPrivateSample struct {
 }
 
 type SensitivePlayerTimeline struct {
-	Events         []ActivityEvent       `json:"events"`
-	Trajectories   []TrajectorySample    `json:"trajectories"`
-	PrivateSamples []PlayerPrivateSample `json:"private_samples"`
+	Events              []ActivityEvent       `json:"events"`
+	Trajectories        []TrajectorySample    `json:"trajectories"`
+	PrivateSamples      []PlayerPrivateSample `json:"private_samples"`
+	EventTotal          int                   `json:"event_total"`
+	TrajectoryTotal     int                   `json:"trajectory_total"`
+	PrivateSampleTotal  int                   `json:"private_sample_total"`
 }
 
 type PlayerTimeline struct {
-	Events       []ActivityEvent    `json:"events"`
-	Trajectories []TrajectorySample `json:"trajectories"`
+	Events          []ActivityEvent    `json:"events"`
+	Trajectories    []TrajectorySample `json:"trajectories"`
+	EventTotal      int                `json:"event_total"`
+	TrajectoryTotal int                `json:"trajectory_total"`
 }
 
 type PlayerObservationWrite struct {
@@ -414,6 +419,14 @@ func (r *Repository) ReadPlayerTimeline(ctx context.Context, userID string, star
 	if err != nil {
 		return empty, fmt.Errorf("query player timeline samples: %w", err)
 	}
+	eventTotal, err := countTimelineEvents(ctx, tx, userID, start, end)
+	if err != nil {
+		return empty, fmt.Errorf("count player timeline events: %w", err)
+	}
+	trajectoryTotal, err := countTimelineSamples(ctx, tx, userID, start, end)
+	if err != nil {
+		return empty, fmt.Errorf("count player timeline samples: %w", err)
+	}
 	if len(events) == 0 && len(samples) == 0 {
 		known, knownErr := knownPublicPlayerTx(ctx, tx, userID)
 		if knownErr != nil {
@@ -426,7 +439,7 @@ func (r *Repository) ReadPlayerTimeline(ctx context.Context, userID string, star
 	if err := tx.Commit(); err != nil {
 		return empty, fmt.Errorf("commit player timeline transaction: %w", err)
 	}
-	return PlayerTimeline{Events: events, Trajectories: samples}, nil
+	return PlayerTimeline{Events: events, Trajectories: samples, EventTotal: eventTotal, TrajectoryTotal: trajectoryTotal}, nil
 }
 
 func (r *Repository) ReadSensitivePlayerTimeline(ctx context.Context, actor, userID string, start, end time.Time, limit int) (SensitivePlayerTimeline, error) {
@@ -459,6 +472,21 @@ func (r *Repository) ReadSensitivePlayerTimeline(ctx context.Context, actor, use
 			if err != nil {
 				goto queryFailed
 			}
+			eventTotal, countErr := countTimelineEvents(ctx, tx, userID, start, end)
+			if countErr != nil {
+				err = countErr
+				goto queryFailed
+			}
+			trajectoryTotal, countErr := countTimelineSamples(ctx, tx, userID, start, end)
+			if countErr != nil {
+				err = countErr
+				goto queryFailed
+			}
+			privateTotal, countErr := countTimelinePrivateSamples(ctx, tx, userID, start, end)
+			if countErr != nil {
+				err = countErr
+				goto queryFailed
+			}
 			outcome := "success"
 			if len(events) == 0 && len(samples) == 0 && len(private) == 0 {
 				known, knownErr := knownPlayerTx(ctx, tx, userID)
@@ -486,7 +514,10 @@ func (r *Repository) ReadSensitivePlayerTimeline(ctx context.Context, actor, use
 			if outcome == "not_found" {
 				return empty, ErrNotFound
 			}
-			return SensitivePlayerTimeline{Events: events, Trajectories: samples, PrivateSamples: private}, nil
+			return SensitivePlayerTimeline{
+				Events: events, Trajectories: samples, PrivateSamples: private,
+				EventTotal: eventTotal, TrajectoryTotal: trajectoryTotal, PrivateSampleTotal: privateTotal,
+			}, nil
 		}
 	}
 
@@ -544,6 +575,33 @@ SELECT 1 FROM player_sessions WHERE user_id=? UNION ALL
 SELECT 1 FROM activity_events WHERE subject_type='player' AND subject_id=? UNION ALL
 SELECT 1 FROM trajectory_samples WHERE user_id=?)`, userID, userID, userID, userID).Scan(&exists)
 	return exists == 1, err
+}
+
+func countTimelineEvents(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM activity_events
+WHERE subject_type='player' AND subject_id=? AND occurred_at>=? AND occurred_at<?`,
+		userID, formatObservationTime(start), formatObservationTime(end)).Scan(&n)
+	return n, err
+}
+
+func countTimelineSamples(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM trajectory_samples
+WHERE user_id=? AND observed_at>=? AND observed_at<?`,
+		userID, formatObservationTime(start), formatObservationTime(end)).Scan(&n)
+	return n, err
+}
+
+func countTimelinePrivateSamples(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM player_private_samples
+WHERE user_id=? AND observed_at>=? AND observed_at<?`,
+		userID, formatObservationTime(start), formatObservationTime(end)).Scan(&n)
+	return n, err
 }
 
 func queryTimelineEvents(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time, limit int) ([]ActivityEvent, error) {
