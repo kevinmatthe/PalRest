@@ -95,6 +95,7 @@ See matrix; detail when scheduled.
 | 2026-07-14 | O14 | Done — playMode index/time; playStepDelayMs compresses real Δt | `c75f569` |
 | 2026-07-14 | O11 | Done — landmark layer toggle (MAP_LANDMARKS circleMarkers + tooltips) | `c75f569` |
 | 2026-07-14 | O13 | Partial — event_total/trajectory_total/private_sample_total on timeline API + UI copy | `c75f569` |
+| 2026-07-14 | O13 | Done — latest-N-in-range queries; UI「加载更早」merges older pages; totals retained | `5a79592` |
 | 2026-07-14 | O15 | Done — Okabe–Ito-like ping colors + radius + legend glyphs | `73703ea` |
 | 2026-07-14 | O6 | Done — tower Chinese names + regional FT labels (`区域 · 传送点 N`) | `73703ea` |
 
