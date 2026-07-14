@@ -46,8 +46,8 @@ export function hybridTrajectoryWindow<T extends TrajectoryPointLike>(
 
   const anchorIdx = sameSegment.findIndex((s) => s === anchor || s.observed_at === anchor.observed_at);
   const center = anchorIdx >= 0 ? anchorIdx : sameSegment.length - 1;
-  // Prefer past on odd: take floor((N-1)/2) after, ceil((N-1)/2) before when needed
-  let start = Math.max(0, center - Math.floor((maxPoints - 1) / 2));
+  // Prefer past on even/odd overflow: ceil((N-1)/2) before center, floor((N-1)/2) after
+  let start = Math.max(0, center - Math.ceil((maxPoints - 1) / 2));
   let end = start + maxPoints;
   if (end > sameSegment.length) {
     end = sameSegment.length;

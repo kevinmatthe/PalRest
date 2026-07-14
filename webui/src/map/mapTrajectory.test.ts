@@ -58,6 +58,25 @@ describe('hybridTrajectoryWindow', () => {
     expect(got.map((p) => p.x)).toEqual([8, 9, 10, 11, 12]);
   });
 
+  it('caps even N with past preference (fails under prefer-future)', () => {
+    // N=12 at center 15 → indices 9..20 (6 past + anchor + 5 future)
+    // prefer-future would yield 10..21 instead
+    const many = Array.from({ length: 30 }, (_, i) =>
+      pt({
+        observed_at: new Date(Date.parse('2026-07-14T10:00:00.000Z') + i * 60_000).toISOString(),
+        segment_id: 's1',
+        x: i,
+        y: 0,
+      }),
+    );
+    const got = hybridTrajectoryWindow(many, many[15]!.observed_at, {
+      windowMs: 24 * 60 * 60_000,
+      maxPoints: 12,
+    });
+    expect(got).toHaveLength(12);
+    expect(got.map((p) => p.x)).toEqual([9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+  });
+
   it('returns empty or single without implying a line caller needs ≥2', () => {
     expect(hybridTrajectoryWindow([], '2026-07-14T10:00:00.000Z')).toEqual([]);
     expect(hybridTrajectoryWindow([base[0]!], base[0]!.observed_at)).toHaveLength(1);
@@ -75,9 +94,9 @@ describe('hybridTrajectoryWindow', () => {
     );
     const cursor = many[15]!.observed_at; // 10:15
     const got = hybridTrajectoryWindow(many, cursor);
-    // default window ±10min → indices 5..25 (21 pts), then cap to 12 centered on 15
+    // default window ±10min → indices 5..25 (21 pts), then cap to 12 past-preferring around 15
     expect(got).toHaveLength(DEFAULT_TRAJECTORY_MAX_POINTS);
-    expect(got.map((p) => p.x)).toEqual([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
+    expect(got.map((p) => p.x)).toEqual([9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
     // points outside ±10min of cursor are excluded before cap
     const far = hybridTrajectoryWindow(
       [
