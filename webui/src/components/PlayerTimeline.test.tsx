@@ -9,6 +9,7 @@ vi.mock('../api', async (load) => ({
   ...(await load<typeof import('../api')>()),
   getPlayerTimeline: vi.fn(),
   getPlayerWorldPOIs: vi.fn().mockResolvedValue({ user_id: '', source: 'none', pois: [] }),
+  getGuildBases: vi.fn().mockResolvedValue({ source: 'none', pois: [] }),
 }));
 
 const players = [
@@ -384,9 +385,11 @@ describe('PlayerTimeline', () => {
     const points = screen.getByRole('button', { name: /^点$/i });
     const lines = screen.getByRole('button', { name: /^线$/i });
     const landmark = screen.getByRole('button', { name: /^地标$/i });
+    const guildBases = screen.getByRole('button', { name: /公会据点/i });
     expect(points).toHaveAttribute('aria-pressed', 'true');
     expect(lines).toHaveAttribute('aria-pressed', 'true');
     expect(landmark).toHaveAttribute('aria-pressed', 'false');
+    expect(guildBases).toHaveAttribute('aria-pressed', 'false');
 
     fireEvent.click(points);
     expect(points).toHaveAttribute('aria-pressed', 'false');
@@ -394,6 +397,8 @@ describe('PlayerTimeline', () => {
     expect(lines).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(landmark);
     expect(landmark).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(guildBases);
+    expect(guildBases).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('virtualizes a long timeline list to a window of rows', async () => {

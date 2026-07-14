@@ -2,7 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Map as MapIcon, Radio, RefreshCw, Users } from 'lucide-react';
-import { getLivePositions, type LivePositionPlayer, type LivePositionsResponse } from '../api';
+import {
+  getGuildBases,
+  getLivePositions,
+  type LivePositionPlayer,
+  type LivePositionsResponse,
+  type WorldPOI,
+} from '../api';
+import { drawGuildBaseLandmarks, drawStaticLandmarks } from '../map/drawLandmarks';
+import { filterGuildBases } from '../map/guildLandmarks';
+import { MAP_LANDMARKS } from '../map/mapLandmarks';
 import {
   formatTimelineDateTime,
   PALWORLD_TILE_BOUNDS,
@@ -10,6 +19,7 @@ import {
   PALWORLD_TILE_URL,
   projectWorldXY,
 } from './timelineShared';
+import { LandmarkLayerControls } from './LandmarkLayerControls';
 import { tileErrorTransition } from './TimelineMap';
 
 export type LiveMapProps = {
@@ -48,6 +58,7 @@ export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
   const mapElementRef = useRef<HTMLDivElement>(null);
   const leafletRef = useRef<L.Map | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
+  const landmarkLayerRef = useRef<L.LayerGroup | null>(null);
   const onOpenPlayerRef = useRef(onOpenPlayer);
   onOpenPlayerRef.current = onOpenPlayer;
 
@@ -57,6 +68,11 @@ export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
   const [loading, setLoading] = useState(true);
   const [selectedID, setSelectedID] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const [showStaticLandmarks, setShowStaticLandmarks] = useState(false);
+  const [showGuildBases, setShowGuildBases] = useState(false);
+  const [guildBases, setGuildBases] = useState<WorldPOI[]>([]);
+  const [enabledGuildIDs, setEnabledGuildIDs] = useState<Set<string> | null>(null);
+  const [guildFilterOpen, setGuildFilterOpen] = useState(false);
 
   useEffect(() => {
     if (!mapElementRef.current || leafletRef.current) return;
@@ -82,8 +98,10 @@ export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
     tileLayer.addTo(map);
     map.fitBounds(PALWORLD_TILE_BOUNDS);
     const markers = L.layerGroup().addTo(map);
+    const landmarks = L.layerGroup().addTo(map);
     leafletRef.current = map;
     markersLayerRef.current = markers;
+    landmarkLayerRef.current = landmarks;
     const ro = typeof ResizeObserver !== 'undefined'
       ? new ResizeObserver(() => {
         try {
@@ -106,8 +124,29 @@ export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
       map.remove();
       leafletRef.current = null;
       markersLayerRef.current = null;
+      landmarkLayerRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void getGuildBases(controller.signal)
+      .then((payload) => {
+        if (!controller.signal.aborted) setGuildBases(payload.pois ?? []);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setGuildBases([]);
+      });
+    return () => controller.abort();
+  }, [refreshKey]);
+
+  useEffect(() => {
+    const layer = landmarkLayerRef.current;
+    if (!layer) return;
+    layer.clearLayers();
+    if (showStaticLandmarks) drawStaticLandmarks(layer, MAP_LANDMARKS);
+    if (showGuildBases) drawGuildBaseLandmarks(layer, filterGuildBases(guildBases, enabledGuildIDs));
+  }, [enabledGuildIDs, guildBases, showGuildBases, showStaticLandmarks]);
 
   useEffect(() => {
     let cancelled = false;
@@ -186,6 +225,17 @@ export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
           <p className="live-map-note">跟随 Guard 轮询刷新 · 约每 {POLL_MS / 1000}s · 仅在线且有坐标的玩家</p>
         </div>
         <div className="live-map-header-meta">
+          <LandmarkLayerControls
+            showStatic={showStaticLandmarks}
+            onShowStaticChange={setShowStaticLandmarks}
+            showGuildBases={showGuildBases}
+            onShowGuildBasesChange={setShowGuildBases}
+            guildBases={guildBases}
+            enabledGuildIDs={enabledGuildIDs}
+            onEnabledGuildIDsChange={setEnabledGuildIDs}
+            guildFilterOpen={guildFilterOpen}
+            onGuildFilterOpenChange={setGuildFilterOpen}
+          />
           <span className="live-map-stat">
             <Users size={15} />
             {data ? `${data.positioned}/${data.online_count} 有坐标` : '—'}

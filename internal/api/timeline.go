@@ -87,6 +87,22 @@ func (s *Server) getPlayerWorldPOIs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) getGuildBases(w http.ResponseWriter, r *http.Request) {
+	if s.worldPOIs == nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "world poi query unavailable")
+		return
+	}
+	result, err := s.worldPOIs.ListAllGuildBases(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "guild base query failed")
+		return
+	}
+	if result.POIs == nil {
+		result.POIs = []store.WorldPOI{}
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) getAdminPlayerTimeline(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return

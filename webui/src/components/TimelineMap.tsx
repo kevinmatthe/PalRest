@@ -11,8 +11,12 @@ import {
   expandClusterForExactPoints,
   type ExpandState,
 } from '../map/mapClusterReveal';
+import { getGuildBases, type WorldPOI } from '../api';
+import { drawGuildBaseLandmarks, drawStaticLandmarks } from '../map/drawLandmarks';
+import { filterGuildBases } from '../map/guildLandmarks';
 import { MAP_LANDMARKS } from '../map/mapLandmarks';
 import { PLAY_SPEEDS, type PlayMode, type PlaySpeed } from '../map/mapPlayback';
+import { LandmarkLayerControls } from './LandmarkLayerControls';
 import {
   ARROW_EDGE_SIZE_PX,
   ARROW_SIZE_PX,
@@ -171,7 +175,11 @@ export function TimelineMap({
   const [colorMode, setColorMode] = useState<'position' | 'ping'>('position');
   const [showPoints, setShowPoints] = useState(true);
   const [showLines, setShowLines] = useState(true);
-  const [showLandmarks, setShowLandmarks] = useState(false);
+  const [showStaticLandmarks, setShowStaticLandmarks] = useState(false);
+  const [showGuildBases, setShowGuildBases] = useState(false);
+  const [guildBases, setGuildBases] = useState<WorldPOI[]>([]);
+  const [enabledGuildIDs, setEnabledGuildIDs] = useState<Set<string> | null>(null);
+  const [guildFilterOpen, setGuildFilterOpen] = useState(false);
   const [trackWidthPx, setTrackWidthPx] = useState(320);
   const points = useMemo<MapPoint[]>(() => {
     return samples.map((sample) => {
@@ -316,23 +324,28 @@ export function TimelineMap({
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
+    void getGuildBases(controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted) setGuildBases(data.pois ?? []);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setGuildBases([]);
+      });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
     const layer = landmarkLayerRef.current;
     if (!layer) return;
     layer.clearLayers();
-    if (!showLandmarks) return;
-    MAP_LANDMARKS.forEach((lm) => {
-      const marker = L.circleMarker(projectWorldXY(lm.x, lm.y), {
-        radius: lm.kind === 'boss_tower' ? 5 : 3,
-        color: lm.kind === 'boss_tower' ? '#8d5a0f' : '#3d6b7a',
-        fillColor: lm.kind === 'boss_tower' ? '#e8b86d' : '#9fd0db',
-        fillOpacity: 0.85,
-        weight: 1.5,
-        opacity: 0.9,
-      });
-      marker.bindTooltip(lm.nameZh, { direction: 'top', opacity: 0.92 });
-      marker.addTo(layer);
-    });
-  }, [showLandmarks]);
+    if (showStaticLandmarks) {
+      drawStaticLandmarks(layer, MAP_LANDMARKS);
+    }
+    if (showGuildBases) {
+      drawGuildBaseLandmarks(layer, filterGuildBases(guildBases, enabledGuildIDs));
+    }
+  }, [enabledGuildIDs, guildBases, showGuildBases, showStaticLandmarks]);
 
   useEffect(() => {
     const clusterGroup = clusterGroupRef.current;
@@ -675,15 +688,18 @@ export function TimelineMap({
           >
             线
           </button>
-          <button
-            type="button"
-            className="timeline-layer-toggle"
-            aria-pressed={showLandmarks}
-            onClick={() => setShowLandmarks((value) => !value)}
-          >
-            地标
-          </button>
         </div>
+        <LandmarkLayerControls
+          showStatic={showStaticLandmarks}
+          onShowStaticChange={setShowStaticLandmarks}
+          showGuildBases={showGuildBases}
+          onShowGuildBasesChange={setShowGuildBases}
+          guildBases={guildBases}
+          enabledGuildIDs={enabledGuildIDs}
+          onEnabledGuildIDsChange={setEnabledGuildIDs}
+          guildFilterOpen={guildFilterOpen}
+          onGuildFilterOpenChange={setGuildFilterOpen}
+        />
         <span className="timeline-map-count"><Route size={15} /> {samples.length} 个坐标</span>
       </div>
     </div>

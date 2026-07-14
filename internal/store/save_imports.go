@@ -472,6 +472,69 @@ func (r *Repository) ListPlayerWorldPOIs(ctx context.Context, userID string) (Pl
 	}, nil
 }
 
+// GuildBasesCatalog is the full set of known guild base POIs (not per-player).
+type GuildBasesCatalog struct {
+	Source string     `json:"source"`
+	AsOf   string     `json:"as_of,omitempty"`
+	POIs   []WorldPOI `json:"pois"`
+}
+
+// ListAllGuildBases returns every base camp from the latest save import.
+func (r *Repository) ListAllGuildBases(ctx context.Context) (GuildBasesCatalog, error) {
+	empty := GuildBasesCatalog{Source: "none", POIs: []WorldPOI{}}
+	db := r.gorm.WithContext(ctx)
+
+	var latest saveImportModel
+	err := db.Order("imported_at DESC").Limit(1).Take(&latest).Error
+	if err == gorm.ErrRecordNotFound {
+		return empty, nil
+	}
+	if err != nil {
+		return GuildBasesCatalog{}, fmt.Errorf("list all guild bases: latest import: %w", err)
+	}
+
+	var camps []saveBaseCampModel
+	if err := db.Where("import_id = ?", latest.ID).Find(&camps).Error; err != nil {
+		return GuildBasesCatalog{}, fmt.Errorf("list all guild bases: camps: %w", err)
+	}
+	if len(camps) == 0 {
+		return empty, nil
+	}
+
+	var guilds []saveGuildModel
+	if err := db.Where("import_id = ?", latest.ID).Find(&guilds).Error; err != nil {
+		return GuildBasesCatalog{}, fmt.Errorf("list all guild bases: guilds: %w", err)
+	}
+	byGuild := make(map[string]saveGuildModel, len(guilds))
+	for _, g := range guilds {
+		byGuild[g.SaveGuildID] = g
+	}
+
+	pois := make([]WorldPOI, 0, len(camps))
+	for _, camp := range camps {
+		guild, ok := byGuild[camp.SaveGuildID]
+		name := camp.SaveGuildID
+		if ok && guild.Name != "" {
+			name = guild.Name
+		}
+		pois = append(pois, WorldPOI{
+			ID:        "gb-" + camp.SaveGuildID + "-" + camp.SaveBaseUID,
+			NameZh:    "公会「" + name + "」据点",
+			Kind:      "guild_base",
+			X:         camp.LocationX,
+			Y:         camp.LocationY,
+			GuildName: name,
+			GuildID:   camp.SaveGuildID,
+			Source:    "save_import",
+		})
+	}
+	return GuildBasesCatalog{
+		Source: "save_import",
+		AsOf:   latest.ImportedAt,
+		POIs:   pois,
+	}, nil
+}
+
 func optionalString(value string) *string {
 	if value == "" {
 		return nil

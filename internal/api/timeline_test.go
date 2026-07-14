@@ -182,10 +182,12 @@ func timelineServer(repo *observationQueriesFake) *Server {
 }
 
 type worldPOIQueriesFake struct {
-	result store.PlayerWorldPOIs
-	err    error
-	calls  int
-	userID string
+	result     store.PlayerWorldPOIs
+	allBases   store.GuildBasesCatalog
+	err        error
+	calls      int
+	allCalls   int
+	userID     string
 }
 
 func (f *worldPOIQueriesFake) ResetPlayerPolicyState(context.Context, string) error { return nil }
@@ -193,6 +195,10 @@ func (f *worldPOIQueriesFake) ListPlayerWorldPOIs(_ context.Context, userID stri
 	f.calls++
 	f.userID = userID
 	return f.result, f.err
+}
+func (f *worldPOIQueriesFake) ListAllGuildBases(context.Context) (store.GuildBasesCatalog, error) {
+	f.allCalls++
+	return f.allBases, f.err
 }
 
 func TestPublicWorldPOIsReturnsJSONShape(t *testing.T) {
@@ -225,6 +231,34 @@ func TestPublicWorldPOIsReturnsJSONShape(t *testing.T) {
 	}
 	if repo.calls != 1 || repo.userID != "steam_1" {
 		t.Fatalf("calls=%d user=%q", repo.calls, repo.userID)
+	}
+}
+
+func TestPublicGuildBasesReturnsCatalog(t *testing.T) {
+	repo := &worldPOIQueriesFake{allBases: store.GuildBasesCatalog{
+		Source: "save_import+game_data",
+		AsOf:   "2026-07-14T00:00:00Z",
+		POIs: []store.WorldPOI{{
+			ID: "gb-1", NameZh: "公会「狼」据点", Kind: "guild_base",
+			X: 1, Y: 2, GuildName: "狼", GuildID: "g1",
+		}},
+	}}
+	cfg := config.Config{Version: 1}
+	server := New(fakeHealth{}, fakeStatus{}, fakeSnapshots{}, fakeAnalyticsQueries{}, fakeAnalyticsOnline{}, fakePolicies{}, fakeResetter{}, repo, "", "", func() config.Config { return cfg })
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/guild-bases", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	var body store.GuildBasesCatalog
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Source != "save_import+game_data" || len(body.POIs) != 1 || body.POIs[0].GuildName != "狼" {
+		t.Fatalf("body=%+v", body)
+	}
+	if repo.allCalls != 1 {
+		t.Fatalf("allCalls=%d", repo.allCalls)
 	}
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getAnalyticsActivity, getAnalyticsSummary, getLivePositions, getPlayerTimeline, getPlayerWorldPOIs } from './api';
+import { getAnalyticsActivity, getAnalyticsSummary, getGuildBases, getLivePositions, getPlayerTimeline, getPlayerWorldPOIs } from './api';
 import type { AnalyticsActivity, AnalyticsSummary, PlayerTimelineResponse, PlayerWorldPOIsResponse } from './api';
 
 const summaryFixture = {
@@ -94,5 +94,16 @@ describe('timeline API', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(payload)));
     await expect(getLivePositions()).resolves.toEqual(payload);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/live/positions');
+  });
+
+  it('requests guild bases catalog for map landmarks', async () => {
+    const payload = {
+      source: 'save_import',
+      as_of: '2026-07-14T00:00:00Z',
+      pois: [{ id: 'gb-1', name_zh: 'Base', kind: 'guild_base' as const, x: 1, y: 2, guild_name: 'G', guild_id: 'g1' }],
+    };
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(payload)));
+    await expect(getGuildBases()).resolves.toEqual(payload);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/guild-bases');
   });
 });

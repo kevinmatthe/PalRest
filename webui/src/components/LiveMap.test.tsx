@@ -7,6 +7,7 @@ import { LiveMap } from './LiveMap';
 vi.mock('../api', async (load) => ({
   ...(await load<typeof import('../api')>()),
   getLivePositions: vi.fn(),
+  getGuildBases: vi.fn(),
 }));
 
 beforeEach(() => {
@@ -23,6 +24,20 @@ beforeEach(() => {
         y: -2000,
         ping: 22,
         level: 12,
+      },
+    ],
+  });
+  vi.mocked(api.getGuildBases).mockResolvedValue({
+    source: 'save_import',
+    pois: [
+      {
+        id: 'gb-1',
+        name_zh: '公会「狼」据点',
+        kind: 'guild_base',
+        x: 10,
+        y: 20,
+        guild_name: '狼',
+        guild_id: 'g1',
       },
     ],
   });
@@ -58,5 +73,17 @@ describe('LiveMap', () => {
     await waitFor(() => {
       expect(screen.getByText(/没有可显示坐标的在线玩家/)).toBeInTheDocument();
     });
+  });
+
+  it('toggles guild base landmarks and guild filter', async () => {
+    const user = userEvent.setup();
+    render(<LiveMap />);
+    await screen.findByText('Avery');
+    const guildBtn = screen.getByRole('button', { name: /公会据点/i });
+    expect(guildBtn).toHaveAttribute('aria-pressed', 'false');
+    await user.click(guildBtn);
+    expect(guildBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByRole('group', { name: /公会据点筛选/i })).toBeInTheDocument();
+    expect(screen.getByText('狼')).toBeInTheDocument();
   });
 });

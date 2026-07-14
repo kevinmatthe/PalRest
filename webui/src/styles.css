@@ -735,6 +735,100 @@ select:focus-visible {
 .timeline-layer-toggle[aria-pressed="false"] {
   opacity: 0.72;
 }
+.timeline-layer-toggle--guild[aria-pressed="true"] {
+  border-color: #6d28d9;
+  color: #5b2d9e;
+  background: #efe6ff;
+}
+.landmark-layer-controls {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.landmark-guild-count {
+  margin-left: 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  opacity: 0.85;
+}
+.landmark-guild-filter {
+  display: grid;
+  gap: 0.4rem;
+  max-width: min(22rem, 100%);
+  padding: 0.5rem 0.55rem;
+  border: 1px solid #c4a8f0;
+  border-radius: 0.4rem;
+  background: rgba(239, 230, 255, 0.55);
+}
+.landmark-guild-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.landmark-guild-filter-actions button {
+  min-height: 1.7rem;
+  padding: 0 0.5rem;
+  border: 1px solid #c4a8f0;
+  border-radius: 999px;
+  color: #5b2d9e;
+  background: #fff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.landmark-guild-filter-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.25rem;
+  max-height: 10rem;
+  overflow: auto;
+}
+.landmark-guild-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 1.7rem;
+  padding: 0.15rem 0.2rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #3d2a55;
+}
+.landmark-guild-filter-name { flex: 1 1 auto; min-width: 0; }
+.landmark-guild-filter-meta {
+  color: #6d5a86;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+.landmark-guild-filter-empty {
+  margin: 0;
+  color: #5b6963;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+.landmark-guild-filter-empty--inline {
+  max-width: 16rem;
+}
+.map-landmark-guild-icon {
+  background: transparent !important;
+  border: none !important;
+}
+.map-landmark-guild-glyph {
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 2px solid #6d28d9;
+  border-radius: 0.3rem;
+  background: #c4b5fd;
+  color: #4c1d95;
+  font-size: 0.85rem;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 0.15rem 0.4rem rgba(76, 29, 149, 0.35);
+}
 /* Compact cluster chips: no count text (tooltip on hover). */
 .timeline-marker-cluster {
   display: flex;

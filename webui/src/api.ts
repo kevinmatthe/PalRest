@@ -313,6 +313,16 @@ export async function getPlayerWorldPOIs(userID: string, signal?: AbortSignal): 
   return getJSON<PlayerWorldPOIsResponse>(`/api/v1/players/${encodeURIComponent(userID)}/world-pois`, signal);
 }
 
+export type GuildBasesResponse = {
+  source: string;
+  as_of?: string;
+  pois: WorldPOI[];
+};
+
+export function getGuildBases(signal?: AbortSignal) {
+  return getJSON<GuildBasesResponse>('/api/v1/guild-bases', signal);
+}
+
 export type LivePositionPlayer = {
   user_id: string;
   player_id?: string;
