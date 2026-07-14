@@ -55,8 +55,11 @@ describe('PlayerTimeline', () => {
     render(<PlayerTimeline includePrivate players={players} refreshKey={0} />);
     expect(screen.getByText(/选择玩家后查看轨迹和事件/)).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: /玩家/i })).toHaveValue('');
-    expect(screen.getByLabelText(/开始/i)).toHaveAttribute('type', 'datetime-local');
-    expect(screen.getByLabelText(/结束/i)).toHaveAttribute('type', 'datetime-local');
+    expect(screen.getByRole('group', { name: /观察窗口长度/i })).toBeInTheDocument();
+    expect(screen.getByRole('slider', { name: /时间窗口位置/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /拖动观察时间窗口/i })).toBeInTheDocument();
+    // Exact datetime fields stay folded until requested.
+    expect(screen.queryByLabelText(/^开始$/i)).not.toBeInTheDocument();
     expect(api.getPlayerTimeline).not.toHaveBeenCalled();
   });
 
@@ -217,11 +220,12 @@ describe('PlayerTimeline', () => {
 
   it('syncs the end time to now when refreshKey changes', async () => {
     const { rerender } = render(<PlayerTimeline players={players} refreshKey={0} />);
-    fireEvent.change(screen.getByLabelText(/结束/i), { target: { value: '2026-07-01T00:00' } });
-    expect(screen.getByLabelText(/结束/i)).toHaveValue('2026-07-01T00:00');
+    fireEvent.click(screen.getByRole('button', { name: /精确时间/i }));
+    fireEvent.change(screen.getByLabelText(/^结束$/i), { target: { value: '2026-07-01T00:00' } });
+    expect(screen.getByLabelText(/^结束$/i)).toHaveValue('2026-07-01T00:00');
     rerender(<PlayerTimeline players={players} refreshKey={1} />);
 
-    await waitFor(() => expect(screen.getByLabelText(/结束/i)).toHaveValue(localInputValueForTest(new Date())));
+    await waitFor(() => expect(screen.getByLabelText(/^结束$/i)).toHaveValue(localInputValueForTest(new Date())));
   });
 
   it('shows a segment boundary when the same raw identity belongs to another runtime epoch', async () => {
@@ -280,12 +284,13 @@ describe('PlayerTimeline', () => {
 
   it('blocks inverted and over-31-day ranges before any request', async () => {
     render(<PlayerTimeline players={players} refreshKey={0} />);
-    fireEvent.change(screen.getByLabelText(/开始/i), { target: { value: '2026-05-01T00:00' } });
-    fireEvent.change(screen.getByLabelText(/结束/i), { target: { value: '2026-07-13T00:00' } });
+    fireEvent.click(screen.getByRole('button', { name: /精确时间/i }));
+    fireEvent.change(screen.getByLabelText(/^开始$/i), { target: { value: '2026-05-01T00:00' } });
+    fireEvent.change(screen.getByLabelText(/^结束$/i), { target: { value: '2026-07-13T00:00' } });
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
     expect(await screen.findByRole('alert')).toHaveTextContent(/31 天/i);
     expect(api.getPlayerTimeline).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText(/开始/i), { target: { value: '2026-07-14T00:00' } });
+    fireEvent.change(screen.getByLabelText(/^开始$/i), { target: { value: '2026-07-14T00:00' } });
     expect(await screen.findByRole('alert')).toHaveTextContent(/晚于开始时间/i);
     expect(api.getPlayerTimeline).not.toHaveBeenCalled();
   });
@@ -294,13 +299,31 @@ describe('PlayerTimeline', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date('2026-07-14T12:00:00'));
     render(<PlayerTimeline players={players} refreshKey={0} />);
-    fireEvent.click(screen.getByRole('button', { name: /最近 1 小时/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^1 小时$/i }));
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
     await waitFor(() => expect(api.getPlayerTimeline).toHaveBeenCalled());
     const [, startIso, endIso] = vi.mocked(api.getPlayerTimeline).mock.calls.at(-1)!;
     const start = Date.parse(startIso as string);
     const end = Date.parse(endIso as string);
     expect(end - start).toBe(60 * 60 * 1000);
+  });
+
+  it('slides the fixed window via the position slider', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-07-14T12:00:00Z'));
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.click(screen.getByRole('button', { name: /^1 小时$/i }));
+    const slider = screen.getByRole('slider', { name: /时间窗口位置/i });
+    // Move to oldest end of scrubber horizon while keeping 1h width.
+    fireEvent.change(slider, { target: { value: '0' } });
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await waitFor(() => expect(api.getPlayerTimeline).toHaveBeenCalled());
+    const [, startIso, endIso] = vi.mocked(api.getPlayerTimeline).mock.calls.at(-1)!;
+    const startMs = Date.parse(startIso as string);
+    const endMs = Date.parse(endIso as string);
+    expect(endMs - startMs).toBe(60 * 60 * 1000);
+    // Not pinned to "now" after sliding to 0.
+    expect(Date.now() - endMs).toBeGreaterThan(60 * 60 * 1000);
   });
 
   it('advances cursor while playing and stops at the end without forcing list scroll', async () => {

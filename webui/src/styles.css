@@ -315,6 +315,95 @@ select:focus-visible {
   cursor: pointer;
 }
 .timeline-presets button:hover { border-color: #6ca4ae; background: #e0f1ee; }
+.timeline-presets button[aria-pressed="true"] {
+  border-color: #8d5a0f;
+  color: #6a4210;
+  background: #fff2d5;
+}
+.timeline-window-control { display: grid; gap: 0.65rem; min-width: 0; }
+.timeline-window-pin:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.timeline-window-scrubber { display: grid; gap: 0.35rem; min-width: 0; }
+.timeline-window-scrubber-labels {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: #5b6963;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.timeline-window-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+  color: #255a50;
+  font-size: 0.75rem;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+.timeline-window-track {
+  position: relative;
+  height: 2.15rem;
+  border: 1px solid #aeb9b0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #dce5de, #f7ead4 55%, #e7f7fa);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+.timeline-window-thumb {
+  position: absolute;
+  top: 0.2rem;
+  bottom: 0.2rem;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  min-width: 2.5rem;
+  padding: 0 0.35rem;
+  border: 1px solid #8d5a0f;
+  border-radius: 999px;
+  color: #6a4210;
+  background: rgba(255, 242, 213, 0.95);
+  box-shadow: 0 0.2rem 0.55rem rgba(106, 66, 16, 0.18);
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: grab;
+  touch-action: none;
+}
+.timeline-window-thumb:active { cursor: grabbing; }
+.timeline-window-thumb-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.timeline-window-slider { display: block; min-width: 0; }
+.timeline-window-slider input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  accent-color: #ca8519;
+}
+.timeline-window-advanced { display: grid; gap: 0.45rem; }
+.timeline-window-exact-toggle {
+  justify-self: start;
+  min-height: 1.9rem;
+  padding: 0 0.55rem;
+  border: 1px dashed #b7c7be;
+  border-radius: 0.3rem;
+  color: #3d5c54;
+  background: transparent;
+  font-size: 0.8rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+.timeline-window-exact-toggle:hover {
+  border-color: #6ca4ae;
+  background: #eaf6f7;
+}
+.timeline-window-exact-fields { display: grid; gap: 0.55rem; }
 .timeline-range-note { color: #66726b; font-size: 0.875rem; line-height: 1.45; }
 .timeline-map-header-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .timeline-color-mode {

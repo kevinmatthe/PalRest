@@ -7,6 +7,7 @@ import { nextCursorIndex, playStepDelayMs, prevCursorIndex, type PlayMode, type 
 import { DEFAULT_ROW_ESTIMATE_PX, scrollTopForIndex, virtualWindow } from '../map/timelineVirtual';
 import { BehaviorSummaryPanel } from './BehaviorSummaryPanel';
 import { TimelineMap, tileErrorTransition } from './TimelineMap';
+import { TimeWindowControl } from './TimeWindowControl';
 import {
   confidenceLabel,
   eventLabel,
@@ -118,6 +119,7 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
   const [search, setSearch] = useState('');
   const [start, setStart] = useState(range.start);
   const [end, setEnd] = useState(range.end);
+  const [showExactRange, setShowExactRange] = useState(false);
   const [state, setState] = useState<TimelineState>({ kind: 'idle' });
   const [cursorIndex, setCursorIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -139,12 +141,6 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
     if (!term) return players;
     return players.filter((player) => player.user_id === selectedID || [player.name, player.account_name, player.user_id, player.player_id].some((value) => value.toLowerCase().includes(term)));
   }, [players, search, selectedID]);
-
-  function applyPresetHours(hours: number) {
-    const nextEnd = new Date();
-    setEnd(localInputValue(nextEnd));
-    setStart(localInputValue(new Date(nextEnd.getTime() - hours * 3600_000)));
-  }
 
   function seekCursor(index: number) {
     setPlaying(false);
@@ -462,14 +458,18 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
               {visiblePlayers.map((player) => <option value={player.user_id} key={player.user_id}>{player.name || player.account_name || player.user_id} · {player.account_name || player.user_id}</option>)}
             </select>
           </label>
-          <div className="timeline-presets" role="group" aria-label="时间范围预设">
-            <button type="button" onClick={() => applyPresetHours(1)}>最近 1 小时</button>
-            <button type="button" onClick={() => applyPresetHours(24)}>最近 24 小时</button>
-            <button type="button" onClick={() => applyPresetHours(7 * 24)}>最近 7 天</button>
-          </div>
-          <label className="timeline-field"><span>开始</span><input type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} /></label>
-          <label className="timeline-field"><span>结束</span><input type="datetime-local" value={end} onChange={(event) => setEnd(event.target.value)} /></label>
-          <p className="timeline-range-note">本地时间 · 最长 31 天 · 每类最多 500 条</p>
+          <TimeWindowControl
+            start={start}
+            end={end}
+            onRangeChange={(nextStart, nextEnd) => {
+              setStart(nextStart);
+              setEnd(nextEnd);
+            }}
+            parseLocal={parseLocalDateTime}
+            toLocalInput={localInputValue}
+            showExact={showExactRange}
+            onShowExactChange={setShowExactRange}
+          />
         </aside>
         <div className="timeline-log">
           <TimelineMap
