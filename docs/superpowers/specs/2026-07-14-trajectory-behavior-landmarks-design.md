@@ -1,4 +1,4 @@
-# Trajectory Behavior × Landmarks Design (Phase A2)
+# Trajectory Behavior × World POIs Design (Phase A2)
 
 **Date:** 2026-07-14  
 **Parent:** `docs/superpowers/specs/2026-07-14-trajectory-behavior-analysis-design.md` (phase A shipped)  
@@ -6,192 +6,226 @@
 
 ## Goal
 
-Deepen phase-A behavior analysis by **binding trajectories to world landmarks** (fast travel + boss towers already in `MAP_LANDMARKS`). The timeline Behavior Summary gains: dwell-by-landmark, activity anchor, and suspected teleports—so “idle / travel” becomes “where” not only “how fast.”
+Deepen behavior analysis by binding trajectories to **world points of interest (POIs)**—not only fast travel:
+
+| POI kind | Source today | Available offline? |
+|----------|--------------|--------------------|
+| `fast_travel` | Static `MAP_LANDMARKS` | Yes |
+| `boss_tower` | Static `MAP_LANDMARKS` (9 towers) | Yes |
+| `guild_base` | Latest save import: `save_base_camps` + guild membership via `save_identity_mappings` | Only when save worker has imported a snapshot |
+
+The timeline Behavior Summary gains: dwell-by-POI (with kind), activity anchor, suspected teleports between FTs, and **guild-base presence** when save data exists—so analysis answers **where**, not only how fast.
 
 ## Decisions
 
 | Item | Decision |
 |------|----------|
-| Scope | Extend pure client metrics + BehaviorSummaryPanel only |
-| Landmarks | Reuse `MAP_LANDMARKS` + `nearestLandmark` / `DEFAULT_LANDMARK_RADIUS` (25_000) |
-| Server / Analytics page | Out of scope (phase B later, using same fields) |
-| Map overlay | Out of scope (phase C; consume A2 tags) |
-| New POI types | Not in A2 (bases from save later) |
+| Abstraction | Unified `BehaviorPOI` (`id`, `nameZh`, `kind`, `x`, `y`, optional `meta`) |
+| Static POIs | Always include **all** `MAP_LANDMARKS` (FT + boss towers)—not FT-only |
+| Guild bases | Merge dynamic POIs from API when available; degrade gracefully if none |
+| Matching | `nearestPOI` (same algorithm as `nearestLandmark`) with kind-aware radius defaults |
+| Dwell | Stationary edges with **both ends** hitting the same POI id |
+| Teleports | Prefer FT↔FT (or gap hops); do **not** label boss/base hops as teleports unless both ends are FT |
+| Panel | Group dwells by kind tabs or badges: 传送点 / 首领塔 / 公会据点 |
+| Server for B/C | Out of scope beyond the small POI feed API for guild bases |
 
 ## In scope
 
-1. Pure enrichment after (or inside) `summarizeBehavior`:
-   - per-sample nearest landmark hit (optional on edges)
-   - dwell aggregates by landmark
-   - activity anchor (most dwell / most hits)
-   - teleport-suspect events
-2. Panel UI: Top dwell list, anchor chip, teleport list
-3. Unit tests for enrichment; component tests for new blocks
-4. Types extended on `BehaviorSummary` (backward-compatible fields)
+### A2a — Static world POIs (always on)
+
+1. Pure enrichment over `BehaviorSummary` + samples + POI list.
+2. Dwell / anchor / teleport-suspect using FT **and** boss towers.
+3. Panel sections with kind labels.
+4. Unit + component tests.
+
+### A2b — Guild base POIs (save-backed)
+
+1. Store query: latest successful save import → base camps linked to the selected player’s guild (via identity mapping).
+2. Read API (auth: same as private timeline if sensitive, else public aggregate of **coordinates + guild name** only—no IP):
+   - `GET /api/v1/players/{userID}/world-pois`  
+   - Returns `{ pois: BehaviorPOI[], as_of?, source: 'save_import' | 'none' }`
+3. Timeline loads POIs for selected player (best-effort; failure → static only).
+4. Enrichment merges `staticLandmarksToPOIs(MAP_LANDMARKS) ∪ guildBasePOIs`.
 
 ## Out of scope
 
-- Go APIs, daily rollups, rankings
-- Drawing on Leaflet (C)
-- Inferring base camps without save data
-- Changing landmark radius via admin UI
-- Guaranteeing true game-teleport detection (label as **疑似**)
+- Daily rollups / Analytics rankings (B)
+- Leaflet drawing (C)—will consume POI hits later
+- Wild boss spawn tables beyond the 9 static towers
+- Full guild/base World UI
+- Claiming true game-teleport certainty (always **疑似**)
 
 ## Architecture
 
 ```
-trajectorySamples
-  → summarizeBehavior(...)           # existing
-  → enrichBehaviorWithLandmarks(...) # new pure, uses nearestLandmark
-  → BehaviorSummaryPanel
+                    ┌─ MAP_LANDMARKS (FT + towers) ──────────────┐
+trajectorySamples → │                                           ├→ enrichBehaviorWithPOIs → panel
+                    └─ GET world-pois (guild bases, optional) ───┘
+                           summarizeBehavior (motion) ───────────┘
 ```
 
-Preferred split (testability):
+```
+webui/src/behavior/behaviorTypes.ts      # POI + dwell + teleport types
+webui/src/behavior/behaviorPOIs.ts       # nearestPOI, static convert, enrich*
+webui/src/behavior/behaviorPOIs.test.ts
+webui/src/behavior/behaviorFormat.ts     # kind labels
+webui/src/components/BehaviorSummaryPanel.tsx
+webui/src/api.ts                         # getPlayerWorldPOIs
+internal/store/...                       # ListPlayerWorldPOIs
+internal/api/...                         # handler
+```
 
-| Module | Role |
-|--------|------|
-| `behavior/behaviorLandmarks.ts` | Enrichment: dwell, anchor, teleports |
-| `behavior/behaviorLandmarks.test.ts` | Fixtures with tiny landmark tables |
-| `behaviorTypes.ts` | New types + fields on summary |
-| `behaviorFormat.ts` | Labels for kind / teleport line |
-| `BehaviorSummaryPanel.tsx` | Render new sections |
-| `PlayerTimeline.tsx` | Call enrich after summarize (or single wrapper) |
+Motion metrics stay in `summarizeBehavior` (no POI dependency). Composition:
 
-Keep `summarizeBehavior` free of landmark dependency so motion metrics stay isolated; compose in a thin `analyzeTrajectoryBehavior(samples, options)` if cleaner.
+```ts
+analyzeTrajectoryBehavior(samples, { window..., pois: BehaviorPOI[] })
+```
 
-## Constants
+## POI model
 
-| Constant | Default | Notes |
-|----------|---------|--------|
-| Landmark match radius | `DEFAULT_LANDMARK_RADIUS` (25_000) | Same as list/map labels |
-| Dwell: edge classes | `stationary` only | Optionally include slow `local` if both ends same landmark—**MVP: stationary only** |
-| Teleport: min jump dist | `50_000` | Large world hop |
-| Teleport: max duration | `T_GAP_MS` (5 min) or gap edges | Instant-ish hop |
-| Teleport: require FT ends | At least one end near `fast_travel` (prefer both) | Reduces false positives |
-| Top dwell N | 5 | Panel list |
-| Top teleports N | 5 | Panel list |
+```ts
+type BehaviorPOIKind = 'fast_travel' | 'boss_tower' | 'guild_base';
+
+type BehaviorPOI = {
+  id: string;           // ft-*, tw-*, or gb-{guildId}-{baseUid}
+  nameZh: string;       // e.g. 中央 · 传送点 3 / 初始之塔 / 公会「狼」据点
+  kind: BehaviorPOIKind;
+  x: number;
+  y: number;
+  guildName?: string;   // guild_base only
+  area?: number;        // base camp area if useful later
+};
+```
+
+### Radii
+
+| Kind | Default radius (world) | Rationale |
+|------|------------------------|-----------|
+| `fast_travel` | 25_000 | Existing `DEFAULT_LANDMARK_RADIUS` |
+| `boss_tower` | 30_000 | Slightly larger arena footprint |
+| `guild_base` | `max(25_000, sqrt(area)*k)` or fixed 40_000 | Bases are larger; MVP fixed **40_000** |
+
+`nearestPOI` walks all POIs with their kind radius (or max of defaults).
 
 ## Algorithms
 
-### 1. Point → landmark
+### 1. Hit assignment
 
-For each sorted sample used in the summary:
+For each sorted sample: `nearestPOI(point, pois)` → hit or none.  
+`landmarkHitRate` → rename conceptually to `poiHitRate` (keep field name `landmarkHitRate` for less churn **or** rename to `poiHitRate` in A2—**prefer `poiHitRate`** with `landmarkHitRate` alias not needed if A1 just shipped empty fields).
 
-```
-hit = nearestLandmark({x,y}, landmarks, radius)
-```
-
-Store parallel array `hits: (MapLandmark | undefined)[]` aligned with sorted indices used in metrics (document index space: same as `edges.fromIndex/toIndex` if edges refer to sorted samples).
-
-### 2. Dwell by landmark
-
-For each non-gap edge with `class === 'stationary'`:
-
-- If both endpoints hit the **same** `landmark.id`, add `min(dtMs, T_active_cap)` to that landmark’s `dwellMs`, increment `visitEdges`.
-- If only one end hits, **do not** count dwell (avoid path-through noise).
-
-Also count `sampleHits` per landmark (how many samples bind to it) for anchor fallback.
-
-Output:
+Phase A added empty `landmarkDwells` etc. in plan—if not yet on main metrics return, introduce `poiDwells` as the canonical name:
 
 ```ts
-type LandmarkDwell = {
-  landmarkId: string;
-  nameZh: string;
-  kind: 'fast_travel' | 'boss_tower';
-  dwellMs: number;
-  sampleHits: number;
-};
-```
-
-Sort by `dwellMs` desc, then `sampleHits`, then id; take top 5.
-
-### 3. Activity anchor
-
-1. Prefer landmark with max `dwellMs` if `dwellMs > 0`.
-2. Else max `sampleHits` if any hits.
-3. Else `undefined` (open field).
-
-### 4. Suspected teleports
-
-Scan consecutive sorted pairs `(a,b)`:
-
-**Case A — gap edge already classified** (`segment` change or `dt > T_gap`):  
-If `dist(a,b) >= TELEPORT_MIN_DIST` OR endpoints near different landmarks of kind fast_travel → record suspect with reason `gap_hop`.
-
-**Case B — same segment, short time, huge dist:**  
-`dtMs <= T_gap` and `dist >= TELEPORT_MIN_DIST` and (both ends near any FT, or ends near two different FTs) → reason `long_jump`.
-
-Record:
-
-```ts
-type TeleportSuspect = {
-  fromLandmarkId?: string;
-  fromNameZh?: string;
-  toLandmarkId?: string;
-  toNameZh?: string;
-  dist: number;
-  dtMs: number;
-  reason: 'gap_hop' | 'long_jump';
-  at: string; // b.observed_at
-};
-```
-
-Cap list at 5 (longest dist first).
-
-### 5. Summary extension
-
-```ts
-// added to BehaviorSummary
-landmarkDwells: LandmarkDwell[];
-activityAnchor?: LandmarkDwell;
+poiDwells: POIDwell[];
+activityAnchor?: POIDwell;
 teleportSuspects: TeleportSuspect[];
-landmarkHitRate: number; // samples with any hit / sampleCount
+poiHitRate: number;
 ```
 
-## UI (BehaviorSummaryPanel)
+(If code already has `landmark*` names from an unstarted plan, use `poi*` as specified here.)
 
-Below existing metrics grid:
+### 2. Dwell
 
-1. **活动锚点** — chip with name + kind label（传送点 / 首领塔）+ dwell if any  
-2. **驻留 Top** — ordered list: name, `formatDuration(dwellMs)`, kind  
-3. **疑似传送** — list: `from → to` or `野外 → name`, duration, reason badge「跨段/大跳」  
-4. Empty sublines when lists empty:「未匹配到传送点/塔附近的驻留」
+Same as prior A2: stationary edge, both ends same `poi.id` → add capped `dtMs`.  
+Sort top 5 by dwellMs; show kind badge.
 
-Keep gap warning and motion mix as today.
+### 3. Anchor
+
+Max dwellMs, else max sampleHits, else undefined. Prefer showing kind in chip.
+
+### 4. Teleport suspects
+
+Only promote to teleport UI when:
+
+- reason gap_hop / long_jump **and**
+- at least one endpoint hit is `fast_travel`, **and**
+- if both hits exist, not both the same id.
+
+Boss-only or base-only large moves stay **out** of teleport list (still contribute to dwell/path). Optional debug later: `largeMoves`—not MVP.
+
+### 5. Guild presence (derived)
+
+If any `guild_base` dwell or sampleHits &gt; 0:
+
+```ts
+guildPresence?: {
+  guildName?: string;
+  baseCount: number;
+  dwellMs: number; // sum over that guild's bases
+}
+```
+
+Panel line:「公会据点停留 · {duration}」.
+
+## API (A2b)
+
+### `GET /api/v1/players/{userID}/world-pois`
+
+**Auth:** Same as player timeline (public ok for coordinates of bases that are already on the shared map of the server; if product wants admin-only, mirror private timeline). **Default: public read** of name+xy only (no member list).
+
+**Response:**
+
+```json
+{
+  "user_id": "…",
+  "source": "save_import",
+  "as_of": "2026-07-14T08:00:00Z",
+  "pois": [
+    {
+      "id": "gb-…",
+      "name_zh": "公会「示例」据点",
+      "kind": "guild_base",
+      "x": 1.0,
+      "y": 2.0,
+      "guild_name": "示例"
+    }
+  ]
+}
+```
+
+`source: "none"` + empty pois when no import or no mapping.
+
+**Store:** Latest `save_imports` by `imported_at`; join identity → guild member → guild → base camps with locations.
+
+## UI
+
+| Block | Content |
+|-------|---------|
+| 活动锚点 | name + kind badge + dwell |
+| 驻留 Top | list with 传送点/首领塔/公会据点 colors |
+| 公会据点 | optional summary line if guildPresence |
+| 疑似传送 | FT-oriented only |
+| Empty |「未匹配到传送点、首领塔或公会据点附近的驻留」 |
 
 ## Testing
 
-### Unit `behaviorLandmarks`
-
-- Stationary edges on same FT accumulate dwell  
-- Endpoints different landmarks → no dwell  
-- Anchor from dwell vs sampleHits fallback  
-- gap_hop and long_jump detection with fixture landmarks  
-- Outside radius → no hit, empty dwells  
-- Top-N ordering  
-
-### Component
-
-- Renders dwell names when fixture summary provided  
-- Hides teleport block when empty (or shows empty copy)  
+- Static: FT dwell, tower dwell, mixed top list kinds  
+- Teleport: FT→FT only  
+- Dynamic: enrich with injected guild_base POIs  
+- API: store fixture with import + identity + base → handler returns pois  
+- Panel: renders kind badges  
 
 ## Acceptance
 
-1. Player with samples near known FT shows dwell and/or anchor in panel.  
-2. Synthetic teleport hop appears under 疑似传送.  
-3. Motion metrics unchanged when landmarks omitted/empty table.  
-4. Tests + build green; no backend changes.  
+1. Near boss tower stationary time appears under 首领塔.  
+2. Near FT appears under 传送点; teleports still work.  
+3. With save data + mapping, guild base dwell appears; without, panel still works (static only).  
+4. Motion metrics unchanged.  
+5. Tests + build green.
 
-## Follow-ons
+## Implementation order
 
-- **C:** Color edges; pin dwell landmarks; draw teleport arcs.  
-- **B:** Daily `landmarkDwells` / teleport counts for rankings.  
+1. Types + pure POI enrich + static FT/tower (A2a) + panel.  
+2. Store + API world-pois (A2b).  
+3. Timeline fetch merge + loading/error soft-fail.  
+4. Stop before map overlay / rankings.
 
 ## Risks
 
 | Risk | Mitigation |
 |------|------------|
-| FT names still generic | Existing region prefix on labels |
-| False teleports from lag | Require large dist + FT proximity; label 疑似 |
-| Radius too large merges FTs | Prefer nearest only; dual-end same id for dwell |
+| No save import / identity | Soft-fail; static POIs only |
+| Base radius wrong | Fixed 40k; tune later |
+| Name quality | Guild name from save; FT region prefix already applied |
+| Privacy of base coords | Server-local ops tool; coords already imply world state |
