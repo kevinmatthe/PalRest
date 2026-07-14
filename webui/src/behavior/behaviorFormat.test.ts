@@ -6,7 +6,11 @@ import {
   formatBehaviorSpeed,
   formatDensityPerHour,
   formatDominantLabel,
+  formatPOIKind,
+  formatTeleportLine,
+  formatTeleportReason,
 } from './behaviorFormat';
+import type { TeleportSuspect } from './behaviorTypes';
 
 describe('BEHAVIOR_CLASS_LABELS', () => {
   it('maps class keys to Chinese labels', () => {
@@ -77,5 +81,46 @@ describe('formatDensityPerHour', () => {
     expect(formatDensityPerHour(-1)).toBe('0 点/时');
     expect(formatDensityPerHour(NaN)).toBe('0 点/时');
     expect(formatDensityPerHour(Infinity)).toBe('0 点/时');
+  });
+});
+
+describe('formatPOIKind', () => {
+  it('maps POI kinds to Chinese labels', () => {
+    expect(formatPOIKind('fast_travel')).toBe('传送点');
+    expect(formatPOIKind('boss_tower')).toBe('首领塔');
+    expect(formatPOIKind('guild_base')).toBe('公会据点');
+  });
+});
+
+describe('formatTeleportReason', () => {
+  it('maps gap_hop and long_jump', () => {
+    expect(formatTeleportReason('gap_hop')).toBe('跨段');
+    expect(formatTeleportReason('long_jump')).toBe('大跳');
+  });
+});
+
+describe('formatTeleportLine', () => {
+  it('joins from/to names with arrow', () => {
+    const t: TeleportSuspect = {
+      fromNameZh: '传送点 A',
+      toNameZh: '传送点 B',
+      dist: 100_000,
+      dtMs: 1000,
+      reason: 'long_jump',
+      at: '2026-07-14T00:00:00Z',
+    };
+    expect(formatTeleportLine(t)).toBe('传送点 A → 传送点 B');
+  });
+
+  it('falls back to 野外 when names are missing', () => {
+    const t: TeleportSuspect = {
+      dist: 100_000,
+      dtMs: 1000,
+      reason: 'gap_hop',
+      at: '2026-07-14T00:00:00Z',
+    };
+    expect(formatTeleportLine(t)).toBe('野外 → 野外');
+    expect(formatTeleportLine({ ...t, fromNameZh: '起点' })).toBe('起点 → 野外');
+    expect(formatTeleportLine({ ...t, toNameZh: '终点' })).toBe('野外 → 终点');
   });
 });

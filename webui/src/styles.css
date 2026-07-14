@@ -1578,3 +1578,104 @@ dd {
   font-size: 0.82rem;
   font-weight: 700;
 }
+.behavior-poi-block {
+  display: grid;
+  gap: 0.4rem;
+}
+.behavior-poi-heading {
+  margin: 0;
+  color: #255a50;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+.behavior-poi-anchor,
+.behavior-poi-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.55rem;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid #d5e0d9;
+  border-radius: 0.35rem;
+  background: #fffef9;
+}
+.behavior-poi-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.35rem;
+  counter-reset: behavior-poi;
+}
+.behavior-poi-list li {
+  counter-increment: behavior-poi;
+}
+.behavior-poi-list li::before {
+  content: counter(behavior-poi) ".";
+  color: #5b6963;
+  font-size: 0.75rem;
+  font-weight: 800;
+  min-width: 1.1rem;
+}
+.behavior-poi-name {
+  color: #14241f;
+  font-size: 0.88rem;
+  font-weight: 750;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.behavior-poi-duration {
+  color: #3d4f48;
+  font-size: 0.82rem;
+  font-weight: 750;
+  margin-left: auto;
+}
+.behavior-poi-kind {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.35rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.72rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.behavior-poi-kind--fast_travel {
+  background: #d8f7f4;
+  border-color: #7fd4cb;
+  color: #0d6b62;
+}
+.behavior-poi-kind--boss_tower {
+  background: #fff3d6;
+  border-color: #e0c06a;
+  color: #7a5608;
+}
+.behavior-poi-kind--guild_base {
+  background: #efe6ff;
+  border-color: #c4a8f0;
+  color: #5b2d9e;
+}
+.behavior-teleport-reason {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.35rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  border: 1px solid #d0c4b0;
+  background: #f6f0e6;
+  color: #5c4630;
+  font-size: 0.72rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.behavior-poi-guild {
+  margin: 0;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #d5e0d9;
+  border-radius: 0.35rem;
+  background: #fffef9;
+  color: #3d4f48;
+  font-size: 0.86rem;
+  font-weight: 700;
+}

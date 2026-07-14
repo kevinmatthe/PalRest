@@ -58,4 +58,98 @@ describe('BehaviorSummaryPanel', () => {
     render(<BehaviorSummaryPanel loading={false} selected={false} summary={null} />);
     expect(screen.queryByRole('region', { name: /行为摘要/ })).not.toBeInTheDocument();
   });
+
+  it('shows empty POI hint when no dwells or teleports', () => {
+    render(<BehaviorSummaryPanel loading={false} selected summary={summary()} />);
+    expect(screen.getByText(/未匹配到传送点、首领塔或公会据点附近的驻留/)).toBeInTheDocument();
+  });
+
+  it('renders activity anchor, dwells, guild presence, and teleports', () => {
+    render(
+      <BehaviorSummaryPanel
+        loading={false}
+        selected
+        summary={summary({
+          activityAnchor: {
+            poiId: 'ft-a',
+            nameZh: '中央 · 传送点 1',
+            kind: 'fast_travel',
+            dwellMs: 600_000,
+            sampleHits: 5,
+          },
+          poiDwells: [
+            {
+              poiId: 'ft-a',
+              nameZh: '中央 · 传送点 1',
+              kind: 'fast_travel',
+              dwellMs: 600_000,
+              sampleHits: 5,
+            },
+            {
+              poiId: 'tw-1',
+              nameZh: '初始之塔',
+              kind: 'boss_tower',
+              dwellMs: 300_000,
+              sampleHits: 3,
+            },
+            {
+              poiId: 'gb-1',
+              nameZh: '公会「狼」据点',
+              kind: 'guild_base',
+              dwellMs: 120_000,
+              sampleHits: 2,
+            },
+          ],
+          guildPresence: {
+            guildName: '狼',
+            baseCount: 2,
+            dwellMs: 120_000,
+          },
+          teleportSuspects: [
+            {
+              fromNameZh: '中央 · 传送点 1',
+              toNameZh: '火山 · 传送点 2',
+              dist: 120_000,
+              dtMs: 2_000,
+              reason: 'long_jump',
+              at: '2026-07-14T01:00:00Z',
+            },
+            {
+              fromNameZh: '火山 · 传送点 2',
+              toNameZh: '中央 · 传送点 1',
+              dist: 120_000,
+              dtMs: 10 * 60_000,
+              reason: 'gap_hop',
+              at: '2026-07-14T02:00:00Z',
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText('活动锚点')).toBeInTheDocument();
+    expect(screen.getByText('驻留')).toBeInTheDocument();
+    expect(screen.getByText('疑似传送')).toBeInTheDocument();
+
+    expect(screen.getAllByText('中央 · 传送点 1').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('初始之塔')).toBeInTheDocument();
+    expect(screen.getByText('公会「狼」据点')).toBeInTheDocument();
+
+    expect(screen.getAllByText('传送点').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('首领塔')).toBeInTheDocument();
+    // kind badge + section heading both use 公会据点
+    expect(screen.getAllByText('公会据点').length).toBeGreaterThanOrEqual(2);
+
+    expect(screen.getByText(/公会据点停留/)).toBeInTheDocument();
+    expect(screen.getByText(/2 处/)).toBeInTheDocument();
+    expect(screen.getByText(/· 狼/)).toBeInTheDocument();
+
+    expect(screen.getByText('中央 · 传送点 1 → 火山 · 传送点 2')).toBeInTheDocument();
+    expect(screen.getByText('大跳')).toBeInTheDocument();
+    expect(screen.getByText('跨段')).toBeInTheDocument();
+
+    expect(
+      screen.queryByText(/未匹配到传送点、首领塔或公会据点附近的驻留/),
+    ).not.toBeInTheDocument();
+  });
 });

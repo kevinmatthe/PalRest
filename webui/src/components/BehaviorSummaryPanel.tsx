@@ -7,6 +7,9 @@ import {
   formatBehaviorSpeed,
   formatDensityPerHour,
   formatDominantLabel,
+  formatPOIKind,
+  formatTeleportLine,
+  formatTeleportReason,
 } from '../behavior/behaviorFormat';
 import { formatDuration } from '../utils';
 
@@ -88,6 +91,78 @@ export function BehaviorSummaryPanel({ summary, loading, selected }: BehaviorSum
               <dd>{summary.segmentCount}</dd>
             </div>
           </dl>
+
+          {summary.activityAnchor ? (
+            <div className="behavior-poi-block">
+              <h4 className="behavior-poi-heading">活动锚点</h4>
+              <div className="behavior-poi-anchor">
+                <span className="behavior-poi-name">{summary.activityAnchor.nameZh}</span>
+                <span
+                  className={`behavior-poi-kind behavior-poi-kind--${summary.activityAnchor.kind}`}
+                >
+                  {formatPOIKind(summary.activityAnchor.kind)}
+                </span>
+                <span className="behavior-poi-duration">
+                  {formatDuration(summary.activityAnchor.dwellMs)}
+                </span>
+              </div>
+            </div>
+          ) : null}
+
+          {summary.poiDwells.length > 0 ? (
+            <div className="behavior-poi-block">
+              <h4 className="behavior-poi-heading">驻留</h4>
+              <ol className="behavior-poi-list">
+                {summary.poiDwells.map((dwell) => (
+                  <li key={dwell.poiId}>
+                    <span className="behavior-poi-name">{dwell.nameZh}</span>
+                    <span className={`behavior-poi-kind behavior-poi-kind--${dwell.kind}`}>
+                      {formatPOIKind(dwell.kind)}
+                    </span>
+                    <span className="behavior-poi-duration">{formatDuration(dwell.dwellMs)}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          ) : null}
+
+          {summary.guildPresence ? (
+            <div className="behavior-poi-block">
+              <h4 className="behavior-poi-heading">公会据点</h4>
+              <p className="behavior-poi-guild">
+                公会据点停留 · {formatDuration(summary.guildPresence.dwellMs)}
+                {summary.guildPresence.baseCount > 0
+                  ? ` · ${summary.guildPresence.baseCount} 处`
+                  : null}
+                {summary.guildPresence.guildName
+                  ? ` · ${summary.guildPresence.guildName}`
+                  : null}
+              </p>
+            </div>
+          ) : null}
+
+          {summary.teleportSuspects.length > 0 ? (
+            <div className="behavior-poi-block">
+              <h4 className="behavior-poi-heading">疑似传送</h4>
+              <ol className="behavior-poi-list">
+                {summary.teleportSuspects.map((t, i) => (
+                  <li key={`${t.at}-${i}`}>
+                    <span className="behavior-poi-name">{formatTeleportLine(t)}</span>
+                    <span className="behavior-teleport-reason">
+                      {formatTeleportReason(t.reason)}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          ) : null}
+
+          {summary.poiDwells.length === 0 && summary.teleportSuspects.length === 0 ? (
+            <p className="behavior-summary-empty">
+              未匹配到传送点、首领塔或公会据点附近的驻留
+            </p>
+          ) : null}
+
           {summary.gapShareOfWindow > GAP_SHARE_WARN ? (
             <p className="behavior-summary-gap" role="status">
               存在观测断档，活跃时长未覆盖全部日历时间。
