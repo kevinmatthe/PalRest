@@ -24,7 +24,7 @@
 | P1 | O6 | Unified location fallback copy + real zh landmark names (data) | Med | M | ◐ |
 | P1 | O7 | Map follow lock (only pan when focus leaves viewport) | Med | S | ✅ |
 | P2 | O8 | Extract `TimelineMap.tsx` / filters / list from `PlayerTimeline.tsx` | Med | M | ✅ |
-| P2 | O9 | Virtualize timeline list (`react-window` or equivalent) | Med | M | ☐ |
+| P2 | O9 | Virtualize timeline list (`react-window` or equivalent) | Med | M | ✅ |
 | P2 | O10 | Click sample on map → seek cursor | Med | S | ✅ |
 | P2 | O11 | Optional landmark overlay layer toggle | Low | M | ☐ |
 | P2 | O12 | README: root Docker context + `git lfs pull` + tile fallback | Low | S | ✅ |

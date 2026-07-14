@@ -297,6 +297,7 @@ describe('PlayerTimeline', () => {
     render(<PlayerTimeline players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
     await waitFor(() => expect(screen.getByLabelText(/时间轴光标/)).not.toBeDisabled());
+    expect(screen.getByTestId('timeline-spine-window')).toBeInTheDocument();
     scrollIntoView.mockClear();
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole('button', { name: /播放/i }));
@@ -305,7 +306,7 @@ describe('PlayerTimeline', () => {
       await vi.advanceTimersByTimeAsync(800);
     });
     expect(screen.getByLabelText(/时间轴光标/)).toHaveValue('1');
-    // Still playing: list must not steal the viewport from the map.
+    // Still playing: list must not steal the page viewport from the map.
     expect(screen.getByRole('button', { name: /暂停/i })).toBeInTheDocument();
     expect(scrollIntoView).not.toHaveBeenCalled();
     await act(async () => {
@@ -316,6 +317,26 @@ describe('PlayerTimeline', () => {
       await vi.advanceTimersByTimeAsync(800);
     });
     expect(screen.getByRole('button', { name: /播放/i })).toBeInTheDocument();
+  });
+
+  it('virtualizes a long timeline list to a window of rows', async () => {
+    const events = Array.from({ length: 80 }, (_, index) => ({
+      id: `e${index}`,
+      event_type: 'player_joined' as const,
+      occurred_at: new Date(Date.UTC(2026, 6, 13, 8, 0, index)).toISOString(),
+      observed_at: new Date(Date.UTC(2026, 6, 13, 8, 0, index)).toISOString(),
+      source: 'guard',
+      confidence: 'observed' as const,
+      summary: `row-${index}`,
+    }));
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue({ ...empty, events });
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    await waitFor(() => expect(screen.getByTestId('timeline-spine-window')).toBeInTheDocument());
+    const focusButtons = screen.getAllByRole('button', { name: /将回放光标移动到第/i });
+    // Only a window of rows is mounted — far less than 80.
+    expect(focusButtons.length).toBeGreaterThan(0);
+    expect(focusButtons.length).toBeLessThan(80);
   });
 
   it('toggles delay color mode legend', async () => {

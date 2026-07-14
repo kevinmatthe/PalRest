@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Compass, Crosshair, Radio, Search, ShieldAlert } from 'lucide-react';
 import { ApiError, getPlayerTimeline, type Player, type PlayerTimelineResponse, type TimelineEvent } from '../api';
 import { nextCursorIndex, playIntervalMs, prevCursorIndex, type PlaySpeed } from '../map/mapPlayback';
+import { DEFAULT_ROW_ESTIMATE_PX, scrollTopForIndex, virtualWindow } from '../map/timelineVirtual';
 import { TimelineMap, tileErrorTransition } from './TimelineMap';
 import {
   confidenceLabel,
@@ -287,57 +288,129 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
           {state.kind === 'error' ? <div className="timeline-alert" role="alert"><AlertTriangle size={18} /> {state.message}</div> : null}
           {state.kind === 'ready' && items.length === 0 ? <EmptyState icon={<Radio size={28} />} text="当前时间范围没有观察记录。" /> : null}
           {mayBeTruncated ? <div className="timeline-alert timeline-alert--info" role="status"><AlertTriangle size={18} /> 某类数据达到 500 条响应上限，结果可能已截断。</div> : null}
-          {state.kind === 'ready' && items.length > 0 ? <ol className="timeline-spine" aria-label="按时间排序的观察记录">
-            {rows.map(({ item, separator }, index) => (
-              <TimelineEntry
-                active={index === activeIndex}
-                followActive={!playing}
-                index={index}
-                key={item.key}
-                item={item}
-                locationLabel={item.kind === 'trajectory' ? locationNames.get(trajectoryKey(item.item)) : undefined}
-                onSelect={seekCursor}
-                segmentLabel={item.kind === 'trajectory' ? segmentNames.get(item.item.segment_id) : undefined}
-                separator={separator}
-              />
-            ))}
-          </ol> : null}
+          {state.kind === 'ready' && items.length > 0 ? (
+            <TimelineSpineList
+              activeIndex={activeIndex}
+              locationNames={locationNames}
+              onSelect={seekCursor}
+              rows={rows}
+              segmentNames={segmentNames}
+            />
+          ) : null}
         </div>
       </div>
     </section>
   );
 }
 
+function TimelineSpineList({
+  activeIndex,
+  locationNames,
+  onSelect,
+  rows,
+  segmentNames,
+}: {
+  activeIndex: number;
+  locationNames: Map<string, string>;
+  onSelect: (index: number) => void;
+  rows: LogRow[];
+  segmentNames: Map<string, string>;
+}) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(400);
+  const win = useMemo(
+    () => virtualWindow(rows.length, scrollTop, viewportHeight, DEFAULT_ROW_ESTIMATE_PX),
+    [rows.length, scrollTop, viewportHeight],
+  );
+
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const apply = () => setViewportHeight(el.clientHeight || 400);
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Keep the active row inside the list scrollport only (map stays put).
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el || rows.length === 0) return;
+    const estimate = DEFAULT_ROW_ESTIMATE_PX;
+    const rowTop = activeIndex * estimate;
+    const rowBottom = rowTop + estimate;
+    const viewTop = el.scrollTop;
+    const viewBottom = viewTop + el.clientHeight;
+    if (rowTop < viewTop || rowBottom > viewBottom) {
+      el.scrollTop = scrollTopForIndex(activeIndex, el.clientHeight, estimate);
+    }
+  }, [activeIndex, rows.length]);
+
+  const slice = rows.slice(win.start, win.end);
+
+  return (
+    <div
+      className="timeline-spine-window"
+      data-testid="timeline-spine-window"
+      ref={parentRef}
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+    >
+      <div className="timeline-spine-spacer" style={{ height: win.totalHeight }}>
+        <ol
+          className="timeline-spine timeline-spine--virtual"
+          aria-label="按时间排序的观察记录"
+          style={{ transform: `translateY(${win.offsetTop}px)` }}
+        >
+          {slice.map(({ item, separator }, offset) => {
+            const index = win.start + offset;
+            return (
+              <TimelineEntry
+                active={index === activeIndex}
+                index={index}
+                key={item.key}
+                item={item}
+                locationLabel={item.kind === 'trajectory' ? locationNames.get(trajectoryKey(item.item)) : undefined}
+                onSelect={onSelect}
+                segmentLabel={item.kind === 'trajectory' ? segmentNames.get(item.item.segment_id) : undefined}
+                separator={separator}
+                setSize={rows.length}
+              />
+            );
+          })}
+        </ol>
+      </div>
+    </div>
+  );
+}
+
 function TimelineEntry({
   active,
-  followActive = true,
   index,
   item,
   locationLabel,
   onSelect,
   segmentLabel,
   separator,
+  setSize,
 }: {
   active: boolean;
-  followActive?: boolean;
   index: number;
   item: LogItem;
   locationLabel?: string;
   onSelect: (index: number) => void;
   segmentLabel?: string;
   separator: string;
+  setSize: number;
 }) {
-  const rowRef = useRef<HTMLLIElement>(null);
-  useEffect(() => {
-    if (!active || !followActive) return;
-    const node = rowRef.current;
-    if (node && typeof node.scrollIntoView === 'function') {
-      node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    }
-  }, [active, followActive]);
   return <>
     {separator ? <li className="timeline-separator" role="separator"><span>{separator}</span></li> : null}
-    <li ref={rowRef} className={`timeline-entry timeline-entry--${item.kind} ${active ? 'is-active' : ''}`}>
+    <li
+      className={`timeline-entry timeline-entry--${item.kind} ${active ? 'is-active' : ''}`}
+      aria-setsize={setSize}
+      aria-posinset={index + 1}
+    >
       <time dateTime={item.at}>{formatTimelineDateTime(item.at)}</time>
       {item.kind === 'event' ? <EventDetail event={item.item} /> : null}
       {item.kind === 'trajectory' ? <div className="timeline-detail"><div className="timeline-title-row"><strong>位置采样</strong><SourceBadge source="palworld_rest" /></div><dl className="telemetry"><div><dt>地图位置</dt><dd>{locationLabel ?? LOCATION_COORDINATE_FALLBACK}</dd></div><div><dt>坐标</dt><dd>{item.item.x}, {item.item.y}</dd></div><div><dt>轨迹段</dt><dd>{segmentLabel ?? '未分段'}</dd></div><div><dt>延迟</dt><dd>{item.item.ping} ms</dd></div><div><dt>等级</dt><dd>{item.item.level}</dd></div></dl></div> : null}

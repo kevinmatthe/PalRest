@@ -441,9 +441,19 @@ select:focus-visible {
 .timeline-skeleton { display: grid; gap: 1rem; min-height: 16rem; padding-left: 1.4rem; border-left: 2px solid #b7c0b8; }
 .timeline-skeleton span { display: block; height: 5.5rem; border-radius: 0.35rem; background: linear-gradient(100deg, #e3e4dc 20%, #f4f3ec 40%, #e3e4dc 60%); background-size: 200% 100%; animation: timeline-scan 1.3s ease-in-out infinite; }
 @keyframes timeline-scan { from { background-position: 100% 0; } to { background-position: -100% 0; } }
-.timeline-spine { position: relative; display: grid; gap: 0; min-width: 0; margin: 0; padding: 0 0 0 1.35rem; list-style: none; }
+.timeline-spine-window {
+  max-height: min(42vh, 32rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid #d5ddd7;
+  border-radius: 0.4rem;
+  background: rgba(255, 255, 252, 0.45);
+}
+.timeline-spine-spacer { position: relative; min-height: 1px; }
+.timeline-spine { position: relative; display: grid; gap: 0; min-width: 0; margin: 0; padding: 0.5rem 0 0 1.35rem; list-style: none; }
+.timeline-spine--virtual { width: 100%; will-change: transform; }
 .timeline-spine::before { position: absolute; top: 0.4rem; bottom: 0.4rem; left: 0.35rem; width: 2px; content: ""; background: #87958c; }
-.timeline-entry { position: relative; min-width: 0; padding: 0 0 1.35rem 0.5rem; content-visibility: auto; contain-intrinsic-size: auto 9rem; animation: recorder-entry 320ms ease-out both; }
+.timeline-entry { position: relative; min-width: 0; padding: 0 0 1.35rem 0.5rem; animation: recorder-entry 320ms ease-out both; }
 .timeline-entry::before { position: absolute; top: 0.45rem; left: -1.3rem; width: 0.7rem; height: 0.7rem; border: 2px solid var(--recorder-paper); border-radius: 50%; content: ""; background: #1d8ba2; box-shadow: 0 0 0 1px #65766c; }
 .timeline-entry--event::before { background: #ca8519; }
 .timeline-entry--private::before { background: #7453a6; }
