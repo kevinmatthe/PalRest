@@ -425,6 +425,9 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             {rows.map(({ item, separator }, index) => (
               <TimelineEntry
                 active={index === activeIndex}
+                // While autoplay is running the map is the primary surface; do not
+                // scroll the page down to each list row (that steals the map).
+                followActive={!playing}
                 index={index}
                 key={item.key}
                 item={item}
@@ -691,15 +694,33 @@ function TimelineMap({
   </section>;
 }
 
-function TimelineEntry({ active, index, item, locationLabel, onSelect, segmentLabel, separator }: { active: boolean; index: number; item: LogItem; locationLabel?: string; onSelect: (index: number) => void; segmentLabel?: string; separator: string }) {
+function TimelineEntry({
+  active,
+  followActive = true,
+  index,
+  item,
+  locationLabel,
+  onSelect,
+  segmentLabel,
+  separator,
+}: {
+  active: boolean;
+  followActive?: boolean;
+  index: number;
+  item: LogItem;
+  locationLabel?: string;
+  onSelect: (index: number) => void;
+  segmentLabel?: string;
+  separator: string;
+}) {
   const rowRef = useRef<HTMLLIElement>(null);
   useEffect(() => {
-    if (!active) return;
+    if (!active || !followActive) return;
     const node = rowRef.current;
     if (node && typeof node.scrollIntoView === 'function') {
       node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
-  }, [active]);
+  }, [active, followActive]);
   return <>
     {separator ? <li className="timeline-separator" role="separator"><span>{separator}</span></li> : null}
     <li ref={rowRef} className={`timeline-entry timeline-entry--${item.kind} ${active ? 'is-active' : ''}`}>

@@ -280,7 +280,7 @@ describe('PlayerTimeline', () => {
     expect(end - start).toBe(60 * 60 * 1000);
   });
 
-  it('advances cursor while playing and stops at the end', async () => {
+  it('advances cursor while playing and stops at the end without forcing list scroll', async () => {
     const payload: PlayerTimelineResponse = {
       user_id: 'u/1',
       events: [
@@ -292,9 +292,12 @@ describe('PlayerTimeline', () => {
       private_samples: [],
     };
     vi.mocked(api.getPlayerTimeline).mockResolvedValue(payload);
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
     render(<PlayerTimeline players={players} refreshKey={0} />);
     fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
     await waitFor(() => expect(screen.getByLabelText(/时间轴光标/)).not.toBeDisabled());
+    scrollIntoView.mockClear();
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole('button', { name: /播放/i }));
     expect(screen.getByRole('button', { name: /暂停/i })).toBeInTheDocument();
@@ -302,6 +305,9 @@ describe('PlayerTimeline', () => {
       await vi.advanceTimersByTimeAsync(800);
     });
     expect(screen.getByLabelText(/时间轴光标/)).toHaveValue('1');
+    // Still playing: list must not steal the viewport from the map.
+    expect(screen.getByRole('button', { name: /暂停/i })).toBeInTheDocument();
+    expect(scrollIntoView).not.toHaveBeenCalled();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(800);
     });

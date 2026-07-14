@@ -87,6 +87,7 @@ See matrix; detail when scheduled.
 | 2026-07-14 | O7 | Done — `shouldPanToFocus` inset viewport; pan only when outside | `47f0de1` |
 | 2026-07-14 | O10 | Done — cluster marker click → `seekTrajectorySample` | `47f0de1` |
 | 2026-07-14 | O12 | Done — README root context + `git lfs pull` + runtime fallback | `47f0de1` |
+| 2026-07-14 | O3-fix | Done — disable list `scrollIntoView` while autoplay (`followActive={!playing}`) so the map stays visible | pending |
 
 ---
 
