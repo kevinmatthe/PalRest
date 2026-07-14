@@ -25,7 +25,12 @@ const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
 // Same Leaflet CRS.Simple coordinate transform used by zaigie/palworld-server-tool.
 // LAND_SCAPE order in the reference repo is [maxX, maxY, minX, minY].
 const PALWORLD_LANDSCAPE = [349400, 724400, -1099400, -724400] as const;
-const PALWORLD_TILE_URL = 'https://palworld.gg/images/tiles/{z}/{x}/{y}.png';
+// Real Palworld map tiles are vendored into webui/public/map/tiles via Git LFS
+// (mirrored from https://palworld.gg/images/tiles). The map prefers the local
+// copy and transparently falls back to palworld.gg per tile when it is missing,
+// so deployments without resolved LFS objects still render the full map.
+const PALWORLD_TILE_URL = '/map/tiles/{z}/{x}/{y}.png';
+const PALWORLD_TILE_FALLBACK_URL = 'https://palworld.gg/images/tiles/{z}/{x}/{y}.png';
 const PALWORLD_TILE_BOUNDS: L.LatLngBoundsExpression = [[0, 0], [-256, 256]];
 const KNOWN_EVENTS = new Set([
   'player_joined', 'player_left', 'player_attribute_changed',
@@ -48,6 +53,41 @@ const CONFIDENCE_LABELS: Record<string, string> = {
   snapshot_derived: '存档推导',
 };
 const LOCAL_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
+
+// Pure fallback decision for a failed tile: retry the same coords against
+// palworld.gg on the first error, then give up (marking the layer unavailable)
+// once the remote copy also fails. Kept separate from Leaflet so it is testable.
+export function tileErrorTransition(alreadyFellBack: boolean, coords: { x: number; y: number; z: number }): { action: 'retry'; src: string } | { action: 'fail' } {
+  if (alreadyFellBack) return { action: 'fail' };
+  return { action: 'retry', src: L.Util.template(PALWORLD_TILE_FALLBACK_URL, coords) };
+}
+
+// Tile layer that serves the vendored local tiles first and retries the same
+// tile against palworld.gg when the local object is missing (e.g. Git LFS not
+// pulled). Only the second failure marks the whole layer as unavailable.
+const FallbackTileLayer = L.TileLayer.extend({
+  createTile(this: L.TileLayer, coords: L.Coords, done: L.DoneCallback) {
+    const tile = document.createElement('img');
+    tile.setAttribute('role', 'presentation');
+    tile.alt = '';
+    L.DomEvent.on(tile, 'load', L.Util.bind((this as unknown as { _tileOnLoad: (cb: L.DoneCallback, t: HTMLImageElement) => void })._tileOnLoad, this, done, tile));
+    tile.onerror = () => {
+      const transition = tileErrorTransition(tile.dataset.fellBack === 'true', { x: coords.x, y: coords.y, z: this._getZoomForUrl() });
+      if (transition.action === 'fail') {
+        (this as unknown as { _tileOnError: (cb: L.DoneCallback, t: HTMLImageElement, e: Error) => void })._tileOnError(done, tile, new Error('tile unavailable'));
+        return;
+      }
+      tile.dataset.fellBack = 'true';
+      tile.src = transition.src;
+    };
+    if (this.options.crossOrigin || this.options.crossOrigin === '') {
+      tile.crossOrigin = this.options.crossOrigin === true ? '' : this.options.crossOrigin;
+    }
+    tile.src = this.getTileUrl(coords);
+    return tile;
+  },
+}) as unknown as new (url: string, options?: L.TileLayerOptions) => L.TileLayer;
+
 
 function localInputValue(date: Date) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -375,7 +415,7 @@ function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: 
       zoom: 2,
       zoomControl: true,
     });
-    const tileLayer = L.tileLayer(PALWORLD_TILE_URL, {
+    const tileLayer = new FallbackTileLayer(PALWORLD_TILE_URL, {
       bounds: PALWORLD_TILE_BOUNDS,
       maxNativeZoom: 6,
       minNativeZoom: 0,
@@ -444,7 +484,7 @@ function TimelineMap({ activeIndex, items, loading, onCursorChange, selected }: 
     </div>
     <div className="timeline-map-surface">
       <div aria-label="Palworld 完整游戏地图" className="timeline-leaflet-map" data-testid="timeline-map" ref={mapElementRef} role="img" />
-      {!mapAvailable ? <div className="timeline-map-missing" role="status">真实地图瓦片加载失败：当前使用参考仓库同款瓦片源 <code>https://palworld.gg/images/tiles/{"{z}"}/{"{x}"}/{"{y}"}.png</code></div> : null}
+      {!mapAvailable ? <div className="timeline-map-missing" role="status">真实地图瓦片加载失败：本地 <code>webui/public/map/tiles</code> 与 palworld.gg 均无法读取，请检查 Git LFS 或网络。</div> : null}
       {!points.length ? <div className="timeline-map-empty">{loading ? '正在加载轨迹证据。' : selected ? '当前时间范围没有位置样本，已显示完整地图。' : '选择玩家后叠加轨迹。'}</div> : null}
     </div>
     <div className="timeline-cursor">

@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api';
 import type { Player, PlayerTimelineResponse } from '../api';
-import { PlayerTimeline } from './PlayerTimeline';
+import { PlayerTimeline, tileErrorTransition } from './PlayerTimeline';
 
 vi.mock('../api', async (load) => ({
   ...(await load<typeof import('../api')>()),
@@ -174,6 +174,27 @@ describe('PlayerTimeline', () => {
     expect(screen.getByLabelText(/时间轴光标/i)).toHaveValue('0');
     expect(screen.getByText('100, 200')).toBeInTheDocument();
     expect(screen.getByText('180, 260')).toBeInTheDocument();
+  });
+
+  it('serves vendored tiles first and falls back to palworld.gg per missing tile', async () => {
+    vi.mocked(api.getPlayerTimeline).mockResolvedValue({
+      ...empty,
+      trajectories: [
+        { user_id: 'u/1', segment_id: 's1', observed_at: '2026-07-13T08:00:00Z', x: 100, y: 200, ping: 20, level: 1, source_ref: 'one', runtime_epoch: 0 },
+      ],
+    });
+    render(<PlayerTimeline players={players} refreshKey={0} />);
+    fireEvent.change(screen.getByRole('combobox', { name: /玩家/i }), { target: { value: 'u/1' } });
+    const map = await screen.findByLabelText(/地图回放/i);
+    await waitFor(() => {
+      const usesLocalTiles = Array.from(map.querySelectorAll<HTMLImageElement>('img')).some((node) => /\/map\/tiles\/\d+\/\d+\/\d+\.png$/.test(node.getAttribute('src') ?? ''));
+      expect(usesLocalTiles).toBe(true);
+    });
+
+    // First failure retries the same tile against palworld.gg; second gives up.
+    const retry = tileErrorTransition(false, { x: 2, y: 3, z: 4 });
+    expect(retry).toEqual({ action: 'retry', src: 'https://palworld.gg/images/tiles/4/2/3.png' });
+    expect(tileErrorTransition(true, { x: 2, y: 3, z: 4 })).toEqual({ action: 'fail' });
   });
 
   it('syncs the end time to now when refreshKey changes', async () => {
