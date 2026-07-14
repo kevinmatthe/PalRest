@@ -425,6 +425,7 @@ export function PlayerTimeline({ includePrivate = false, players, refreshKey }: 
             onPlayingChange={setPlaying}
             onSpeedChange={setSpeed}
             selected={Boolean(selectedID)}
+            behaviorSummary={behaviorSummary}
           />
           <BehaviorSummaryPanel
             selected={Boolean(selectedID)}

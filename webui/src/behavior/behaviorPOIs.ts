@@ -166,6 +166,10 @@ export function enrichBehaviorWithPOIs(
           fromNameZh: fromPoi?.nameZh,
           toLandmarkId: toPoi?.id,
           toNameZh: toPoi?.nameZh,
+          fromX: fromPoi?.x ?? a.x,
+          fromY: fromPoi?.y ?? a.y,
+          toX: toPoi?.x ?? b.x,
+          toY: toPoi?.y ?? b.y,
           dist,
           dtMs,
           reason: 'gap_hop',
@@ -178,6 +182,10 @@ export function enrichBehaviorWithPOIs(
         fromNameZh: fromPoi?.nameZh,
         toLandmarkId: toPoi?.id,
         toNameZh: toPoi?.nameZh,
+        fromX: fromPoi?.x ?? a.x,
+        fromY: fromPoi?.y ?? a.y,
+        toX: toPoi?.x ?? b.x,
+        toY: toPoi?.y ?? b.y,
         dist,
         dtMs,
         reason: 'long_jump',
@@ -194,6 +202,8 @@ export function enrichBehaviorWithPOIs(
       kind: d.poi.kind,
       dwellMs: d.dwellMs,
       sampleHits: d.sampleHits,
+      x: d.poi.x,
+      y: d.poi.y,
     }))
     .sort((a, b) => b.dwellMs - a.dwellMs || b.sampleHits - a.sampleHits || a.poiId.localeCompare(b.poiId));
 

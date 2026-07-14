@@ -436,6 +436,18 @@ select:focus-visible {
 .timeline-traj-tip {
   filter: drop-shadow(0 0 3px rgba(240, 180, 41, 0.85));
 }
+.timeline-traj-edge--traveling {
+  filter: drop-shadow(0 0 2px rgba(139, 92, 246, 0.55));
+}
+.timeline-traj-edge--local {
+  filter: drop-shadow(0 0 2px rgba(20, 196, 216, 0.45));
+}
+.timeline-behavior-poi {
+  /* circle markers styled via Leaflet options */
+}
+.timeline-behavior-teleport {
+  filter: drop-shadow(0 0 2px rgba(245, 158, 11, 0.5));
+}
 @keyframes timeline-traj-dash {
   to { stroke-dashoffset: -22; }
 }

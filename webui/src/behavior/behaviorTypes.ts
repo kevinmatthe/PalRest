@@ -48,16 +48,31 @@ export type POIDwell = {
   kind: BehaviorPOIKind;
   dwellMs: number;
   sampleHits: number;
+  /** World coords for map overlay (optional for older fixtures). */
+  x?: number;
+  y?: number;
 };
 export type TeleportSuspect = {
   fromLandmarkId?: string;
   fromNameZh?: string;
   toLandmarkId?: string;
   toNameZh?: string;
+  /** World coords for map arcs when available. */
+  fromX?: number;
+  fromY?: number;
+  toX?: number;
+  toY?: number;
   dist: number;
   dtMs: number;
   reason: 'gap_hop' | 'long_jump';
   at: string;
+};
+
+/** Map / UI stroke colors for edge classes (aligned with behavior panel). */
+export const BEHAVIOR_EDGE_COLORS: Record<Exclude<BehaviorEdgeClass, 'gap'>, string> = {
+  traveling: '#8b5cf6',
+  local: '#14c4d8',
+  stationary: '#8a9a93',
 };
 export const TELEPORT_MIN_DIST = 50_000;
 export const POI_DWELL_TOP_N = 5;

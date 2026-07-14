@@ -1,6 +1,6 @@
 // webui/src/behavior/behaviorMetrics.test.ts
 import { describe, expect, it } from 'vitest';
-import { pickDominantClass, summarizeBehavior } from './behaviorMetrics';
+import { edgeClassBetween, pickDominantClass, summarizeBehavior } from './behaviorMetrics';
 import {
   D_IDLE,
   T_ACTIVE_CAP_MS,
@@ -119,5 +119,13 @@ describe('summarizeBehavior', () => {
     expect(pickDominantClass({ stationary: 10, local: 10, traveling: 10 })).toBe('traveling');
     expect(pickDominantClass({ stationary: 10, local: 10, traveling: 0 })).toBe('local');
     expect(pickDominantClass({ stationary: 0, local: 0, traveling: 0 })).toBe('unknown');
+  });
+
+  it('classifies single edges for map overlay', () => {
+    const a = pt({ observed_at: '2026-07-14T10:00:00.000Z', segment_id: 's1', x: 0, y: 0 });
+    const travel = pt({ observed_at: '2026-07-14T10:01:00.000Z', segment_id: 's1', x: 100_000, y: 0 });
+    const idle = pt({ observed_at: '2026-07-14T10:01:00.000Z', segment_id: 's1', x: 5, y: 0 });
+    expect(edgeClassBetween(a, travel)).toBe('traveling');
+    expect(edgeClassBetween(a, idle)).toBe('stationary');
   });
 });

@@ -4,6 +4,8 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import { Map as MapIcon, Route } from 'lucide-react';
+import { edgeClassBetween } from '../behavior/behaviorMetrics';
+import { BEHAVIOR_EDGE_COLORS, type BehaviorSummary } from '../behavior/behaviorTypes';
 import {
   clearExpandState,
   expandClusterForExactPoints,
@@ -19,14 +21,10 @@ import {
   hybridTrajectoryWindow,
   pingColor,
   splitTrajectoryPastFuture,
-  TRAJ_DASH_ARRAY,
   TRAJ_FUTURE_COLOR,
   TRAJ_FUTURE_DASH_ARRAY,
   TRAJ_FUTURE_OPACITY,
   TRAJ_FUTURE_WEIGHT,
-  TRAJ_PAST_COLOR,
-  TRAJ_PAST_OPACITY,
-  TRAJ_PAST_WEIGHT,
   TRAJ_TIP_COLOR,
   TRAJ_TIP_WEIGHT,
 } from '../map/mapTrajectory';
@@ -116,6 +114,8 @@ export type TimelineMapProps = {
   onPlayingChange: (playing: boolean) => void;
   onSpeedChange: (speed: PlaySpeed) => void;
   selected: boolean;
+  /** Optional behavior analysis for class-colored path + POI overlay. */
+  behaviorSummary?: BehaviorSummary | null;
 };
 
 export function TimelineMap({
@@ -132,6 +132,7 @@ export function TimelineMap({
   onPlayingChange,
   onSpeedChange,
   selected,
+  behaviorSummary = null,
 }: TimelineMapProps) {
   const mapElementRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -139,6 +140,7 @@ export function TimelineMap({
   const clusterGroupRef = useRef<L.MarkerClusterGroup | null>(null);
   const expandedLayerRef = useRef<L.LayerGroup | null>(null);
   const lineLayerRef = useRef<L.LayerGroup | null>(null);
+  const behaviorOverlayRef = useRef<L.LayerGroup | null>(null);
   const focusLayerRef = useRef<L.LayerGroup | null>(null);
   const landmarkLayerRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
@@ -251,18 +253,21 @@ export function TimelineMap({
     // Exact-coordinate siblings of the focused cluster (no radial spiderfy).
     const expandedLayer = L.layerGroup();
     const lineLayer = L.layerGroup();
+    const behaviorOverlay = L.layerGroup();
     const focusLayer = L.layerGroup();
     const landmarkLayer = L.layerGroup();
     clusterGroup.addTo(map);
     expandedLayer.addTo(map);
     landmarkLayer.addTo(map);
     lineLayer.addTo(map);
+    behaviorOverlay.addTo(map);
     focusLayer.addTo(map);
     leafletRef.current = map;
     tileLayerRef.current = tileLayer;
     clusterGroupRef.current = clusterGroup;
     expandedLayerRef.current = expandedLayer;
     lineLayerRef.current = lineLayer;
+    behaviorOverlayRef.current = behaviorOverlay;
     focusLayerRef.current = focusLayer;
     landmarkLayerRef.current = landmarkLayer;
     return () => {
@@ -272,6 +277,7 @@ export function TimelineMap({
       clusterGroupRef.current = null;
       expandedLayerRef.current = null;
       lineLayerRef.current = null;
+      behaviorOverlayRef.current = null;
       focusLayerRef.current = null;
       landmarkLayerRef.current = null;
       markersByKeyRef.current.clear();
@@ -333,8 +339,9 @@ export function TimelineMap({
     const clusterGroup = clusterGroupRef.current;
     const expandedLayer = expandedLayerRef.current;
     const lineLayer = lineLayerRef.current;
+    const behaviorOverlay = behaviorOverlayRef.current;
     const focusLayer = focusLayerRef.current;
-    if (!map || !clusterGroup || !expandedLayer || !lineLayer || !focusLayer) return;
+    if (!map || !clusterGroup || !expandedLayer || !lineLayer || !behaviorOverlay || !focusLayer) return;
 
     // Expand focus cluster into exact-coordinate points (not spiderfy).
     const focusMarker = markersByKeyRef.current.get(activeSampleKey);
@@ -342,13 +349,13 @@ export function TimelineMap({
     clusterGroup.refreshClusters();
 
     lineLayer.clearLayers();
+    behaviorOverlay.clearLayers();
     const activeAt = activeItem?.at;
     const lineSamples = hybridTrajectoryWindow(samples, activeAt);
     const split = splitTrajectoryPastFuture(lineSamples, activeAt);
     const projectAll = (list: typeof lineSamples) => list.map((s) => projectWorldSample(s));
 
     if (split.future.length >= 2) {
-      // Soft underlay so future stays readable on dark tiles.
       L.polyline(projectAll(split.future), {
         color: TRAJ_FUTURE_COLOR,
         opacity: 0.28,
@@ -368,25 +375,24 @@ export function TimelineMap({
         className: 'timeline-traj-future',
       }).addTo(lineLayer);
     }
+    // Past path: per-edge behavior class colors (跑图/局部/挂机).
     if (split.past.length >= 2) {
-      L.polyline(projectAll(split.past), {
-        color: TRAJ_PAST_COLOR,
-        opacity: 0.35,
-        weight: TRAJ_PAST_WEIGHT + 4,
-        lineCap: 'round',
-        lineJoin: 'round',
-        className: 'timeline-traj-past-glow',
-        interactive: false,
-      }).addTo(lineLayer);
-      L.polyline(projectAll(split.past), {
-        color: TRAJ_PAST_COLOR,
-        opacity: TRAJ_PAST_OPACITY,
-        weight: TRAJ_PAST_WEIGHT,
-        lineCap: 'round',
-        lineJoin: 'round',
-        dashArray: TRAJ_DASH_ARRAY,
-        className: 'timeline-traj-past',
-      }).addTo(lineLayer);
+      for (let i = 0; i < split.past.length - 1; i += 1) {
+        const a = split.past[i]!;
+        const b = split.past[i + 1]!;
+        const edgeClass = edgeClassBetween(a, b);
+        if (edgeClass === 'gap') continue;
+        const color = BEHAVIOR_EDGE_COLORS[edgeClass];
+        const weight = edgeClass === 'traveling' ? 5.5 : edgeClass === 'local' ? 4.5 : 3.5;
+        L.polyline([projectWorldSample(a), projectWorldSample(b)], {
+          color,
+          opacity: edgeClass === 'stationary' ? 0.75 : 0.95,
+          weight,
+          lineCap: 'round',
+          lineJoin: 'round',
+          className: `timeline-traj-edge timeline-traj-edge--${edgeClass}`,
+        }).addTo(lineLayer);
+      }
       const tip = split.past.slice(-2);
       L.polyline(projectAll(tip), {
         color: TRAJ_TIP_COLOR,
@@ -396,6 +402,61 @@ export function TimelineMap({
         lineJoin: 'round',
         className: 'timeline-traj-tip',
       }).addTo(lineLayer);
+    }
+
+    // POI dwell pins + teleport arcs from behavior analysis.
+    if (behaviorSummary) {
+      for (const dwell of behaviorSummary.poiDwells) {
+        if (!Number.isFinite(dwell.x) || !Number.isFinite(dwell.y)) continue;
+        const kindClass =
+          dwell.kind === 'boss_tower' ? 'tower' : dwell.kind === 'guild_base' ? 'guild' : 'ft';
+        const radius = dwell.kind === 'guild_base' ? 9 : dwell.kind === 'boss_tower' ? 8 : 7;
+        const fill =
+          dwell.kind === 'boss_tower' ? '#e8b86d' : dwell.kind === 'guild_base' ? '#c4b5fd' : '#9fd0db';
+        const stroke =
+          dwell.kind === 'boss_tower' ? '#8d5a0f' : dwell.kind === 'guild_base' ? '#6d28d9' : '#0f7285';
+        const marker = L.circleMarker(projectWorldXY(dwell.x!, dwell.y!), {
+          radius,
+          color: stroke,
+          fillColor: fill,
+          fillOpacity: 0.92,
+          weight: 2.5,
+          className: `timeline-behavior-poi timeline-behavior-poi--${kindClass}`,
+        });
+        marker.bindTooltip(
+          `${dwell.nameZh} · 驻留 ${Math.max(1, Math.round(dwell.dwellMs / 60_000))} 分`,
+          { direction: 'top', opacity: 0.95 },
+        );
+        marker.addTo(behaviorOverlay);
+      }
+      if (behaviorSummary.activityAnchor && Number.isFinite(behaviorSummary.activityAnchor.x) && Number.isFinite(behaviorSummary.activityAnchor.y)) {
+        const a = behaviorSummary.activityAnchor;
+        L.circleMarker(projectWorldXY(a.x!, a.y!), {
+          radius: 14,
+          color: '#ca8519',
+          fillOpacity: 0,
+          weight: 2,
+          className: 'timeline-behavior-anchor-ring',
+          interactive: false,
+        }).addTo(behaviorOverlay);
+      }
+      for (const hop of behaviorSummary.teleportSuspects) {
+        if (
+          !Number.isFinite(hop.fromX) || !Number.isFinite(hop.fromY)
+          || !Number.isFinite(hop.toX) || !Number.isFinite(hop.toY)
+        ) continue;
+        L.polyline(
+          [projectWorldXY(hop.fromX!, hop.fromY!), projectWorldXY(hop.toX!, hop.toY!)],
+          {
+            color: '#f59e0b',
+            opacity: 0.85,
+            weight: 2.5,
+            dashArray: '8 10',
+            className: 'timeline-behavior-teleport',
+            interactive: false,
+          },
+        ).addTo(behaviorOverlay);
+      }
     }
 
     focusLayer.clearLayers();
@@ -490,7 +551,7 @@ export function TimelineMap({
         map.panTo(activePoint, { animate: false });
       }
     }
-  }, [activeItem?.at, activeSampleKey, colorMode, samples]);
+  }, [activeItem?.at, activeSampleKey, behaviorSummary, colorMode, samples]);
 
   return <section className="timeline-map-panel" aria-label="地图回放">
     <div className="timeline-map-header">

@@ -36,6 +36,27 @@ function finitePoint(p: BehaviorPoint): boolean {
   return Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(Date.parse(p.observed_at));
 }
 
+/** Classify a single consecutive pair (same rules as summarizeBehavior edges). */
+export function edgeClassBetween(
+  a: BehaviorPoint,
+  b: BehaviorPoint,
+  options: Pick<SummarizeBehaviorOptions, 'dIdle' | 'vIdle' | 'vTravel' | 'tGapMs'> = {},
+): BehaviorEdgeClass {
+  const dIdle = options.dIdle ?? D_IDLE;
+  const vIdle = options.vIdle ?? V_IDLE;
+  const vTravel = options.vTravel ?? V_TRAVEL;
+  const tGapMs = options.tGapMs ?? T_GAP_MS;
+  const ta = Date.parse(a.observed_at);
+  const tb = Date.parse(b.observed_at);
+  const dtMs = tb - ta;
+  if (!(dtMs > 0) || a.segment_id !== b.segment_id || dtMs > tGapMs) return 'gap';
+  const dist = Math.hypot(b.x - a.x, b.y - a.y);
+  const speed = dist / (dtMs / 1000);
+  if (dist < dIdle || speed < vIdle) return 'stationary';
+  if (speed >= vTravel) return 'traveling';
+  return 'local';
+}
+
 export function summarizeBehavior(
   samples: BehaviorPoint[],
   options: SummarizeBehaviorOptions = {},
