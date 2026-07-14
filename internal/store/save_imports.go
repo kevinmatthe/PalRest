@@ -135,6 +135,7 @@ func (saveGuildMemberModel) TableName() string { return "save_guild_members" }
 type saveBaseCampModel struct {
 	ImportID     uint    `gorm:"primaryKey;autoIncrement:false"`
 	SaveBaseUID  string  `gorm:"primaryKey;autoIncrement:false"`
+	SaveGuildID  string  `gorm:"not null;index"`
 	SaveBaseHex  string  `gorm:"not null"`
 	SaveGroupUID string  `gorm:"not null"`
 	SaveGroupHex string  `gorm:"not null"`
@@ -237,7 +238,7 @@ func (r *Repository) ImportSaveSnapshot(ctx context.Context, snapshot SaveSnapsh
 			}
 			for _, camp := range guild.BaseCamps {
 				value := saveBaseCampModel{
-					ImportID: importID, SaveBaseUID: camp.SaveBaseUID, SaveBaseHex: camp.SaveBaseHex,
+					ImportID: importID, SaveGuildID: guild.SaveGuildID, SaveBaseUID: camp.SaveBaseUID, SaveBaseHex: camp.SaveBaseHex,
 					SaveGroupUID: camp.SaveGroupUID, SaveGroupHex: camp.SaveGroupHex,
 					Area: camp.Area, LocationX: camp.LocationX, LocationY: camp.LocationY, LocationZ: camp.LocationZ,
 				}
@@ -372,6 +373,99 @@ func validateSaveGuild(guild SaveGuild) error {
 		seenBases[camp.SaveBaseUID] = struct{}{}
 	}
 	return nil
+}
+
+type WorldPOI struct {
+	ID        string  `json:"id"`
+	NameZh    string  `json:"name_zh"`
+	Kind      string  `json:"kind"` // "guild_base"
+	X         float64 `json:"x"`
+	Y         float64 `json:"y"`
+	GuildName string  `json:"guild_name,omitempty"`
+}
+
+type PlayerWorldPOIs struct {
+	UserID string     `json:"user_id"`
+	Source string     `json:"source"` // "save_import" | "none"
+	AsOf   string     `json:"as_of,omitempty"`
+	POIs   []WorldPOI `json:"pois"`
+}
+
+func (r *Repository) ListPlayerWorldPOIs(ctx context.Context, userID string) (PlayerWorldPOIs, error) {
+	userID = strings.TrimSpace(userID)
+	empty := PlayerWorldPOIs{UserID: userID, Source: "none", POIs: []WorldPOI{}}
+	if userID == "" {
+		return empty, nil
+	}
+	db := r.gorm.WithContext(ctx)
+
+	var latest saveImportModel
+	err := db.Order("imported_at DESC").Limit(1).Take(&latest).Error
+	if err == gorm.ErrRecordNotFound {
+		return empty, nil
+	}
+	if err != nil {
+		return PlayerWorldPOIs{}, fmt.Errorf("list player world pois: latest import: %w", err)
+	}
+
+	var mapping saveIdentityMappingModel
+	err = db.Where("user_id = ?", userID).Take(&mapping).Error
+	if err == gorm.ErrRecordNotFound {
+		return empty, nil
+	}
+	if err != nil {
+		return PlayerWorldPOIs{}, fmt.Errorf("list player world pois: identity mapping: %w", err)
+	}
+
+	var members []saveGuildMemberModel
+	if err := db.Where("import_id = ? AND save_player_hex = ?", latest.ID, mapping.SavePlayerHex).Find(&members).Error; err != nil {
+		return PlayerWorldPOIs{}, fmt.Errorf("list player world pois: guild members: %w", err)
+	}
+	if len(members) == 0 {
+		return empty, nil
+	}
+
+	pois := make([]WorldPOI, 0)
+	seenGuild := make(map[string]struct{}, len(members))
+	for _, member := range members {
+		if _, seen := seenGuild[member.SaveGuildID]; seen {
+			continue
+		}
+		seenGuild[member.SaveGuildID] = struct{}{}
+
+		var guild saveGuildModel
+		err := db.Where("import_id = ? AND save_guild_id = ?", latest.ID, member.SaveGuildID).Take(&guild).Error
+		if err == gorm.ErrRecordNotFound {
+			continue
+		}
+		if err != nil {
+			return PlayerWorldPOIs{}, fmt.Errorf("list player world pois: guild %q: %w", member.SaveGuildID, err)
+		}
+
+		var camps []saveBaseCampModel
+		if err := db.Where("import_id = ? AND save_guild_id = ?", latest.ID, member.SaveGuildID).Find(&camps).Error; err != nil {
+			return PlayerWorldPOIs{}, fmt.Errorf("list player world pois: base camps for guild %q: %w", member.SaveGuildID, err)
+		}
+		for _, camp := range camps {
+			pois = append(pois, WorldPOI{
+				ID:        "gb-" + guild.SaveGuildID + "-" + camp.SaveBaseUID,
+				NameZh:    "公会「" + guild.Name + "」据点",
+				Kind:      "guild_base",
+				X:         camp.LocationX,
+				Y:         camp.LocationY,
+				GuildName: guild.Name,
+			})
+		}
+	}
+	if len(pois) == 0 {
+		return empty, nil
+	}
+	return PlayerWorldPOIs{
+		UserID: userID,
+		Source: "save_import",
+		AsOf:   latest.ImportedAt,
+		POIs:   pois,
+	}, nil
 }
 
 func optionalString(value string) *string {

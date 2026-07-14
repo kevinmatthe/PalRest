@@ -64,6 +64,10 @@ type ObservationQueries interface {
 	ReadServerDocuments(context.Context, string, string, int, *store.ServerDocumentCursor) (store.ServerDocumentPage, error)
 }
 
+type WorldPOIQueries interface {
+	ListPlayerWorldPOIs(ctx context.Context, userID string) (store.PlayerWorldPOIs, error)
+}
+
 type SaveImporter interface {
 	Import(context.Context, string) (store.SaveImportResult, error)
 }
@@ -79,6 +83,7 @@ type Server struct {
 	resetter        Resetter
 	adminStore      AdminStore
 	observations    ObservationQueries
+	worldPOIs       WorldPOIQueries
 	saveImporter    SaveImporter
 	auth            *adminAuth
 	config          func() config.Config
@@ -102,7 +107,8 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 		}
 	}
 	observations, _ := adminStore.(ObservationQueries)
-	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, observations: observations, saveImporter: saveImporter, auth: auth, config: configFn, now: time.Now}
+	worldPOIs, _ := adminStore.(WorldPOIQueries)
+	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, observations: observations, worldPOIs: worldPOIs, saveImporter: saveImporter, auth: auth, config: configFn, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.healthz)
 	mux.HandleFunc("GET /readyz", server.readyz)
@@ -117,6 +123,7 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 	mux.HandleFunc("GET /api/v1/players", server.getPlayers)
 	mux.HandleFunc("GET /api/v1/players/{userID}", server.getPlayer)
 	mux.HandleFunc("GET /api/v1/players/{userID}/timeline", server.getPlayerTimeline)
+	mux.HandleFunc("GET /api/v1/players/{userID}/world-pois", server.getPlayerWorldPOIs)
 	mux.HandleFunc("GET /api/v1/analytics/summary", server.getAnalyticsSummary)
 	mux.HandleFunc("GET /api/v1/analytics/activity", server.getAnalyticsActivity)
 	mux.HandleFunc("POST /api/v1/players/{userID}/reset", server.resetPlayer)

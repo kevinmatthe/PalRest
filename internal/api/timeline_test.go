@@ -181,6 +181,64 @@ func timelineServer(repo *observationQueriesFake) *Server {
 	return New(fakeHealth{}, fakeStatus{}, fakeSnapshots{}, fakeAnalyticsQueries{}, fakeAnalyticsOnline{}, fakePolicies{}, fakeResetter{}, repo, "root", "secret", func() config.Config { return cfg })
 }
 
+type worldPOIQueriesFake struct {
+	result store.PlayerWorldPOIs
+	err    error
+	calls  int
+	userID string
+}
+
+func (f *worldPOIQueriesFake) ResetPlayerPolicyState(context.Context, string) error { return nil }
+func (f *worldPOIQueriesFake) ListPlayerWorldPOIs(_ context.Context, userID string) (store.PlayerWorldPOIs, error) {
+	f.calls++
+	f.userID = userID
+	return f.result, f.err
+}
+
+func TestPublicWorldPOIsReturnsJSONShape(t *testing.T) {
+	repo := &worldPOIQueriesFake{result: store.PlayerWorldPOIs{
+		UserID: "steam_1",
+		Source: "save_import",
+		AsOf:   "2026-07-13T08:02:00.000000000Z",
+		POIs: []store.WorldPOI{{
+			ID: "gb-guild-1-1", NameZh: "公会「Base」据点", Kind: "guild_base",
+			X: 12.5, Y: -3.25, GuildName: "Base",
+		}},
+	}}
+	cfg := config.Config{Version: 1}
+	server := New(fakeHealth{}, fakeStatus{}, fakeSnapshots{}, fakeAnalyticsQueries{}, fakeAnalyticsOnline{}, fakePolicies{}, fakeResetter{}, repo, "", "", func() config.Config { return cfg })
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/players/steam_1/world-pois", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	var body store.PlayerWorldPOIs
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.UserID != "steam_1" || body.Source != "save_import" || body.AsOf == "" || len(body.POIs) != 1 {
+		t.Fatalf("body=%+v", body)
+	}
+	poi := body.POIs[0]
+	if poi.ID != "gb-guild-1-1" || poi.Kind != "guild_base" || poi.X != 12.5 || poi.Y != -3.25 || poi.GuildName != "Base" {
+		t.Fatalf("poi=%+v", poi)
+	}
+	if repo.calls != 1 || repo.userID != "steam_1" {
+		t.Fatalf("calls=%d user=%q", repo.calls, repo.userID)
+	}
+}
+
+func TestPublicWorldPOIsMapsQueryFailure(t *testing.T) {
+	repo := &worldPOIQueriesFake{err: errors.New("db down")}
+	cfg := config.Config{Version: 1}
+	server := New(fakeHealth{}, fakeStatus{}, fakeSnapshots{}, fakeAnalyticsQueries{}, fakeAnalyticsOnline{}, fakePolicies{}, fakeResetter{}, repo, "", "", func() config.Config { return cfg })
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/players/steam_1/world-pois", nil))
+	if res.Code != http.StatusInternalServerError || !strings.Contains(res.Body.String(), `"code":"query_failed"`) {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
 func adminRequest(t *testing.T, server *Server, path string) *http.Request {
 	t.Helper()
 	token, ok := server.auth.login("root", "secret")

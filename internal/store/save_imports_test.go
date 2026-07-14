@@ -90,6 +90,49 @@ func TestImportSaveSnapshotPersistsWorldAndIdentityMapping(t *testing.T) {
 	}
 }
 
+func TestListPlayerWorldPOIsReturnsGuildBaseFromLatestImport(t *testing.T) {
+	repo, _ := openTemp(t)
+	at := time.Date(2026, 7, 13, 8, 2, 0, 0, time.UTC)
+	userID := "steam_76561198323313815"
+	if err := repo.WithTx(t.Context(), func(tx *Tx) error {
+		return tx.UpsertPlayer(domain.Player{
+			UserID: userID, PlayerID: "F0E6847B000000000000000000000000",
+			Name: "Truthzzz", AccountName: "account",
+		}, at)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ImportSaveSnapshot(t.Context(), testSaveSnapshot(), at); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := repo.ListPlayerWorldPOIs(t.Context(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.UserID != userID || result.Source != "save_import" || result.AsOf == "" {
+		t.Fatalf("result=%+v", result)
+	}
+	if len(result.POIs) != 1 {
+		t.Fatalf("pois=%+v", result.POIs)
+	}
+	poi := result.POIs[0]
+	if poi.ID != "gb-guild-1-1" || poi.Kind != "guild_base" || poi.NameZh != "公会「Base」据点" || poi.GuildName != "Base" {
+		t.Fatalf("poi=%+v", poi)
+	}
+	if poi.X != 12.5 || poi.Y != -3.25 {
+		t.Fatalf("coords x=%v y=%v", poi.X, poi.Y)
+	}
+
+	none, err := repo.ListPlayerWorldPOIs(t.Context(), "steam_unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.Source != "none" || len(none.POIs) != 0 {
+		t.Fatalf("unknown user=%+v", none)
+	}
+}
+
 func TestImportSaveSnapshotValidatesContract(t *testing.T) {
 	repo, _ := openTemp(t)
 	at := time.Date(2026, 7, 13, 8, 2, 0, 0, time.UTC)

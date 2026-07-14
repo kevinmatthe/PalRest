@@ -65,6 +65,28 @@ func (s *Server) getPlayerTimeline(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) getPlayerWorldPOIs(w http.ResponseWriter, r *http.Request) {
+	if s.worldPOIs == nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "world poi query unavailable")
+		return
+	}
+	userID := strings.TrimSpace(r.PathValue("userID"))
+	if userID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "user ID is required")
+		return
+	}
+	result, err := s.worldPOIs.ListPlayerWorldPOIs(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "world poi query failed")
+		return
+	}
+	if result.POIs == nil {
+		result.POIs = []store.WorldPOI{}
+	}
+	result.UserID = userID
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) getAdminPlayerTimeline(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
