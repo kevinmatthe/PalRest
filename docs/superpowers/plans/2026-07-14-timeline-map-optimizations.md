@@ -30,7 +30,7 @@
 | P2 | O12 | README: root Docker context + `git lfs pull` + tile fallback | Low | S | ✅ |
 | P3 | O13 | Backend: trajectory pagination / downsampling + `total_count` | High (needs API) | L | ◐ |
 | P3 | O14 | Time-proportional playback mode (vs index step) | Med | M | ✅ |
-| P3 | O15 | Colorblind-friendly ping encoding (shape/pattern) | Low | S | ☐ |
+| P3 | O15 | Colorblind-friendly ping encoding (shape/pattern) | Low | S | ✅ |
 
 **Execution order for this sprint:** O1 → O2 → O3 → O4 → (O7 if time) → O12 → stop for review. Defer O13+ unless requested.
 
@@ -95,6 +95,8 @@ See matrix; detail when scheduled.
 | 2026-07-14 | O14 | Done — playMode index/time; playStepDelayMs compresses real Δt | `c75f569` |
 | 2026-07-14 | O11 | Done — landmark layer toggle (MAP_LANDMARKS circleMarkers + tooltips) | `c75f569` |
 | 2026-07-14 | O13 | Partial — event_total/trajectory_total/private_sample_total on timeline API + UI copy | `c75f569` |
+| 2026-07-14 | O15 | Done — Okabe–Ito-like ping colors + radius + legend glyphs | `73703ea` |
+| 2026-07-14 | O6 | Done — tower Chinese names + regional FT labels (`区域 · 传送点 N`) | `73703ea` |
 
 ---
 
