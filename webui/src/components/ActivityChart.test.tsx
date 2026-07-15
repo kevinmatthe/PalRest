@@ -5,16 +5,19 @@ import { ActivityChart } from './ActivityChart';
 afterEach(() => vi.useRealTimers());
 
 describe('ActivityChart', () => {
-  it('breaks line geometry around missing samples and exposes exact values on demand', () => {
-    render(<ActivityChart kind="line" label="Concurrent players" points={[
+  it('breaks line geometry around missing samples and always shows numeric stats', () => {
+    render(<ActivityChart kind="line" label="Concurrent players" unit="人" points={[
       { at: '10:00', value: 2 }, { at: '10:05', value: null }, { at: '10:10', value: 4 },
     ]} />);
 
     expect(screen.getByRole('img', { name: 'Concurrent players' })).toBeInTheDocument();
     expect(screen.getAllByTestId('line-segment')).toHaveLength(2);
+    expect(screen.getByText('最新').parentElement).toHaveTextContent('4 人');
+    expect(screen.getByText('最小').parentElement).toHaveTextContent('2 人');
+    expect(screen.getByText('最大').parentElement).toHaveTextContent('4 人');
     expect(screen.queryByRole('row', { name: /10:00/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '显示数据表' }));
-    expect(screen.getByRole('row', { name: '10:00 2' })).toBeInTheDocument();
+    expect(screen.getByRole('row', { name: '10:00 2 人' })).toBeInTheDocument();
     expect(screen.getByRole('row', { name: '10:05 缺失' })).toBeInTheDocument();
   });
 

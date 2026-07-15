@@ -17,14 +17,16 @@ import (
 )
 
 type fakeAnalyticsQueries struct {
-	ranking  []store.RankingRow
-	buckets  []store.ConcurrencyBucket
-	daily    []store.DailyActivity
-	player   domain.Player
-	fps      []store.ServerFPSPoint
-	ping     []store.PingSummaryPoint
-	err      error
-	dailyErr error
+	ranking     []store.RankingRow
+	buckets     []store.ConcurrencyBucket
+	daily       []store.DailyActivity
+	player      domain.Player
+	fps         []store.ServerFPSPoint
+	ping        []store.PingSummaryPoint
+	playerPing  []store.PlayerPingPoint
+	latestPings []store.LatestPlayerPing
+	err         error
+	dailyErr    error
 }
 
 func (f fakeAnalyticsQueries) Ranking(context.Context, string, string) ([]store.RankingRow, error) {
@@ -44,6 +46,12 @@ func (f fakeAnalyticsQueries) ServerFPSSeries(context.Context, time.Time, time.T
 }
 func (f fakeAnalyticsQueries) PingSummarySeries(context.Context, time.Time, time.Time, int) ([]store.PingSummaryPoint, error) {
 	return f.ping, f.err
+}
+func (f fakeAnalyticsQueries) PlayerPingSeries(context.Context, string, time.Time, time.Time, int) ([]store.PlayerPingPoint, error) {
+	return f.playerPing, f.err
+}
+func (f fakeAnalyticsQueries) LatestPlayerPings(context.Context, time.Time, time.Time, int) ([]store.LatestPlayerPing, error) {
+	return f.latestPings, f.err
 }
 
 type fakeAnalyticsOnline struct {
@@ -129,6 +137,12 @@ func (f *captureAnalyticsQueries) ServerFPSSeries(context.Context, time.Time, ti
 	return nil, nil
 }
 func (f *captureAnalyticsQueries) PingSummarySeries(context.Context, time.Time, time.Time, int) ([]store.PingSummaryPoint, error) {
+	return nil, nil
+}
+func (f *captureAnalyticsQueries) PlayerPingSeries(context.Context, string, time.Time, time.Time, int) ([]store.PlayerPingPoint, error) {
+	return nil, nil
+}
+func (f *captureAnalyticsQueries) LatestPlayerPings(context.Context, time.Time, time.Time, int) ([]store.LatestPlayerPing, error) {
 	return nil, nil
 }
 
@@ -237,18 +251,22 @@ func TestAnalyticsActivityCanSkipConcurrencyQuery(t *testing.T) {
 	}
 }
 
-func TestAnalyticsHealthReturnsFPSAndLatencySeries(t *testing.T) {
+func TestAnalyticsHealthReturnsFPSAndPerPlayerLatency(t *testing.T) {
 	at := time.Date(2026, 7, 8, 11, 0, 0, 0, time.UTC)
-	p50, p90 := 40.0, 90.0
 	q := fakeAnalyticsQueries{
 		fps: []store.ServerFPSPoint{{At: at, FPS: 58, FrameTime: 17.2, Players: 3}},
-		ping: []store.PingSummaryPoint{{
-			At: at, SampleCount: 3, MissingCount: 0,
-			P50: &p50, P90: &p90,
-		}},
+		latestPings: []store.LatestPlayerPing{
+			{UserID: "u2", Name: "Bo", At: at, Ping: 120},
+			{UserID: "u1", Name: "Anu", At: at, Ping: 40},
+		},
+		playerPing: []store.PlayerPingPoint{
+			{At: at, Ping: 40},
+			{At: at.Add(time.Minute), Ping: 55},
+		},
+		player: domain.Player{UserID: "u1", Name: "Anu"},
 	}
 	res := httptest.NewRecorder()
-	analyticsServer(q, fakeAnalyticsOnline{}).Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/health?range=6h", nil))
+	analyticsServer(q, fakeAnalyticsOnline{}).Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/health?range=6h&user_id=u1", nil))
 	if res.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
 	}
@@ -256,26 +274,31 @@ func TestAnalyticsHealthReturnsFPSAndLatencySeries(t *testing.T) {
 		Range         string `json:"range"`
 		LatestFPS     int    `json:"latest_fps"`
 		LatestPlayers int    `json:"latest_players"`
-		LatestP50     float64 `json:"latest_p50"`
-		LatestP90     float64 `json:"latest_p90"`
+		UserID        string `json:"user_id"`
+		PlayerName    string `json:"player_name"`
 		FPS           []struct {
 			FPS     int `json:"fps"`
 			Players int `json:"players"`
 		} `json:"fps"`
-		Latency []struct {
-			SampleCount int      `json:"sample_count"`
-			P50         *float64 `json:"p50"`
-			P90         *float64 `json:"p90"`
-		} `json:"latency"`
+		Rank []struct {
+			UserID string  `json:"user_id"`
+			Ping   float64 `json:"ping"`
+		} `json:"player_ping_rank"`
+		PlayerLatency []struct {
+			Ping float64 `json:"ping"`
+		} `json:"player_latency"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Range != "6h" || got.LatestFPS != 58 || got.LatestPlayers != 3 || got.LatestP50 != 40 || got.LatestP90 != 90 {
+	if got.Range != "6h" || got.LatestFPS != 58 || got.LatestPlayers != 3 || got.UserID != "u1" || got.PlayerName != "Anu" {
 		t.Fatalf("latest fields: %+v", got)
 	}
-	if len(got.FPS) != 1 || got.FPS[0].FPS != 58 || len(got.Latency) != 1 || got.Latency[0].SampleCount != 3 {
-		t.Fatalf("series: fps=%+v latency=%+v", got.FPS, got.Latency)
+	if len(got.FPS) != 1 || got.FPS[0].FPS != 58 || len(got.Rank) != 2 || got.Rank[0].UserID != "u2" {
+		t.Fatalf("fps/rank: %+v", got)
+	}
+	if len(got.PlayerLatency) != 2 || got.PlayerLatency[1].Ping != 55 {
+		t.Fatalf("player_latency=%+v", got.PlayerLatency)
 	}
 }
 

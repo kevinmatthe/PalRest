@@ -278,11 +278,6 @@ func (s *Server) getAnalyticsHealth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query_failed", "server health query failed")
 		return
 	}
-	pingSeries, err := s.analytics.PingSummarySeries(r.Context(), start, end, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query_failed", "latency health query failed")
-		return
-	}
 	fpsOut := make([]map[string]any, 0, len(fpsSeries))
 	for _, p := range fpsSeries {
 		fpsOut = append(fpsOut, map[string]any{
@@ -292,42 +287,73 @@ func (s *Server) getAnalyticsHealth(w http.ResponseWriter, r *http.Request) {
 			"players":    p.Players,
 		})
 	}
-	latOut := make([]map[string]any, 0, len(pingSeries))
-	for _, p := range pingSeries {
-		latOut = append(latOut, map[string]any{
-			"at":            p.At.UTC(),
-			"sample_count":  p.SampleCount,
-			"missing_count": p.MissingCount,
-			"min":           p.Min,
-			"p50":           p.P50,
-			"p90":           p.P90,
-			"p99":           p.P99,
-			"max":           p.Max,
-		})
-	}
-	// Latest snapshot cards
+	// Latest snapshot cards (server-level)
 	var latestFPS any
 	var latestPlayers any
 	if n := len(fpsSeries); n > 0 {
 		latestFPS = fpsSeries[n-1].FPS
 		latestPlayers = fpsSeries[n-1].Players
 	}
-	var latestP50, latestP90 any
-	if n := len(pingSeries); n > 0 {
-		latestP50 = pingSeries[n-1].P50
-		latestP90 = pingSeries[n-1].P90
+
+	// Per-player latest ping ranking (ops: who is lagging), no IP.
+	latestPings, err := s.analytics.LatestPlayerPings(r.Context(), start, end, 25)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "player latency ranking query failed")
+		return
 	}
+	rankOut := make([]map[string]any, 0, len(latestPings))
+	for _, p := range latestPings {
+		rankOut = append(rankOut, map[string]any{
+			"user_id": p.UserID,
+			"name":    p.Name,
+			"at":      p.At.UTC(),
+			"ping":    p.Ping,
+		})
+	}
+
+	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	var playerLatency []map[string]any
+	var playerName string
+	if userID != "" {
+		series, err := s.analytics.PlayerPingSeries(r.Context(), userID, start, end, limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "query_failed", "player latency series query failed")
+			return
+		}
+		playerLatency = make([]map[string]any, 0, len(series))
+		for _, p := range series {
+			playerLatency = append(playerLatency, map[string]any{
+				"at":   p.At.UTC(),
+				"ping": p.Ping,
+			})
+		}
+		if player, err := s.analytics.Player(r.Context(), userID); err == nil {
+			playerName = player.Name
+			if playerName == "" {
+				playerName = player.UserID
+			}
+		} else if err != store.ErrNotFound {
+			writeError(w, http.StatusInternalServerError, "query_failed", "player lookup failed")
+			return
+		} else {
+			playerName = userID
+		}
+	} else {
+		playerLatency = []map[string]any{}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"range":          rangeName,
-		"start":          start,
-		"end":            end,
-		"latest_fps":     latestFPS,
-		"latest_players": latestPlayers,
-		"latest_p50":     latestP50,
-		"latest_p90":     latestP90,
-		"fps":            fpsOut,
-		"latency":        latOut,
-		"note":           "FPS from server_metric_samples; latency percentiles from each successful player poll.",
+		"range":              rangeName,
+		"start":              start,
+		"end":                end,
+		"latest_fps":         latestFPS,
+		"latest_players":     latestPlayers,
+		"fps":                fpsOut,
+		"player_ping_rank":   rankOut,
+		"user_id":            userID,
+		"player_name":        playerName,
+		"player_latency":     playerLatency,
+		"note":               "FPS from server_metric_samples; latency is per-player poll samples (no IP).",
 	})
 }
 

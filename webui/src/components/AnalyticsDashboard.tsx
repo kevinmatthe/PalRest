@@ -37,6 +37,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
   const [range, setRange] = useState<Range>('7d');
   const [healthRange, setHealthRange] = useState<HealthRange>('24h');
   const [selectedUserID, setSelectedUserID] = useState('');
+  const [latencyUserID, setLatencyUserID] = useState('');
   const [playerQuery, setPlayerQuery] = useState('');
   const [summary, setSummary] = useState<AnalyticsSummary>();
   const [summaryKey, setSummaryKey] = useState<Period>();
@@ -45,7 +46,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
   const [playerActivity, setPlayerActivity] = useState<AnalyticsActivity>();
   const [playerKey, setPlayerKey] = useState('');
   const [health, setHealth] = useState<AnalyticsHealth>();
-  const [healthKey, setHealthKey] = useState<HealthRange>();
+  const [healthKey, setHealthKey] = useState('');
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [serverLoading, setServerLoading] = useState(true);
   const [playerLoading, setPlayerLoading] = useState(false);
@@ -96,12 +97,13 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
 
   useEffect(() => {
     const controller = new AbortController();
+    const requestKey = `${healthRange}:${latencyUserID}`;
     setHealthLoading(true);
     setHealthError('');
-    getAnalyticsHealth(healthRange, controller.signal).then((next) => {
-      if (!controller.signal.aborted && next.range === healthRange) {
+    getAnalyticsHealth(healthRange, latencyUserID || undefined, controller.signal).then((next) => {
+      if (!controller.signal.aborted && next.range === healthRange && (next.user_id || '') === latencyUserID) {
         setHealth(next);
-        setHealthKey(healthRange);
+        setHealthKey(requestKey);
       }
     }).catch((error: unknown) => {
       if (!controller.signal.aborted) setHealthError(error instanceof Error ? error.message : '无法加载服务器健康');
@@ -109,7 +111,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
       if (!controller.signal.aborted) setHealthLoading(false);
     });
     return () => controller.abort();
-  }, [healthRange, refreshKey]);
+  }, [healthRange, latencyUserID, refreshKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -156,12 +158,14 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
   const matchingSummary = summaryKey === rankingPeriod ? summary : undefined;
   const matchingServer = serverKey === range ? serverActivity : undefined;
   const matchingPlayer = playerKey === `${range}:${selectedUserID}` ? playerActivity?.player : undefined;
-  const matchingHealth = healthKey === healthRange ? health : undefined;
+  const matchingHealth = healthKey === `${healthRange}:${latencyUserID}` ? health : undefined;
   const firstLoad = (summaryLoading && !matchingSummary) || (serverLoading && !matchingServer);
   const asOf = matchingSummary?.as_of ?? undefined;
   const stale = asOf ? Date.now() - new Date(asOf).getTime() > 20_000 : false;
   const hasFPS = Boolean(matchingHealth?.fps.length);
-  const hasLatency = Boolean(matchingHealth?.latency.length);
+  const hasPlayerLatency = Boolean(matchingHealth?.player_latency.length);
+  const pingRank = matchingHealth?.player_ping_rank ?? [];
+  const latencyLatest = hasPlayerLatency ? matchingHealth!.player_latency[matchingHealth!.player_latency.length - 1]!.ping : null;
 
   return <section className="analytics-dashboard" aria-labelledby="analytics-heading" aria-busy={firstLoad}>
     <header className="analytics-heading">
@@ -179,7 +183,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
     </div>
 
     <section className="panel analytics-panel health-panel" aria-label="服务器健康">
-      <PanelHeading title="服务器健康" detail={matchingHealth?.note ?? 'FPS 与全服延迟分位 · 每次轮询汇总'}>
+      <PanelHeading title="服务器健康" detail={matchingHealth?.note ?? 'FPS 为全服指标；延迟按玩家查看'}>
         <ToggleGroup
           label="健康时间范围"
           options={[['6h', '6 小时'], ['24h', '24 小时'], ['7d', '7 天']]}
@@ -190,40 +194,93 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
       <div className="analytics-metrics" aria-label="健康快照">
         <AnalyticsMetric icon={<Gauge size={19} />} label="最新 FPS" value={matchingHealth?.latest_fps != null ? String(matchingHealth.latest_fps) : '--'} detail="server metrics 采样" />
         <AnalyticsMetric icon={<Users size={19} />} label="采样在线" value={matchingHealth?.latest_players != null ? String(matchingHealth.latest_players) : '--'} detail="最近一次服务器指标" />
-        <AnalyticsMetric icon={<Signal size={19} />} label="延迟 P50" value={formatMs(matchingHealth?.latest_p50)} detail="在线玩家延迟中位" />
-        <AnalyticsMetric icon={<Signal size={19} />} label="延迟 P90" value={formatMs(matchingHealth?.latest_p90)} detail="在线玩家延迟 P90" />
+        <AnalyticsMetric icon={<Signal size={19} />} label="选中玩家延迟" value={formatMs(latencyLatest)} detail={latencyUserID ? (matchingHealth?.player_name || latencyUserID) : '请选择玩家'} />
+        <AnalyticsMetric icon={<Signal size={19} />} label="延迟采样人数" value={pingRank.length ? String(pingRank.length) : '--'} detail="窗口内有 ping 的玩家" />
       </div>
-      {!hasFPS && !hasLatency && !healthLoading ? (
-        <div className="analytics-empty">该范围内没有服务器健康采样。部署后需等待轮询写入 FPS 与延迟汇总。</div>
-      ) : healthLoading && !matchingHealth ? (
+      {healthLoading && !matchingHealth ? (
         <SkeletonChart />
       ) : (
-        <div className="health-charts">
-          {hasFPS ? (
-            <>
-              <div className="health-chart-block">
-                <h3>服务器 FPS</h3>
-                <ActivityChart kind="line" label="服务器 FPS" points={matchingHealth!.fps.map((point) => ({ at: point.at, value: point.fps }))} />
-              </div>
-              <div className="health-chart-block">
-                <h3>指标在线人数</h3>
-                <ActivityChart kind="line" label="指标在线人数" points={matchingHealth!.fps.map((point) => ({ at: point.at, value: point.players }))} />
-              </div>
-            </>
+        <>
+          <div className="health-charts">
+            {hasFPS ? (
+              <>
+                <div className="health-chart-block">
+                  <h3>服务器 FPS</h3>
+                  <ActivityChart kind="line" label="服务器 FPS" unit="FPS" points={matchingHealth!.fps.map((point) => ({ at: point.at, value: point.fps }))} />
+                </div>
+                <div className="health-chart-block">
+                  <h3>指标在线人数</h3>
+                  <ActivityChart kind="line" label="指标在线人数" unit="人" points={matchingHealth!.fps.map((point) => ({ at: point.at, value: point.players }))} />
+                </div>
+              </>
+            ) : !healthLoading ? (
+              <div className="analytics-empty">该范围内没有 FPS 采样。</div>
+            ) : null}
+          </div>
+
+          <div className="health-chart-block" style={{ marginTop: '0.75rem' }}>
+            <h3>玩家延迟</h3>
+            <div className="player-picker">
+              <label>延迟玩家
+                <select value={latencyUserID} onChange={(event) => setLatencyUserID(event.target.value)} aria-label="延迟玩家">
+                  <option value="">选择玩家查看延迟曲线</option>
+                  {players.map((player) => (
+                    <option key={player.user_id} value={player.user_id}>{player.name || player.account_name || player.user_id}</option>
+                  ))}
+                  {pingRank.filter((entry) => !players.some((player) => player.user_id === entry.user_id)).map((entry) => (
+                    <option key={entry.user_id} value={entry.user_id}>{entry.name || entry.user_id}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {!latencyUserID ? (
+              <div className="analytics-empty">延迟是玩家侧指标。从下方排行点选，或在此选择玩家查看曲线。</div>
+            ) : hasPlayerLatency ? (
+              <ActivityChart
+                kind="line"
+                label={`${matchingHealth?.player_name || latencyUserID} 延迟`}
+                unit="ms"
+                points={matchingHealth!.player_latency.map((point) => ({ at: point.at, value: point.ping }))}
+              />
+            ) : !healthLoading ? (
+              <div className="analytics-empty">该玩家在此范围内没有延迟采样。</div>
+            ) : (
+              <SkeletonChart />
+            )}
+          </div>
+
+          {pingRank.length ? (
+            <div className="ranking-wrap" style={{ marginTop: '0.75rem' }}>
+              <table className="ranking-table ping-rank-table">
+                <caption>玩家最近延迟（窗口内最新一次 · 高延迟在前）</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">#</th>
+                    <th scope="col">玩家</th>
+                    <th scope="col">延迟</th>
+                    <th scope="col">采样时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pingRank.map((entry, index) => (
+                    <tr key={entry.user_id}>
+                      <td>{index + 1}</td>
+                      <th scope="row">
+                        <button type="button" className="linkish" onClick={() => setLatencyUserID(entry.user_id)}>
+                          {entry.name || entry.user_id}
+                        </button>
+                      </th>
+                      <td>{formatMs(entry.ping)}</td>
+                      <td>{formatDateTime(entry.at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : !healthLoading ? (
+            <div className="analytics-empty" style={{ marginTop: '0.75rem' }}>该范围内还没有玩家延迟采样。</div>
           ) : null}
-          {hasLatency ? (
-            <>
-              <div className="health-chart-block">
-                <h3>延迟 P50 (ms)</h3>
-                <ActivityChart kind="line" label="延迟 P50" points={matchingHealth!.latency.map((point) => ({ at: point.at, value: point.p50 }))} />
-              </div>
-              <div className="health-chart-block">
-                <h3>延迟 P90 (ms)</h3>
-                <ActivityChart kind="line" label="延迟 P90" points={matchingHealth!.latency.map((point) => ({ at: point.at, value: point.p90 }))} />
-              </div>
-            </>
-          ) : null}
-        </div>
+        </>
       )}
     </section>
 
@@ -233,7 +290,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
           <PanelHeading title="服务器并发" detail={matchingServer ? `${matchingServer.start} – ${matchingServer.end} · ${matchingServer.timezone}` : '平均同时在线人数'}>
             <ToggleGroup label="并发时间范围" options={[['7d', '7 天'], ['30d', '30 天']]} value={range} onChange={(value) => setRange(value as Range)} />
           </PanelHeading>
-          {matchingServer?.concurrency.length ? <ActivityChart kind="line" label="服务器并发" points={matchingServer.concurrency.map((point) => ({ at: point.at, value: point.average_count, max: point.max_count, coverage: point.coverage }))} /> : !serverLoading ? <div className="analytics-empty">该范围内没有并发观测数据。</div> : <SkeletonChart />}
+          {matchingServer?.concurrency.length ? <ActivityChart kind="line" label="服务器并发" unit="人" points={matchingServer.concurrency.map((point) => ({ at: point.at, value: point.average_count, max: point.max_count, coverage: point.coverage }))} /> : !serverLoading ? <div className="analytics-empty">该范围内没有并发观测数据。</div> : <SkeletonChart />}
         </section>
 
         <section className="panel analytics-panel">
@@ -243,7 +300,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
             <label>玩家活动<select value={selectedUserID} onChange={(event) => setSelectedUserID(event.target.value)}><option value="">选择玩家</option>{visiblePlayers.map((player) => <option key={player.user_id} value={player.user_id}>{player.name || player.account_name || player.user_id}</option>)}</select></label>
           </div>
           {!selectedUserID ? <div className="analytics-empty">选择已知玩家以查看每日活动。</div>
-            : matchingPlayer?.daily.length ? <ActivityChart kind="bar" label={`${matchingPlayer.name || matchingPlayer.user_id} 每日活动`} points={matchingPlayer.daily.map((point) => ({ date: point.date, value: point.observed_ms }))} />
+            : matchingPlayer?.daily.length ? <ActivityChart kind="bar" label={`${matchingPlayer.name || matchingPlayer.user_id} 每日活动`} unit="ms" points={matchingPlayer.daily.map((point) => ({ date: point.date, value: point.observed_ms }))} />
             : !playerLoading ? <div className="analytics-empty">该玩家在此范围内没有观测活动。</div> : <SkeletonChart />}
         </section>
       </div>

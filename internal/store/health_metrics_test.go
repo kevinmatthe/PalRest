@@ -85,4 +85,28 @@ func TestRecordAndQueryHealthSeries(t *testing.T) {
 	if len(ping) != 1 || ping[0].SampleCount != 5 || ping[0].P50 == nil || *ping[0].P50 != 40 {
 		t.Fatalf("ping=%+v", ping)
 	}
+
+	if err := repo.RecordPlayerObservation(ctx, PlayerObservationWrite{
+		PrivateSamples: []PlayerPrivateSample{
+			{UserID: "u1", ObservedAt: base, IP: "192.0.2.1", Ping: 35, Level: 1, SourceRef: "poll"},
+			{UserID: "u1", ObservedAt: base.Add(time.Minute), IP: "192.0.2.1", Ping: 80, Level: 1, SourceRef: "poll"},
+			{UserID: "u2", ObservedAt: base.Add(time.Minute), IP: "192.0.2.2", Ping: 120, Level: 2, SourceRef: "poll"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	series, err := repo.PlayerPingSeries(ctx, "u1", base.Add(-time.Minute), base.Add(2*time.Minute), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(series) != 2 || series[0].Ping != 35 || series[1].Ping != 80 {
+		t.Fatalf("player series=%+v", series)
+	}
+	latest, err := repo.LatestPlayerPings(ctx, base.Add(-time.Minute), base.Add(2*time.Minute), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(latest) != 2 || latest[0].UserID != "u2" || latest[0].Ping != 120 || latest[1].UserID != "u1" || latest[1].Ping != 80 {
+		t.Fatalf("latest=%+v", latest)
+	}
 }

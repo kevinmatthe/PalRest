@@ -36,6 +36,8 @@ type AnalyticsQueries interface {
 	Player(context.Context, string) (domain.Player, error)
 	ServerFPSSeries(context.Context, time.Time, time.Time, int) ([]store.ServerFPSPoint, error)
 	PingSummarySeries(context.Context, time.Time, time.Time, int) ([]store.PingSummaryPoint, error)
+	PlayerPingSeries(context.Context, string, time.Time, time.Time, int) ([]store.PlayerPingPoint, error)
+	LatestPlayerPings(context.Context, time.Time, time.Time, int) ([]store.LatestPlayerPing, error)
 }
 
 type AnalyticsOnline interface {

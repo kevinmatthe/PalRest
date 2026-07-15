@@ -296,15 +296,16 @@ export type ServerFPSPoint = {
   players: number;
 };
 
-export type LatencySummaryPoint = {
+export type PlayerLatencyPoint = {
   at: string;
-  sample_count: number;
-  missing_count: number;
-  min: number | null;
-  p50: number | null;
-  p90: number | null;
-  p99: number | null;
-  max: number | null;
+  ping: number;
+};
+
+export type PlayerPingRankEntry = {
+  user_id: string;
+  name: string;
+  at: string;
+  ping: number;
 };
 
 export type AnalyticsHealth = {
@@ -313,15 +314,17 @@ export type AnalyticsHealth = {
   end: string;
   latest_fps: number | null;
   latest_players: number | null;
-  latest_p50: number | null;
-  latest_p90: number | null;
   fps: ServerFPSPoint[];
-  latency: LatencySummaryPoint[];
+  player_ping_rank: PlayerPingRankEntry[];
+  user_id?: string;
+  player_name?: string;
+  player_latency: PlayerLatencyPoint[];
   note?: string;
 };
 
-export function getAnalyticsHealth(range: HealthRange = '24h', signal?: AbortSignal) {
+export function getAnalyticsHealth(range: HealthRange = '24h', userID?: string, signal?: AbortSignal) {
   const query = new URLSearchParams({ range });
+  if (userID) query.set('user_id', userID);
   return getJSON<AnalyticsHealth>(`/api/v1/analytics/health?${query}`, signal);
 }
 

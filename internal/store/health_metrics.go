@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -192,6 +193,101 @@ LIMIT ?`, formatObservationTime(start.UTC()), formatObservationTime(end.UTC()), 
 	return downsamplePing(out, 720), nil
 }
 
+// PlayerPingPoint is one player's latency sample (no IP / private fields).
+type PlayerPingPoint struct {
+	At   time.Time
+	Ping float64
+}
+
+// LatestPlayerPing is the most recent ping for a player in a window.
+type LatestPlayerPing struct {
+	UserID string
+	Name   string
+	At     time.Time
+	Ping   float64
+}
+
+// PlayerPingSeries returns one player's ping over time from private samples
+// (poll cadence). Only observed_at + ping are exposed — no IP.
+func (r *Repository) PlayerPingSeries(ctx context.Context, userID string, start, end time.Time, limit int) ([]PlayerPingPoint, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, fmt.Errorf("player ping series: user id is required")
+	}
+	if err := validateHealthRange(start, end, limit); err != nil {
+		return nil, fmt.Errorf("player ping series: %w", err)
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT observed_at, ping
+FROM player_private_samples
+WHERE user_id=? AND observed_at>=? AND observed_at<?
+ORDER BY observed_at ASC
+LIMIT ?`, userID, formatObservationTime(start.UTC()), formatObservationTime(end.UTC()), limit)
+	if err != nil {
+		return nil, fmt.Errorf("player ping series: query: %w", err)
+	}
+	defer rows.Close()
+	out := make([]PlayerPingPoint, 0)
+	for rows.Next() {
+		var p PlayerPingPoint
+		var at string
+		if err := rows.Scan(&at, &p.Ping); err != nil {
+			return nil, fmt.Errorf("player ping series: scan: %w", err)
+		}
+		p.At, err = parseTime(at)
+		if err != nil {
+			return nil, fmt.Errorf("player ping series: parse time: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("player ping series: iterate: %w", err)
+	}
+	return downsamplePlayerPing(out, 720), nil
+}
+
+// LatestPlayerPings returns the newest ping per player in [start, end), highest first.
+func (r *Repository) LatestPlayerPings(ctx context.Context, start, end time.Time, limit int) ([]LatestPlayerPing, error) {
+	if err := validateHealthRange(start, end, limit); err != nil {
+		return nil, fmt.Errorf("latest player pings: %w", err)
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT s.user_id,
+       COALESCE(NULLIF(TRIM(p.name), ''), s.user_id) AS name,
+       s.observed_at,
+       s.ping
+FROM player_private_samples s
+INNER JOIN (
+  SELECT user_id, MAX(observed_at) AS observed_at
+  FROM player_private_samples
+  WHERE observed_at>=? AND observed_at<?
+  GROUP BY user_id
+) latest ON latest.user_id = s.user_id AND latest.observed_at = s.observed_at
+LEFT JOIN players p ON p.user_id = s.user_id
+ORDER BY s.ping DESC, s.user_id ASC
+LIMIT ?`, formatObservationTime(start.UTC()), formatObservationTime(end.UTC()), limit)
+	if err != nil {
+		return nil, fmt.Errorf("latest player pings: query: %w", err)
+	}
+	defer rows.Close()
+	out := make([]LatestPlayerPing, 0)
+	for rows.Next() {
+		var row LatestPlayerPing
+		var at string
+		if err := rows.Scan(&row.UserID, &row.Name, &at, &row.Ping); err != nil {
+			return nil, fmt.Errorf("latest player pings: scan: %w", err)
+		}
+		row.At, err = parseTime(at)
+		if err != nil {
+			return nil, fmt.Errorf("latest player pings: parse time: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("latest player pings: iterate: %w", err)
+	}
+	return out, nil
+}
+
 func scanOptFloat(v sql.NullFloat64) *float64 {
 	if !v.Valid {
 		return nil
@@ -234,6 +330,22 @@ func downsamplePing(in []PingSummaryPoint, max int) []PingSummaryPoint {
 		return in
 	}
 	out := make([]PingSummaryPoint, 0, max)
+	step := float64(len(in)-1) / float64(max-1)
+	for i := 0; i < max; i++ {
+		idx := int(math.Round(float64(i) * step))
+		if idx >= len(in) {
+			idx = len(in) - 1
+		}
+		out = append(out, in[idx])
+	}
+	return out
+}
+
+func downsamplePlayerPing(in []PlayerPingPoint, max int) []PlayerPingPoint {
+	if len(in) <= max {
+		return in
+	}
+	out := make([]PlayerPingPoint, 0, max)
 	step := float64(len(in)-1) / float64(max-1)
 	for i := 0; i < max; i++ {
 		idx := int(math.Round(float64(i) * step))
