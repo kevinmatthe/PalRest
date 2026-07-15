@@ -385,7 +385,11 @@ select:focus-visible {
 }
 .live-map-roster-item {
   display: grid;
-  gap: 0.15rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 0.45rem;
+  row-gap: 0.1rem;
+  align-items: center;
   width: 100%;
   padding: 0.5rem 0.55rem;
   border: 1px solid #d5e0d9;
@@ -402,8 +406,25 @@ select:focus-visible {
   background: #fff2d5;
   box-shadow: 0 0 0 1px rgba(202, 133, 25, 0.3);
 }
-.live-map-roster-name { font-size: 0.9rem; font-weight: 800; color: #14241f; }
-.live-map-roster-meta { color: #5b6963; font-size: 0.75rem; font-weight: 700; }
+.live-map-roster-swatch {
+  grid-row: 1 / span 2;
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 2px solid #0f7285;
+  border-radius: 999px;
+}
+.live-map-roster-name {
+  grid-column: 2;
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: #14241f;
+}
+.live-map-roster-meta {
+  grid-column: 2;
+  color: #5b6963;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
 .live-map-roster-empty, .live-map-roster-hint {
   margin: 0;
   color: #5b6963;
@@ -433,33 +454,60 @@ select:focus-visible {
   cursor: pointer;
 }
 .live-map-open-timeline:hover { background: #ffe7b0; }
-/* Permanent player name labels on the live map (always visible). */
+/* Colored pin + short abbr on live map (full name on hover tooltip). */
+.live-map-player-pin {
+  display: flex !important;
+  align-items: center;
+  gap: 0.2rem;
+  background: transparent !important;
+  border: none !important;
+}
+.live-map-player-dot {
+  flex: 0 0 auto;
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 2px solid #0f7285;
+  border-radius: 999px;
+  box-shadow: 0 0.1rem 0.35rem rgba(20, 36, 31, 0.35);
+}
+.live-map-player-pin.is-active .live-map-player-dot {
+  width: 1.05rem;
+  height: 1.05rem;
+  box-shadow: 0 0 0 2px rgba(255, 253, 247, 0.9), 0 0.15rem 0.45rem rgba(20, 36, 31, 0.4);
+}
+.live-map-player-abbr {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.15rem;
+  padding: 0 0.28rem;
+  border: 1px solid rgba(15, 114, 133, 0.45);
+  border-radius: 0.25rem;
+  background: rgba(255, 253, 247, 0.94);
+  box-shadow: 0 0.1rem 0.3rem rgba(20, 36, 31, 0.16);
+  font-size: 0.7rem;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.live-map-player-pin.is-active .live-map-player-abbr {
+  border-color: #ca8519;
+  background: #fff2d5;
+}
 .leaflet-tooltip.live-map-name-label {
   padding: 0.12rem 0.4rem;
   border: 1px solid rgba(15, 114, 133, 0.55);
   border-radius: 0.3rem;
   color: #0d3d47;
-  background: rgba(255, 253, 247, 0.94);
+  background: rgba(255, 253, 247, 0.96);
   box-shadow: 0 0.15rem 0.45rem rgba(20, 36, 31, 0.18);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 800;
   line-height: 1.25;
   white-space: nowrap;
-  max-width: 12rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .leaflet-tooltip.live-map-name-label::before {
   border-top-color: rgba(15, 114, 133, 0.45);
-}
-.leaflet-tooltip.live-map-name-label.is-active {
-  border-color: #ca8519;
-  color: #6a4210;
-  background: #fff2d5;
-  box-shadow: 0 0 0 1px rgba(202, 133, 25, 0.35), 0 0.2rem 0.5rem rgba(106, 66, 16, 0.2);
-}
-.leaflet-tooltip.live-map-name-label.is-active::before {
-  border-top-color: #ca8519;
 }
 @media (min-width: 960px) {
   .live-map-stage {

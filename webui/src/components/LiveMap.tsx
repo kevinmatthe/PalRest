@@ -55,6 +55,27 @@ const FallbackTileLayer = L.TileLayer.extend({
 /** Frontend refresh of /live/positions. Actual coord freshness still follows Guard poll_interval. */
 const POLL_MS = 1_000;
 
+/** Stable distinct color per user id (HSL). */
+function playerMarkerColor(userID: string): { fill: string; stroke: string } {
+  let hash = 2166136261;
+  for (let i = 0; i < userID.length; i += 1) {
+    hash ^= userID.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const hue = hash % 360;
+  return {
+    fill: `hsl(${hue} 68% 52%)`,
+    stroke: `hsl(${hue} 72% 30%)`,
+  };
+}
+
+/** Map label: first two visible characters (CJK / latin). */
+export function shortPlayerLabel(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return '?';
+  return Array.from(trimmed).slice(0, 2).join('');
+}
+
 export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
   const mapElementRef = useRef<HTMLDivElement>(null);
   const leafletRef = useRef<L.Map | null>(null);
@@ -191,23 +212,29 @@ export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
     players.forEach((player) => {
       const active = player.user_id === selectedID;
       const latLng = projectWorldXY(player.x, player.y);
-      const marker = L.circleMarker(latLng, {
-        radius: active ? 10 : 7,
-        color: active ? '#8d5a0f' : '#0f7285',
-        fillColor: active ? '#f5c451' : '#3ec6d8',
-        fillOpacity: 0.95,
-        weight: active ? 3 : 2,
-        className: `live-map-marker${active ? ' is-active' : ''}`,
+      const fullLabel = player.name || player.account_name || player.user_id;
+      const abbr = shortPlayerLabel(fullLabel);
+      const { fill, stroke } = playerMarkerColor(player.user_id);
+      const icon = L.divIcon({
+        className: `live-map-player-pin${active ? ' is-active' : ''}`,
+        html:
+          `<span class="live-map-player-dot" style="background:${fill};border-color:${stroke}"></span>`
+          + `<span class="live-map-player-abbr" style="border-color:${stroke};color:${stroke}">${escapeHtml(abbr)}</span>`,
+        iconSize: [44, 22],
+        iconAnchor: [8, 11],
       });
-      const label = player.name || player.account_name || player.user_id;
-      // Always show names on the map (not only on hover).
-      marker.bindTooltip(label, {
+      const marker = L.marker(latLng, {
+        icon,
+        keyboard: false,
+        title: fullLabel,
+        zIndexOffset: active ? 500 : 0,
+      });
+      marker.bindTooltip(fullLabel, {
         direction: 'top',
         opacity: 0.95,
-        permanent: true,
-        sticky: false,
-        className: `live-map-name-label${active ? ' is-active' : ''}`,
-        offset: L.point(0, -6),
+        permanent: false,
+        className: 'live-map-name-label',
+        offset: L.point(0, -8),
       });
       marker.on('click', () => {
         setSelectedID(player.user_id);
@@ -231,7 +258,9 @@ export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
         <div>
           <p className="eyebrow">全服位置</p>
           <h2>实时地图</h2>
-          <p className="live-map-note">跟随 Guard 轮询刷新 · 约每 {POLL_MS / 1000}s · 仅在线且有坐标的玩家</p>
+          <p className="live-map-note">
+            前端约每 {POLL_MS / 1000}s 拉一次位置 · 坐标更新仍受服务端 poll 间隔限制 · 仅在线且有坐标的玩家
+          </p>
         </div>
         <div className="live-map-header-meta">
           <LandmarkLayerControls
@@ -303,6 +332,7 @@ export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
             {players.map((player) => {
               const active = player.user_id === selectedID;
               const label = player.name || player.account_name || player.user_id;
+              const { fill, stroke } = playerMarkerColor(player.user_id);
               return (
                 <li key={player.user_id}>
                   <button
@@ -323,6 +353,7 @@ export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
                       }
                     }}
                   >
+                    <span className="live-map-roster-swatch" style={{ background: fill, borderColor: stroke }} aria-hidden="true" />
                     <span className="live-map-roster-name">{label}</span>
                     <span className="live-map-roster-meta">
                       {typeof player.ping === 'number' ? `${Math.round(player.ping)} ms` : '—'}
@@ -354,4 +385,12 @@ export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
       </div>
     </section>
   );
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 }

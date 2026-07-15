@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api';
-import { LiveMap } from './LiveMap';
+import { LiveMap, shortPlayerLabel } from './LiveMap';
 
 vi.mock('../api', async (load) => ({
   ...(await load<typeof import('../api')>()),
@@ -73,6 +73,12 @@ describe('LiveMap', () => {
     await waitFor(() => {
       expect(screen.getByText(/没有可显示坐标的在线玩家/)).toBeInTheDocument();
     });
+  });
+
+  it('shortens map labels to two characters', () => {
+    expect(shortPlayerLabel('Avery')).toBe('Av');
+    expect(shortPlayerLabel('狼团长')).toBe('狼团');
+    expect(shortPlayerLabel('  x  ')).toBe('x');
   });
 
   it('toggles guild base landmarks and guild filter', async () => {
