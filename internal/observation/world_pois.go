@@ -51,33 +51,33 @@ func (p *WorldPOIProvider) ListPlayerWorldPOIs(ctx context.Context, userID strin
 		return empty, nil
 	}
 
-	// Prefer save POIs when ids collide; always include unique live PalBoxes.
-	byID := make(map[string]store.WorldPOI, len(save.POIs)+len(livePOIs))
-	for _, poi := range save.POIs {
-		byID[poi.ID] = poi
-	}
-	for _, poi := range livePOIs {
-		if _, exists := byID[poi.ID]; !exists {
-			byID[poi.ID] = poi
+	// Prefer save POIs; drop live PalBoxes that are the same camp under a different id.
+	merged := make([]store.WorldPOI, 0, len(save.POIs)+len(livePOIs))
+	merged = append(merged, save.POIs...)
+	liveAdded := 0
+	for _, live := range livePOIs {
+		if guildBaseAlreadyPresent(merged, live) {
+			continue
 		}
-		// Also dedupe near-identical camps: if a save camp is within 5k of a live box same guild, keep both ids but that's ok.
-	}
-	merged := make([]store.WorldPOI, 0, len(byID))
-	for _, poi := range byID {
-		merged = append(merged, poi)
+		merged = append(merged, live)
+		liveAdded++
 	}
 
 	source := "none"
 	asOf := save.AsOf
 	switch {
-	case len(save.POIs) > 0 && len(livePOIs) > 0:
+	case len(save.POIs) > 0 && liveAdded > 0:
 		source = "save_import+game_data"
 	case len(save.POIs) > 0:
 		source = "save_import"
-	case len(livePOIs) > 0:
-		source = "game_data"
-		if snap := p.Live.Snapshot(); !snap.ObservedAt.IsZero() {
-			asOf = snap.ObservedAt.UTC().Format(timeRFC3339)
+	case liveAdded > 0 || len(livePOIs) > 0:
+		if len(save.POIs) == 0 {
+			source = "game_data"
+			if p.Live != nil {
+				if snap := p.Live.Snapshot(); !snap.ObservedAt.IsZero() {
+					asOf = snap.ObservedAt.UTC().Format(timeRFC3339)
+				}
+			}
 		}
 	}
 
