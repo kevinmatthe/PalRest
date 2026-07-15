@@ -4,9 +4,9 @@ import { policyCondition } from './policyCondition';
 
 describe('policyCondition', () => {
   it.each([
-    ['fixed_window', 'Limit', 8 * 60 * 60 * 1000],
-    ['cooldown', 'Play duration', 2 * 60 * 60 * 1000],
-    ['credit', 'Maximum credit', 3 * 60 * 60 * 1000],
+    ['fixed_window', '限额', 8 * 60 * 60 * 1000],
+    ['cooldown', '游玩时长', 2 * 60 * 60 * 1000],
+    ['credit', '额度上限', 3 * 60 * 60 * 1000],
   ])('maps %s to its strategy-specific condition', (strategy, label, valueMs) => {
     expect(policyCondition({
       strategy,
@@ -21,6 +21,6 @@ describe('policyCondition', () => {
       strategy: 'credit',
       limit_ms: 8 * 60 * 60 * 1000,
       credit_max_ms: 3 * 60 * 60 * 1000,
-    })).toEqual({ label: 'Maximum credit', valueMs: 3 * 60 * 60 * 1000 });
+    })).toEqual({ label: '额度上限', valueMs: 3 * 60 * 60 * 1000 });
   });
 });

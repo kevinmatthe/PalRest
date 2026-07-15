@@ -13,12 +13,12 @@ const player: Player = {
 describe('PlayerUsage', () => {
   it('shows available credit and the most recently settled recovery', () => {
     render(<PlayerUsage player={player} />);
-    expect(screen.getByText('45m available')).toBeInTheDocument();
-    expect(screen.getByText('Last recovery +15m')).toBeInTheDocument();
+    expect(screen.getByText('可用 45m')).toBeInTheDocument();
+    expect(screen.getByText('上次恢复 +15m')).toBeInTheDocument();
   });
 
   it('distinguishes zero recovery from a missing display', () => {
     render(<PlayerUsage player={{ ...player, last_credit_recovered_ms: 0 }} />);
-    expect(screen.getByText('No recovery recorded')).toBeInTheDocument();
+    expect(screen.getByText('尚无恢复记录')).toBeInTheDocument();
   });
 });

@@ -38,11 +38,11 @@ beforeEach(() => {
 describe('AnalyticsDashboard', () => {
   it('loads both datasets in parallel and renders metrics, ranking, and null chart gaps', async () => {
     render(<AnalyticsDashboard players={players} refreshKey={0} />);
-    expect(screen.getByText('Loading analytics')).toBeInTheDocument();
+    expect(screen.getByText('正在加载分析')).toBeInTheDocument();
     expect(await screen.findByText('1h 30m')).toBeInTheDocument();
-    expect(screen.getByText('Online now').parentElement).toHaveTextContent('2');
-    expect(screen.getByText('Peak today').parentElement).toHaveTextContent('4');
-    expect(screen.getByRole('row', { name: /AnuOnline 1h 00m/ })).toBeInTheDocument();
+    expect(screen.getByText('当前在线').parentElement).toHaveTextContent('2');
+    expect(screen.getByText('今日峰值').parentElement).toHaveTextContent('4');
+    expect(screen.getByRole('row', { name: /Anu在线 1h 00m/ })).toBeInTheDocument();
     expect(screen.getAllByTestId('line-segment')).toHaveLength(1);
     expect(getAnalyticsSummary).toHaveBeenCalledWith('today', expect.any(AbortSignal));
     expect(getAnalyticsActivity).toHaveBeenCalledWith('7d', undefined, expect.any(AbortSignal), true);
@@ -52,12 +52,12 @@ describe('AnalyticsDashboard', () => {
     render(<AnalyticsDashboard players={players} refreshKey={0} />);
     await screen.findByText('1h 30m');
     vi.clearAllMocks();
-    fireEvent.click(screen.getByRole('button', { name: 'Week' }));
+    fireEvent.click(screen.getByRole('button', { name: '本周' }));
     await waitFor(() => expect(getAnalyticsSummary).toHaveBeenCalledWith('week', expect.any(AbortSignal)));
     expect(getAnalyticsActivity).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '本周' })).toHaveAttribute('aria-pressed', 'true');
     vi.clearAllMocks();
-    fireEvent.click(screen.getByRole('button', { name: '30 days' }));
+    fireEvent.click(screen.getByRole('button', { name: '30 天' }));
     await waitFor(() => expect(getAnalyticsActivity).toHaveBeenCalledWith('30d', undefined, expect.any(AbortSignal), true));
     expect(getAnalyticsSummary).not.toHaveBeenCalled();
   });
@@ -69,10 +69,10 @@ describe('AnalyticsDashboard', () => {
     render(<AnalyticsDashboard players={players} refreshKey={0} />);
     await screen.findByText('1h 30m');
     vi.clearAllMocks();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Player activity' }), { target: { value: 'u2' } });
+    fireEvent.change(screen.getByRole('combobox', { name: '玩家活动' }), { target: { value: 'u2' } });
     await waitFor(() => expect(getAnalyticsActivity).toHaveBeenLastCalledWith('7d', 'u2', expect.any(AbortSignal), false));
     expect(getAnalyticsActivity).toHaveBeenCalledTimes(1);
-    expect(await screen.findByRole('img', { name: 'Bo daily activity' })).toBeInTheDocument();
+    expect(await screen.findByRole('img', { name: 'Bo 每日活动' })).toBeInTheDocument();
   });
 
   it('retains successful data and reports a scoped alert when refresh fails', async () => {
@@ -83,18 +83,18 @@ describe('AnalyticsDashboard', () => {
     rerender(<AnalyticsDashboard players={players} refreshKey={1} />);
     expect(await screen.findByRole('alert')).toHaveTextContent(/summary unavailable.*activity unavailable/i);
     expect(screen.getByText('1h 30m')).toBeInTheDocument();
-    expect(screen.getByRole('row', { name: /AnuOnline 1h 00m/ })).toBeInTheDocument();
-    expect(screen.getByRole('img', { name: 'Server concurrency' })).toBeInTheDocument();
+    expect(screen.getByRole('row', { name: /Anu在线 1h 00m/ })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: '服务器并发' })).toBeInTheDocument();
   });
 
   it('shows an explicit empty state when analytics has no successful data', async () => {
     vi.mocked(getAnalyticsSummary).mockResolvedValue({ ...summary, as_of: null, ranking: [], today_observed_ms: 0, peak_count: 0, peak_at: null, active_players: 0 });
     vi.mocked(getAnalyticsActivity).mockResolvedValue({ ...activity, concurrency: [] });
     render(<AnalyticsDashboard players={[]} refreshKey={0} />);
-    expect(await screen.findByText('No ranking activity for this period.')).toBeInTheDocument();
+    expect(await screen.findByText('该周期没有排行活动数据。')).toBeInTheDocument();
     expect(screen.getAllByText('--')).toHaveLength(4);
-    expect(screen.getByText('No concurrency observations for this range.')).toBeInTheDocument();
-    expect(screen.getByText('Select a known player to inspect daily activity.')).toBeInTheDocument();
+    expect(screen.getByText('该范围内没有并发观测数据。')).toBeInTheDocument();
+    expect(screen.getByText('选择已知玩家以查看每日活动。')).toBeInTheDocument();
   });
 
   it('refreshes both datasets when the shared refresh token changes', async () => {
@@ -119,30 +119,30 @@ describe('AnalyticsDashboard', () => {
     vi.mocked(getAnalyticsActivity)
       .mockResolvedValueOnce({ ...activity, range: '30d', concurrency: [{ at: 'latest', average_count: 8, max_count: 8, coverage: 1 }] })
       .mockResolvedValueOnce({ ...activity, range: '30d', concurrency: [{ at: 'selected', average_count: 9, max_count: 9, coverage: 1 }], player: { user_id: 'u2', name: 'Bo', daily: [] } });
-    fireEvent.click(screen.getByRole('button', { name: 'Week' }));
-    fireEvent.click(screen.getByRole('button', { name: '30 days' }));
+    fireEvent.click(screen.getByRole('button', { name: '本周' }));
+    fireEvent.click(screen.getByRole('button', { name: '30 天' }));
     expect(oldSummarySignal.aborted).toBe(true);
     expect(oldActivitySignal.aborted).toBe(true);
     expect(await screen.findByText('Latest Bo')).toBeInTheDocument();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Player activity' }), { target: { value: 'u2' } });
+    fireEvent.change(screen.getByRole('combobox', { name: '玩家活动' }), { target: { value: 'u2' } });
     await waitFor(() => expect(getAnalyticsActivity).toHaveBeenLastCalledWith('30d', 'u2', expect.any(AbortSignal), false));
 
     resolveOldSummary({ ...summary, ranking: [{ user_id: 'u1', name: 'Obsolete Anu', observed_ms: 1, online: false }] });
     resolveOldActivity({ ...activity, concurrency: [{ at: 'obsolete', average_count: 1, max_count: 1, coverage: 1 }] });
     await Promise.resolve();
     expect(screen.queryByText('Obsolete Anu')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Show data table' }));
+    fireEvent.click(screen.getByRole('button', { name: '显示数据表' }));
     expect(screen.getByRole('row', { name: 'latest 8' })).toBeInTheDocument();
     expect(screen.queryByRole('row', { name: 'obsolete 1' })).not.toBeInTheDocument();
   });
 
   it('does not present 7-day concurrency under a failed 30-day filter', async () => {
     render(<AnalyticsDashboard players={players} refreshKey={0} />);
-    await screen.findByRole('img', { name: 'Server concurrency' });
+    await screen.findByRole('img', { name: '服务器并发' });
     vi.mocked(getAnalyticsActivity).mockRejectedValueOnce(new Error('30 day unavailable'));
-    fireEvent.click(screen.getByRole('button', { name: '30 days' }));
+    fireEvent.click(screen.getByRole('button', { name: '30 天' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('30 day unavailable');
-    expect(screen.queryByRole('img', { name: 'Server concurrency' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: '服务器并发' })).not.toBeInTheDocument();
   });
 
   it('does not show player A history under player B and retains a selected option through search', async () => {
@@ -152,12 +152,12 @@ describe('AnalyticsDashboard', () => {
       .mockRejectedValueOnce(new Error('Bo unavailable'));
     render(<AnalyticsDashboard players={players} refreshKey={0} />);
     await screen.findByText('1h 30m');
-    fireEvent.change(screen.getByRole('combobox', { name: 'Player activity' }), { target: { value: 'u1' } });
-    expect(await screen.findByRole('img', { name: 'Anu daily activity' })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole('textbox', { name: 'Find player' }), { target: { value: 'Bo' } });
+    fireEvent.change(screen.getByRole('combobox', { name: '玩家活动' }), { target: { value: 'u1' } });
+    expect(await screen.findByRole('img', { name: 'Anu 每日活动' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox', { name: '查找玩家' }), { target: { value: 'Bo' } });
     expect(screen.getByRole('option', { name: 'Anu' })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Player activity' }), { target: { value: 'u2' } });
+    fireEvent.change(screen.getByRole('combobox', { name: '玩家活动' }), { target: { value: 'u2' } });
     expect(await screen.findByRole('alert')).toHaveTextContent('Bo unavailable');
-    expect(screen.queryByRole('img', { name: 'Anu daily activity' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: 'Anu 每日活动' })).not.toBeInTheDocument();
   });
 });

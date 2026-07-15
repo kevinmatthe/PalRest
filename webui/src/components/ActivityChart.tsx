@@ -94,8 +94,8 @@ export function ActivityChart(props: ActivityChartProps) {
         maximum = Math.max(maximum, point.value);
       }
       const missing = props.points.length - observed;
-      const range = observed ? ` Minimum ${minimum}; maximum ${maximum}.` : '';
-      return `${props.points.length} points; ${observed} observed; ${missing} missing.${range}`;
+      const range = observed ? ` 最小 ${minimum}；最大 ${maximum}。` : '';
+      return `${props.points.length} 个点；${observed} 个有效；${missing} 个缺失。${range}`;
     }
     let total = 0;
     let minimum = Infinity;
@@ -105,8 +105,8 @@ export function ActivityChart(props: ActivityChartProps) {
       minimum = Math.min(minimum, point.value);
       maximum = Math.max(maximum, point.value);
     }
-    const range = props.points.length ? ` Minimum ${minimum} ms; maximum ${maximum} ms.` : '';
-    return `${props.points.length} points; total ${total} ms.${range}`;
+    const range = props.points.length ? ` 最小 ${minimum} ms；最大 ${maximum} ms。` : '';
+    return `${props.points.length} 个点；合计 ${total} ms。${range}`;
   }, [props.kind, serialized]);
 
   return <div className={`activity-chart${updating ? ' is-updating' : ''}`}>
@@ -116,14 +116,14 @@ export function ActivityChart(props: ActivityChartProps) {
       <ChartLayer geometry={geometry} />
     </svg></div>
     <button className="activity-chart__data-toggle" type="button" aria-expanded={showData} onClick={() => setShowData((visible) => !visible)}>
-      {showData ? 'Hide data table' : 'Show data table'}
+      {showData ? '隐藏数据表' : '显示数据表'}
     </button>
     {showData ? <div className="activity-chart__data">
       <table>
-        <caption>{props.label} data</caption>
-        <thead><tr><th scope="col">{props.kind === 'line' ? 'Time' : 'Date'}</th><th scope="col">Value</th></tr></thead>
+        <caption>{props.label} 数据</caption>
+        <thead><tr><th scope="col">{props.kind === 'line' ? '时间' : '日期'}</th><th scope="col">数值</th></tr></thead>
         <tbody>{props.kind === 'line'
-          ? props.points.map((point, index) => <tr key={`${point.at}-${index}`}><th scope="row">{point.at}</th><td>{point.value === null ? 'Missing' : point.value}</td></tr>)
+          ? props.points.map((point, index) => <tr key={`${point.at}-${index}`}><th scope="row">{point.at}</th><td>{point.value === null ? '缺失' : point.value}</td></tr>)
           : props.points.map((point, index) => <tr key={`${point.date}-${index}`}><th scope="row">{point.date}</th><td>{point.value} ms</td></tr>)
         }</tbody>
       </table>

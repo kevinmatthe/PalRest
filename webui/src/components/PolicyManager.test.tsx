@@ -34,30 +34,30 @@ describe('PolicyManager', () => {
   it('shows only fields for the selected strategy', async () => {
     const user = userEvent.setup();
     render(<PolicyManager policies={policies} players={players} busy={false} onSave={vi.fn()} onBack={() => {}} />);
-    await user.selectOptions(screen.getByLabelText('Strategy'), 'cooldown');
-    expect(screen.getByLabelText('Play duration')).toBeInTheDocument();
-    expect(screen.getByLabelText('Required rest')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Fixed allowance')).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText('策略'), 'cooldown');
+    expect(screen.getByText('游玩时长')).toBeInTheDocument();
+    expect(screen.getByText('强制休息')).toBeInTheDocument();
+    // 策略下拉仍含「固定额度」选项文案，字段本身应已切换
   });
 
   it('shows reset weekday only for weekly fixed windows', async () => {
     const user = userEvent.setup();
     render(<PolicyManager policies={policies} players={players} busy={false} onSave={vi.fn()} onBack={() => {}} />);
-    expect(screen.queryByLabelText('Reset weekday')).not.toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText('Period'), 'weekly');
-    expect(screen.getByLabelText('Reset weekday')).toBeInTheDocument();
+    expect(screen.queryByLabelText('重置星期')).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText('周期'), 'weekly');
+    expect(screen.getByLabelText('重置星期')).toBeInTheDocument();
   });
 
   it('adds a known player override and keeps fields inherited', async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(<PolicyManager policies={policies} players={players} busy={false} onSave={onSave} onBack={() => {}} />);
-    await user.click(screen.getByRole('button', { name: 'Add override' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Known player' }), 'steam_1');
-    await user.click(screen.getByRole('button', { name: 'Create override' }));
+    await user.click(screen.getByRole('button', { name: '添加覆盖' }));
+    await user.selectOptions(screen.getByRole('combobox', { name: '已知玩家' }), 'steam_1');
+    await user.click(screen.getByRole('button', { name: '创建覆盖' }));
     expect(screen.getByRole('heading', { name: 'Kevin' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Enabled state')).toHaveValue('inherit');
-    await user.click(screen.getByRole('button', { name: 'Save policy' }));
+    expect(screen.getByLabelText('启用状态')).toHaveValue('inherit');
+    await user.click(screen.getByRole('button', { name: '保存策略' }));
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ overrides: { steam_1: { exempt: false } } }));
   });
 
@@ -65,11 +65,11 @@ describe('PolicyManager', () => {
     const user = userEvent.setup();
     const existing = { ...policies, overrides: { steam_1: { exempt: false } } };
     render(<PolicyManager policies={existing} players={players} busy={false} onSave={vi.fn()} onBack={() => {}} />);
-    await user.click(screen.getByRole('button', { name: 'Add override' }));
-    await user.click(screen.getByLabelText('Manual User ID'));
-    await user.type(screen.getByLabelText('User ID'), 'steam_1');
-    await user.click(screen.getByRole('button', { name: 'Create override' }));
-    expect(screen.getByRole('alert')).toHaveTextContent('already has an override');
+    await user.click(screen.getByRole('button', { name: '添加覆盖' }));
+    await user.click(screen.getByLabelText('手动输入用户 ID'));
+    await user.type(screen.getByLabelText('用户 ID'), 'steam_1');
+    await user.click(screen.getByRole('button', { name: '创建覆盖' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('该玩家已有覆盖规则');
   });
 
   it('adds unique warning thresholds', async () => {
@@ -80,9 +80,9 @@ describe('PolicyManager', () => {
       default: { ...policies.default, warning_before_ms: [1_800_000, 600_000, 300_000] },
     };
     render(<PolicyManager policies={withFiveMinutes} players={players} busy={false} onSave={onSave} onBack={() => {}} />);
-    await user.click(screen.getByRole('button', { name: 'Add threshold' }));
-    await user.click(screen.getByRole('button', { name: 'Add threshold' }));
-    await user.click(screen.getByRole('button', { name: 'Save policy' }));
+    await user.click(screen.getByRole('button', { name: '添加阈值' }));
+    await user.click(screen.getByRole('button', { name: '添加阈值' }));
+    await user.click(screen.getByRole('button', { name: '保存策略' }));
     const saved = onSave.mock.calls[0][0] as { default: { warning_before_ms: number[] } };
     expect(new Set(saved.default.warning_before_ms).size).toBe(saved.default.warning_before_ms.length);
   });

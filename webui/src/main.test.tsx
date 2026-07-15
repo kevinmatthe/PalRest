@@ -15,7 +15,7 @@ vi.mock('./components/AnalyticsDashboard', () => ({
   AnalyticsDashboard: ({ refreshKey }: { refreshKey: number }) => <div>Analytics dashboard token {refreshKey}</div>,
 }));
 vi.mock('./components/PolicyManager', () => ({
-  PolicyManager: ({ onBack }: { onBack: () => void }) => <section><h2>Policy manager</h2><button onClick={onBack}>Back to dashboard</button></section>,
+  PolicyManager: ({ onBack }: { onBack: () => void }) => <section><h2>策略管理</h2><button onClick={onBack}>返回总览</button></section>,
 }));
 vi.mock('./components/PlayerTimeline', () => ({
   PlayerTimeline: ({ includePrivate, refreshKey }: { includePrivate?: boolean; refreshKey: number }) => <div>Player timeline token {refreshKey} private {String(Boolean(includePrivate))}</div>,
@@ -55,8 +55,8 @@ describe('App analytics navigation and refresh ownership', () => {
     expect(overview).not.toHaveAttribute('aria-current');
     expect(screen.getByRole('button', { name: '策略管理' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '策略管理' }));
-    expect(screen.getByRole('heading', { name: 'Policy manager' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Back to dashboard' }));
+    expect(screen.getByRole('heading', { name: '策略管理' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '返回总览' }));
     expect(screen.getByRole('button', { name: '总览' })).toHaveAttribute('aria-current', 'page');
   });
 

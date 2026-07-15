@@ -57,7 +57,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
         setSummaryKey(rankingPeriod);
       }
     }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setSummaryError(error instanceof Error ? error.message : 'Could not load analytics summary');
+      if (!controller.signal.aborted) setSummaryError(error instanceof Error ? error.message : '无法加载分析摘要');
     }).finally(() => {
       if (!controller.signal.aborted) setSummaryLoading(false);
     });
@@ -74,7 +74,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
         setServerKey(range);
       }
     }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setServerError(error instanceof Error ? error.message : 'Could not load server activity');
+      if (!controller.signal.aborted) setServerError(error instanceof Error ? error.message : '无法加载服务器活动');
     }).finally(() => {
       if (!controller.signal.aborted) setServerLoading(false);
     });
@@ -88,7 +88,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
     getAnalyticsBehavior(behaviorRange, behaviorSort, 25, controller.signal).then((next) => {
       if (!controller.signal.aborted) setBehavior(next);
     }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setBehaviorError(error instanceof Error ? error.message : 'Could not load behavior ranking');
+      if (!controller.signal.aborted) setBehaviorError(error instanceof Error ? error.message : '无法加载行为排行');
     }).finally(() => {
       if (!controller.signal.aborted) setBehaviorLoading(false);
     });
@@ -110,7 +110,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
         setPlayerKey(requestKey);
       }
     }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setPlayerError(error instanceof Error ? error.message : 'Could not load player activity');
+      if (!controller.signal.aborted) setPlayerError(error instanceof Error ? error.message : '无法加载玩家活动');
     }).finally(() => {
       if (!controller.signal.aborted) setPlayerLoading(false);
     });
@@ -132,63 +132,63 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
 
   return <section className="analytics-dashboard" aria-labelledby="analytics-heading" aria-busy={firstLoad}>
     <header className="analytics-heading">
-      <div><p className="eyebrow">Player activity</p><h2 id="analytics-heading">Analytics</h2></div>
-      {(summaryLoading || serverLoading || playerLoading || behaviorLoading) && !firstLoad ? <span className="analytics-refreshing" role="status">Refreshing data…</span> : null}
+      <div><p className="eyebrow">玩家活动</p><h2 id="analytics-heading">分析</h2></div>
+      {(summaryLoading || serverLoading || playerLoading || behaviorLoading) && !firstLoad ? <span className="analytics-refreshing" role="status">正在刷新…</span> : null}
     </header>
-    {firstLoad ? <div className="analytics-loading"><span className="skeleton-row" /><span>Loading analytics</span></div> : null}
+    {firstLoad ? <div className="analytics-loading"><span className="skeleton-row" /><span>正在加载分析</span></div> : null}
     {errors ? <div className="notice analytics-notice" role="alert">{errors}</div> : null}
 
-    <div className="analytics-metrics" aria-label="Activity summary">
-      <AnalyticsMetric icon={<Activity size={19} />} label="Online now" value={matchingSummary?.as_of ? String(matchingSummary.online_count) : '--'} detail={asOf ? `${stale ? 'Stale · ' : ''}As of ${formatDateTime(asOf)}` : 'No observation yet'} />
-      <AnalyticsMetric icon={<Clock3 size={19} />} label="Today total" value={matchingSummary?.as_of ? formatDuration(matchingSummary.today_observed_ms) : '--'} detail="Observed player time" />
-      <AnalyticsMetric icon={<TrendingUp size={19} />} label="Peak today" value={matchingSummary?.peak_at ? String(matchingSummary.peak_count) : '--'} detail={matchingSummary?.peak_at ? formatDateTime(matchingSummary.peak_at) : 'No peak observed'} />
-      <AnalyticsMetric icon={<Users size={19} />} label="Active today" value={matchingSummary?.as_of ? String(matchingSummary.active_players) : '--'} detail="Unique observed players" />
+    <div className="analytics-metrics" aria-label="活动摘要">
+      <AnalyticsMetric icon={<Activity size={19} />} label="当前在线" value={matchingSummary?.as_of ? String(matchingSummary.online_count) : '--'} detail={asOf ? `${stale ? '可能过时 · ' : ''}截至 ${formatDateTime(asOf)}` : '尚无观测'} />
+      <AnalyticsMetric icon={<Clock3 size={19} />} label="今日合计" value={matchingSummary?.as_of ? formatDuration(matchingSummary.today_observed_ms) : '--'} detail="观测到的玩家时长" />
+      <AnalyticsMetric icon={<TrendingUp size={19} />} label="今日峰值" value={matchingSummary?.peak_at ? String(matchingSummary.peak_count) : '--'} detail={matchingSummary?.peak_at ? formatDateTime(matchingSummary.peak_at) : '尚无峰值'} />
+      <AnalyticsMetric icon={<Users size={19} />} label="今日活跃" value={matchingSummary?.as_of ? String(matchingSummary.active_players) : '--'} detail="去重观测玩家数" />
     </div>
 
     <div className="analytics-main">
       <div className="analytics-charts">
         <section className="panel analytics-panel">
-          <PanelHeading title="Server concurrency" detail={matchingServer ? `${matchingServer.start} – ${matchingServer.end} · ${matchingServer.timezone}` : 'Average concurrent players'}>
-            <ToggleGroup label="Concurrency range" options={[['7d', '7 days'], ['30d', '30 days']]} value={range} onChange={(value) => setRange(value as Range)} />
+          <PanelHeading title="服务器并发" detail={matchingServer ? `${matchingServer.start} – ${matchingServer.end} · ${matchingServer.timezone}` : '平均同时在线人数'}>
+            <ToggleGroup label="并发时间范围" options={[['7d', '7 天'], ['30d', '30 天']]} value={range} onChange={(value) => setRange(value as Range)} />
           </PanelHeading>
-          {matchingServer?.concurrency.length ? <ActivityChart kind="line" label="Server concurrency" points={matchingServer.concurrency.map((point) => ({ at: point.at, value: point.average_count, max: point.max_count, coverage: point.coverage }))} /> : !serverLoading ? <div className="analytics-empty">No concurrency observations for this range.</div> : <SkeletonChart />}
+          {matchingServer?.concurrency.length ? <ActivityChart kind="line" label="服务器并发" points={matchingServer.concurrency.map((point) => ({ at: point.at, value: point.average_count, max: point.max_count, coverage: point.coverage }))} /> : !serverLoading ? <div className="analytics-empty">该范围内没有并发观测数据。</div> : <SkeletonChart />}
         </section>
 
         <section className="panel analytics-panel">
-          <PanelHeading title="Player activity" detail="Observed time by local day" />
+          <PanelHeading title="玩家活动" detail="按本地日的观测时长" />
           <div className="player-picker">
-            <label>Find player<input value={playerQuery} onChange={(event) => setPlayerQuery(event.target.value)} placeholder="Search known players" /></label>
-            <label>Player activity<select value={selectedUserID} onChange={(event) => setSelectedUserID(event.target.value)}><option value="">Select player</option>{visiblePlayers.map((player) => <option key={player.user_id} value={player.user_id}>{player.name || player.account_name || player.user_id}</option>)}</select></label>
+            <label>查找玩家<input value={playerQuery} onChange={(event) => setPlayerQuery(event.target.value)} placeholder="搜索已知玩家" /></label>
+            <label>玩家活动<select value={selectedUserID} onChange={(event) => setSelectedUserID(event.target.value)}><option value="">选择玩家</option>{visiblePlayers.map((player) => <option key={player.user_id} value={player.user_id}>{player.name || player.account_name || player.user_id}</option>)}</select></label>
           </div>
-          {!selectedUserID ? <div className="analytics-empty">Select a known player to inspect daily activity.</div>
-            : matchingPlayer?.daily.length ? <ActivityChart kind="bar" label={`${matchingPlayer.name || matchingPlayer.user_id} daily activity`} points={matchingPlayer.daily.map((point) => ({ date: point.date, value: point.observed_ms }))} />
-            : !playerLoading ? <div className="analytics-empty">No observed activity for this player and range.</div> : <SkeletonChart />}
+          {!selectedUserID ? <div className="analytics-empty">选择已知玩家以查看每日活动。</div>
+            : matchingPlayer?.daily.length ? <ActivityChart kind="bar" label={`${matchingPlayer.name || matchingPlayer.user_id} 每日活动`} points={matchingPlayer.daily.map((point) => ({ date: point.date, value: point.observed_ms }))} />
+            : !playerLoading ? <div className="analytics-empty">该玩家在此范围内没有观测活动。</div> : <SkeletonChart />}
         </section>
       </div>
 
       <section className="panel analytics-panel ranking-panel">
-        <PanelHeading title="Player ranking" detail="Observed duration">
-          <ToggleGroup label="Ranking period" options={[['today', 'Today'], ['week', 'Week']]} value={rankingPeriod} onChange={(value) => setRankingPeriod(value as Period)} />
+        <PanelHeading title="玩家排行" detail="观测时长">
+          <ToggleGroup label="排行周期" options={[['today', '今日'], ['week', '本周']]} value={rankingPeriod} onChange={(value) => setRankingPeriod(value as Period)} />
         </PanelHeading>
-        {matchingSummary?.ranking.length ? <div className="ranking-wrap"><table className="ranking-table"><caption>Player activity ranking</caption><thead><tr><th scope="col">#</th><th scope="col">Player</th><th scope="col">Duration</th></tr></thead><tbody>{matchingSummary.ranking.map((entry, index) => <tr key={entry.user_id}><td>{index + 1}</td><th scope="row"><span>{entry.name || entry.user_id}</span><small className={entry.online ? 'online' : 'offline'}>{entry.online ? 'Online' : 'Offline'}</small></th><td>{formatDuration(entry.observed_ms)}</td></tr>)}</tbody></table></div>
-          : !summaryLoading ? <div className="analytics-empty">No ranking activity for this period.</div> : <SkeletonChart />}
+        {matchingSummary?.ranking.length ? <div className="ranking-wrap"><table className="ranking-table"><caption>玩家活动排行</caption><thead><tr><th scope="col">#</th><th scope="col">玩家</th><th scope="col">时长</th></tr></thead><tbody>{matchingSummary.ranking.map((entry, index) => <tr key={entry.user_id}><td>{index + 1}</td><th scope="row"><span>{entry.name || entry.user_id}</span><small className={entry.online ? 'online' : 'offline'}>{entry.online ? '在线' : '离线'}</small></th><td>{formatDuration(entry.observed_ms)}</td></tr>)}</tbody></table></div>
+          : !summaryLoading ? <div className="analytics-empty">该周期没有排行活动数据。</div> : <SkeletonChart />}
       </section>
     </div>
 
-    <section className="panel analytics-panel behavior-ranking-panel" aria-label="Trajectory behavior ranking">
+    <section className="panel analytics-panel behavior-ranking-panel" aria-label="轨迹行为排行">
       <PanelHeading
         title="轨迹行为排行"
         detail={behavior?.note ?? '由位置轨迹推导 · 非政策在线时长'}
       >
         <div className="behavior-rank-controls">
           <ToggleGroup
-            label="Behavior range"
+            label="行为范围"
             options={[['today', '今日'], ['7d', '7 天']]}
             value={behaviorRange}
             onChange={(value) => setBehaviorRange(value as BehaviorRankRange)}
           />
           <ToggleGroup
-            label="Behavior sort"
+            label="行为排序"
             options={[
               ['traveling', '跑图'],
               ['stationary', '挂机'],
@@ -204,7 +204,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
       {behavior?.ranking.length ? (
         <div className="ranking-wrap">
           <table className="ranking-table behavior-ranking-table">
-            <caption>Trajectory behavior ranking</caption>
+            <caption>轨迹行为排行</caption>
             <thead>
               <tr>
                 <th scope="col">#</th>
@@ -223,7 +223,7 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
                   <td>{index + 1}</td>
                   <th scope="row">
                     <span>{entry.name || entry.user_id}</span>
-                    <small className={entry.online ? 'online' : 'offline'}>{entry.online ? 'Online' : 'Offline'}</small>
+                    <small className={entry.online ? 'online' : 'offline'}>{entry.online ? '在线' : '离线'}</small>
                   </th>
                   <td>{DOMINANT_ZH[entry.dominant_class] ?? entry.dominant_class}</td>
                   <td>{Math.round(entry.traveling_share * 100)}%</td>

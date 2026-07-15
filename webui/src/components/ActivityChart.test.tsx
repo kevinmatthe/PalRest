@@ -13,9 +13,9 @@ describe('ActivityChart', () => {
     expect(screen.getByRole('img', { name: 'Concurrent players' })).toBeInTheDocument();
     expect(screen.getAllByTestId('line-segment')).toHaveLength(2);
     expect(screen.queryByRole('row', { name: /10:00/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Show data table' }));
+    fireEvent.click(screen.getByRole('button', { name: '显示数据表' }));
     expect(screen.getByRole('row', { name: '10:00 2' })).toBeInTheDocument();
-    expect(screen.getByRole('row', { name: '10:05 Missing' })).toBeInTheDocument();
+    expect(screen.getByRole('row', { name: '10:05 缺失' })).toBeInTheDocument();
   });
 
   it.each([[[]], [[{ at: '10:00', value: null }]]])('never renders invalid geometry for empty/all-null lines', (points) => {
@@ -28,7 +28,7 @@ describe('ActivityChart', () => {
       { date: '2026-07-10', value: 0 }, { date: '2026-07-11', value: 3_600_000 },
     ]} />);
     expect(screen.getAllByTestId('bar')).toHaveLength(2);
-    fireEvent.click(screen.getByRole('button', { name: 'Show data table' }));
+    fireEvent.click(screen.getByRole('button', { name: '显示数据表' }));
     expect(screen.getByRole('row', { name: '2026-07-10 0 ms' })).toBeInTheDocument();
     expect(screen.getByRole('row', { name: '2026-07-11 3600000 ms' })).toBeInTheDocument();
   });
@@ -38,12 +38,12 @@ describe('ActivityChart', () => {
     const { container } = render(<ActivityChart kind="line" label="Large series" points={points} />);
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     expect(container.querySelector('desc')?.textContent?.length).toBeLessThan(150);
-    const button = screen.getByRole('button', { name: 'Show data table' });
+    const button = screen.getByRole('button', { name: '显示数据表' });
     expect(button).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(button);
     expect(screen.getAllByRole('row')).toHaveLength(201);
-    expect(screen.getByRole('row', { name: 'point-0 Missing' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Hide data table' }));
+    expect(screen.getByRole('row', { name: 'point-0 缺失' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '隐藏数据表' }));
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
