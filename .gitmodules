@@ -1,0 +1,4 @@
+[submodule "PalworldSaveTools"]
+	path = PalworldSaveTools
+	url = https://github.com/deafdudecomputers/PalworldSaveTools
+	branch = main
