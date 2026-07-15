@@ -14,16 +14,20 @@ RUN go test ./... && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/p
 
 FROM python:3.11-slim AS save-worker
 
-ARG PALWORLD_SAVE_TOOLS_REF=673505c1abdb143fb3835213b0a1ed57bd3cdd0b
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ARG PIP_EXTRA_INDEX_URL=
 
+# PalworldSaveTools is a git submodule (see .gitmodules). Pin is the
+# gitlink commit on the parent branch — not re-cloned on every image build.
+# Host prerequisite: git submodule update --init --depth 1 PalworldSaveTools
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates g++ git \
+    && apt-get install -y --no-install-recommends ca-certificates g++ \
     && rm -rf /var/lib/apt/lists/*
-RUN git clone https://github.com/deafdudecomputers/PalworldSaveTools.git /tmp/PalworldSaveTools \
-    && cd /tmp/PalworldSaveTools \
-    && git checkout ${PALWORLD_SAVE_TOOLS_REF}
+
+COPY PalworldSaveTools /tmp/PalworldSaveTools
+RUN test -d /tmp/PalworldSaveTools/src/palsav \
+    && test -d /tmp/PalworldSaveTools/src/palsav/palooz
+
 RUN python -m venv /opt/palrest-save-worker \
     && /opt/palrest-save-worker/bin/pip install --no-cache-dir --upgrade pip setuptools wheel \
     && /opt/palrest-save-worker/bin/pip install --no-cache-dir \

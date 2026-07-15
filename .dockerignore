@@ -12,3 +12,11 @@ webui/node_modules
 webui/dist
 webui/.vite
 node_modules
+# Submodule is copied for save-worker; drop its git metadata and bulk noise.
+PalworldSaveTools/.git
+PalworldSaveTools/tests
+PalworldSaveTools/resources
+PalworldSaveTools/changelogs.md
+PalworldSaveTools/AGENTS.md
+PalworldSaveTools/scripts
+PalworldSaveTools/build
