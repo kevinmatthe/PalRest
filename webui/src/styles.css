@@ -433,6 +433,34 @@ select:focus-visible {
   cursor: pointer;
 }
 .live-map-open-timeline:hover { background: #ffe7b0; }
+/* Permanent player name labels on the live map (always visible). */
+.leaflet-tooltip.live-map-name-label {
+  padding: 0.12rem 0.4rem;
+  border: 1px solid rgba(15, 114, 133, 0.55);
+  border-radius: 0.3rem;
+  color: #0d3d47;
+  background: rgba(255, 253, 247, 0.94);
+  box-shadow: 0 0.15rem 0.45rem rgba(20, 36, 31, 0.18);
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1.25;
+  white-space: nowrap;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.leaflet-tooltip.live-map-name-label::before {
+  border-top-color: rgba(15, 114, 133, 0.45);
+}
+.leaflet-tooltip.live-map-name-label.is-active {
+  border-color: #ca8519;
+  color: #6a4210;
+  background: #fff2d5;
+  box-shadow: 0 0 0 1px rgba(202, 133, 25, 0.35), 0 0.2rem 0.5rem rgba(106, 66, 16, 0.2);
+}
+.leaflet-tooltip.live-map-name-label.is-active::before {
+  border-top-color: #ca8519;
+}
 @media (min-width: 960px) {
   .live-map-stage {
     grid-template-columns: minmax(0, 1fr) minmax(15rem, 19rem);

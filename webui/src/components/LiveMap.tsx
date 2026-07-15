@@ -199,7 +199,15 @@ export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
         className: `live-map-marker${active ? ' is-active' : ''}`,
       });
       const label = player.name || player.account_name || player.user_id;
-      marker.bindTooltip(label, { direction: 'top', opacity: 0.95, permanent: active });
+      // Always show names on the map (not only on hover).
+      marker.bindTooltip(label, {
+        direction: 'top',
+        opacity: 0.95,
+        permanent: true,
+        sticky: false,
+        className: `live-map-name-label${active ? ' is-active' : ''}`,
+        offset: L.point(0, -6),
+      });
       marker.on('click', () => {
         setSelectedID(player.user_id);
         try {
