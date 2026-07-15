@@ -52,7 +52,8 @@ const FallbackTileLayer = L.TileLayer.extend({
   },
 }) as unknown as new (url: string, options?: L.TileLayerOptions) => L.TileLayer;
 
-const POLL_MS = 5_000;
+/** Frontend refresh of /live/positions. Actual coord freshness still follows Guard poll_interval. */
+const POLL_MS = 1_000;
 
 export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
   const mapElementRef = useRef<HTMLDivElement>(null);
