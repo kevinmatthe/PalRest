@@ -119,6 +119,8 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.healthz)
 	mux.HandleFunc("GET /readyz", server.readyz)
+	// Prometheus / VictoriaMetrics scrape target (public, no auth — firewall or scrape network).
+	mux.HandleFunc("GET /metrics", server.getPrometheusMetrics)
 	mux.HandleFunc("GET /api/v1/admin/session", server.getAdminSession)
 	mux.HandleFunc("POST /api/v1/admin/login", server.login)
 	mux.HandleFunc("POST /api/v1/admin/logout", server.logout)
