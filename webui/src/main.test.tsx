@@ -47,34 +47,34 @@ afterEach(() => vi.useRealTimers());
 describe('App analytics navigation and refresh ownership', () => {
   it('switches Overview and Analytics with aria-current and policy back returns to Overview', async () => {
     render(<App />);
-    const overview = await screen.findByRole('button', { name: 'Overview' });
-    const analytics = screen.getByRole('button', { name: 'Analytics' });
+    const overview = await screen.findByRole('button', { name: '总览' });
+    const analytics = screen.getByRole('button', { name: '分析' });
     expect(overview).toHaveAttribute('aria-current', 'page');
     fireEvent.click(analytics);
     expect(analytics).toHaveAttribute('aria-current', 'page');
     expect(overview).not.toHaveAttribute('aria-current');
-    expect(screen.getByRole('button', { name: 'Manage policy' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Manage policy' }));
+    expect(screen.getByRole('button', { name: '策略管理' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '策略管理' }));
     expect(screen.getByRole('heading', { name: 'Policy manager' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Back to dashboard' }));
-    expect(screen.getByRole('button', { name: 'Overview' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('button', { name: '总览' })).toHaveAttribute('aria-current', 'page');
   });
 
   it('logout from Analytics returns to Overview', async () => {
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Analytics' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Admin' }));
+    fireEvent.click(await screen.findByRole('button', { name: '分析' }));
+    fireEvent.click(screen.getByRole('button', { name: '管理员' }));
     await waitFor(() => expect(api.logoutAdmin).toHaveBeenCalledTimes(1));
-    expect(screen.getByRole('button', { name: 'Overview' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('button', { name: '总览' })).toHaveAttribute('aria-current', 'page');
   });
 
   it('manual refresh updates analytics immediately and one cadence tick refreshes common data and analytics', async () => {
     vi.useFakeTimers();
     render(<App />);
     await act(async () => { await Promise.resolve(); });
-    fireEvent.click(screen.getByRole('button', { name: 'Analytics' }));
+    fireEvent.click(screen.getByRole('button', { name: '分析' }));
     expect(screen.getByText('Analytics dashboard token 0')).toBeInTheDocument();
-    fireEvent.click(screen.getByTitle('Refresh now'));
+    fireEvent.click(screen.getByTitle('立即刷新'));
     expect(screen.getByText('Analytics dashboard token 1')).toBeInTheDocument();
     await act(async () => { await Promise.resolve(); });
     const callsAfterManual = vi.mocked(api.getHealth).mock.calls.length;
@@ -91,7 +91,7 @@ describe('App analytics navigation and refresh ownership', () => {
     });
     render(<App />);
     expect(firstSignal?.aborted).toBe(false);
-    fireEvent.click(screen.getByTitle('Refresh now'));
+    fireEvent.click(screen.getByTitle('立即刷新'));
     expect(firstSignal?.aborted).toBe(true);
   });
 
@@ -99,7 +99,7 @@ describe('App analytics navigation and refresh ownership', () => {
     vi.useFakeTimers();
     render(<App />);
     await act(async () => { await Promise.resolve(); });
-    fireEvent.click(screen.getByRole('button', { name: 'Analytics' }));
+    fireEvent.click(screen.getByRole('button', { name: '分析' }));
     vi.mocked(api.getHealth).mockRejectedValueOnce(new Error('common unavailable'));
     await act(async () => { vi.advanceTimersByTime(10_000); await Promise.resolve(); });
     expect(screen.getByText('Analytics dashboard token 1')).toBeInTheDocument();
@@ -129,7 +129,7 @@ describe('public timeline navigation', () => {
     fireEvent.click(await screen.findByRole('button', { name: '时间轴' }));
     expect(screen.getByText(/Player timeline token/)).toBeInTheDocument();
     vi.mocked(api.getAdminSession).mockResolvedValueOnce({ ...admin, authenticated: false });
-    fireEvent.click(screen.getByTitle('Refresh now'));
+    fireEvent.click(screen.getByTitle('立即刷新'));
     await waitFor(() => expect(screen.getByRole('button', { name: '时间轴' })).toHaveAttribute('aria-current', 'page'));
     expect(screen.getByText(/Player timeline token/)).toHaveTextContent('private false');
   });
@@ -140,7 +140,7 @@ describe('public timeline navigation', () => {
     const current = screen.getByText(/Player timeline token/).textContent;
     const session = deferred<api.AdminSession>();
     vi.mocked(api.getAdminSession).mockReturnValueOnce(session.promise);
-    fireEvent.click(screen.getByTitle('Refresh now'));
+    fireEvent.click(screen.getByTitle('立即刷新'));
     expect(screen.getByText(/Player timeline token/)).toHaveTextContent('private true');
     session.resolve({ ...admin, authenticated: false });
     await waitFor(() => expect(screen.getByText(/Player timeline token/)).toHaveTextContent('private false'));
@@ -152,7 +152,7 @@ describe('public timeline navigation', () => {
     expect(screen.getByText(/Player timeline token/)).toBeInTheDocument();
     vi.mocked(api.getAdminSession).mockResolvedValueOnce({ ...admin, authenticated: false });
     vi.mocked(api.getHealth).mockRejectedValueOnce(new Error('health offline'));
-    fireEvent.click(screen.getByTitle('Refresh now'));
+    fireEvent.click(screen.getByTitle('立即刷新'));
     await waitFor(() => expect(screen.getByText(/Player timeline token/)).toHaveTextContent('private false'));
     expect(screen.getByRole('button', { name: '时间轴' })).toBeInTheDocument();
     expect(screen.getByText('health offline')).toBeInTheDocument();
