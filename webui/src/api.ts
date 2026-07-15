@@ -300,6 +300,7 @@ export type WorldPOI = {
   x: number;
   y: number;
   guild_name?: string;
+  guild_id?: string;
 };
 
 export type PlayerWorldPOIsResponse = {
