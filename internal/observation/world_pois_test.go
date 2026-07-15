@@ -109,3 +109,41 @@ func TestWorldPOIProviderListAllGuildBasesMerges(t *testing.T) {
 		t.Fatalf("got=%+v", got)
 	}
 }
+
+func TestWorldPOIProviderListAllGuildBasesDedupesNearCamps(t *testing.T) {
+	live := NewLiveGameData()
+	live.Update(palworld.GameDataSnapshot{
+		ObservedAt: time.Unix(100, 0).UTC(),
+		PalBoxes: []palworld.LivePalBox{
+			// Same guild camp a few hundred units from save base — should collapse.
+			{ID: "pb-g1-dup", GuildID: "g1", GuildName: "Alpha", X: 120, Y: 80},
+			// Far enough to keep as a second base for same guild.
+			{ID: "pb-g1-far", GuildID: "g1", GuildName: "Alpha", X: 50_000, Y: 0},
+		},
+	})
+	provider := &WorldPOIProvider{
+		Save: savePOIFake{allBases: store.GuildBasesCatalog{
+			Source: "save_import",
+			POIs: []store.WorldPOI{{
+				ID: "gb-g1-base", NameZh: "公会「Alpha」据点", Kind: "guild_base",
+				X: 100, Y: 100, GuildName: "Alpha", GuildID: "g1", Source: "save_import",
+			}},
+		}},
+		Live: live,
+	}
+	got, err := provider.ListAllGuildBases(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// save + far live only (near live dropped)
+	if len(got.POIs) != 2 {
+		t.Fatalf("pois=%d want 2: %+v", len(got.POIs), got.POIs)
+	}
+	ids := map[string]bool{}
+	for _, p := range got.POIs {
+		ids[p.ID] = true
+	}
+	if !ids["gb-g1-base"] || !ids["pb-g1-far"] || ids["pb-g1-dup"] {
+		t.Fatalf("ids=%v", ids)
+	}
+}
