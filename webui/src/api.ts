@@ -287,6 +287,44 @@ export function getAnalyticsBehavior(
   return getJSON<AnalyticsBehaviorRanking>(`/api/v1/analytics/behavior?${query}`, signal);
 }
 
+export type HealthRange = '6h' | '24h' | '7d';
+
+export type ServerFPSPoint = {
+  at: string;
+  fps: number;
+  frame_time: number;
+  players: number;
+};
+
+export type LatencySummaryPoint = {
+  at: string;
+  sample_count: number;
+  missing_count: number;
+  min: number | null;
+  p50: number | null;
+  p90: number | null;
+  p99: number | null;
+  max: number | null;
+};
+
+export type AnalyticsHealth = {
+  range: HealthRange;
+  start: string;
+  end: string;
+  latest_fps: number | null;
+  latest_players: number | null;
+  latest_p50: number | null;
+  latest_p90: number | null;
+  fps: ServerFPSPoint[];
+  latency: LatencySummaryPoint[];
+  note?: string;
+};
+
+export function getAnalyticsHealth(range: HealthRange = '24h', signal?: AbortSignal) {
+  const query = new URLSearchParams({ range });
+  return getJSON<AnalyticsHealth>(`/api/v1/analytics/health?${query}`, signal);
+}
+
 export function getPlayerTimeline(userID: string, start: string, end: string, limit = 500, signal?: AbortSignal, includePrivate = false) {
   const query = new URLSearchParams({ start, end, limit: String(limit) });
   const prefix = includePrivate ? '/api/v1/admin/players' : '/api/v1/players';

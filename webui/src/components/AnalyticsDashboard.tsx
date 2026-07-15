@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, Clock3, TrendingUp, Users } from 'lucide-react';
+import { Activity, Clock3, Gauge, Signal, TrendingUp, Users } from 'lucide-react';
 import {
   getAnalyticsActivity,
   getAnalyticsBehavior,
+  getAnalyticsHealth,
   getAnalyticsSummary,
   type AnalyticsActivity,
   type AnalyticsBehaviorRanking,
+  type AnalyticsHealth,
   type AnalyticsSummary,
   type BehaviorRankRange,
   type BehaviorRankSort,
+  type HealthRange,
   type Player,
 } from '../api';
 import { formatDateTime, formatDuration } from '../utils';
@@ -24,9 +27,15 @@ const DOMINANT_ZH: Record<string, string> = {
   unknown: '未知',
 };
 
+function formatMs(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '--';
+  return `${Math.round(value)} ms`;
+}
+
 export function AnalyticsDashboard({ players, refreshKey }: { players: Player[]; refreshKey: number }) {
   const [rankingPeriod, setRankingPeriod] = useState<Period>('today');
   const [range, setRange] = useState<Range>('7d');
+  const [healthRange, setHealthRange] = useState<HealthRange>('24h');
   const [selectedUserID, setSelectedUserID] = useState('');
   const [playerQuery, setPlayerQuery] = useState('');
   const [summary, setSummary] = useState<AnalyticsSummary>();
@@ -35,12 +44,16 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
   const [serverKey, setServerKey] = useState<Range>();
   const [playerActivity, setPlayerActivity] = useState<AnalyticsActivity>();
   const [playerKey, setPlayerKey] = useState('');
+  const [health, setHealth] = useState<AnalyticsHealth>();
+  const [healthKey, setHealthKey] = useState<HealthRange>();
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [serverLoading, setServerLoading] = useState(true);
   const [playerLoading, setPlayerLoading] = useState(false);
+  const [healthLoading, setHealthLoading] = useState(true);
   const [summaryError, setSummaryError] = useState('');
   const [serverError, setServerError] = useState('');
   const [playerError, setPlayerError] = useState('');
+  const [healthError, setHealthError] = useState('');
   const [behaviorRange, setBehaviorRange] = useState<BehaviorRankRange>('today');
   const [behaviorSort, setBehaviorSort] = useState<BehaviorRankSort>('traveling');
   const [behavior, setBehavior] = useState<AnalyticsBehaviorRanking>();
@@ -83,6 +96,23 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
 
   useEffect(() => {
     const controller = new AbortController();
+    setHealthLoading(true);
+    setHealthError('');
+    getAnalyticsHealth(healthRange, controller.signal).then((next) => {
+      if (!controller.signal.aborted && next.range === healthRange) {
+        setHealth(next);
+        setHealthKey(healthRange);
+      }
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) setHealthError(error instanceof Error ? error.message : '无法加载服务器健康');
+    }).finally(() => {
+      if (!controller.signal.aborted) setHealthLoading(false);
+    });
+    return () => controller.abort();
+  }, [healthRange, refreshKey]);
+
+  useEffect(() => {
+    const controller = new AbortController();
     setBehaviorLoading(true);
     setBehaviorError('');
     getAnalyticsBehavior(behaviorRange, behaviorSort, 25, controller.signal).then((next) => {
@@ -122,18 +152,21 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
     if (!query) return players;
     return players.filter((player) => player.user_id === selectedUserID || [player.name, player.account_name, player.user_id].some((value) => value.toLowerCase().includes(query)));
   }, [playerQuery, players, selectedUserID]);
-  const errors = [summaryError, serverError, playerError, behaviorError].filter(Boolean).join(' · ');
+  const errors = [summaryError, serverError, playerError, behaviorError, healthError].filter(Boolean).join(' · ');
   const matchingSummary = summaryKey === rankingPeriod ? summary : undefined;
   const matchingServer = serverKey === range ? serverActivity : undefined;
   const matchingPlayer = playerKey === `${range}:${selectedUserID}` ? playerActivity?.player : undefined;
+  const matchingHealth = healthKey === healthRange ? health : undefined;
   const firstLoad = (summaryLoading && !matchingSummary) || (serverLoading && !matchingServer);
   const asOf = matchingSummary?.as_of ?? undefined;
   const stale = asOf ? Date.now() - new Date(asOf).getTime() > 20_000 : false;
+  const hasFPS = Boolean(matchingHealth?.fps.length);
+  const hasLatency = Boolean(matchingHealth?.latency.length);
 
   return <section className="analytics-dashboard" aria-labelledby="analytics-heading" aria-busy={firstLoad}>
     <header className="analytics-heading">
       <div><p className="eyebrow">玩家活动</p><h2 id="analytics-heading">分析</h2></div>
-      {(summaryLoading || serverLoading || playerLoading || behaviorLoading) && !firstLoad ? <span className="analytics-refreshing" role="status">正在刷新…</span> : null}
+      {(summaryLoading || serverLoading || playerLoading || behaviorLoading || healthLoading) && !firstLoad ? <span className="analytics-refreshing" role="status">正在刷新…</span> : null}
     </header>
     {firstLoad ? <div className="analytics-loading"><span className="skeleton-row" /><span>正在加载分析</span></div> : null}
     {errors ? <div className="notice analytics-notice" role="alert">{errors}</div> : null}
@@ -144,6 +177,55 @@ export function AnalyticsDashboard({ players, refreshKey }: { players: Player[];
       <AnalyticsMetric icon={<TrendingUp size={19} />} label="今日峰值" value={matchingSummary?.peak_at ? String(matchingSummary.peak_count) : '--'} detail={matchingSummary?.peak_at ? formatDateTime(matchingSummary.peak_at) : '尚无峰值'} />
       <AnalyticsMetric icon={<Users size={19} />} label="今日活跃" value={matchingSummary?.as_of ? String(matchingSummary.active_players) : '--'} detail="去重观测玩家数" />
     </div>
+
+    <section className="panel analytics-panel health-panel" aria-label="服务器健康">
+      <PanelHeading title="服务器健康" detail={matchingHealth?.note ?? 'FPS 与全服延迟分位 · 每次轮询汇总'}>
+        <ToggleGroup
+          label="健康时间范围"
+          options={[['6h', '6 小时'], ['24h', '24 小时'], ['7d', '7 天']]}
+          value={healthRange}
+          onChange={(value) => setHealthRange(value as HealthRange)}
+        />
+      </PanelHeading>
+      <div className="analytics-metrics" aria-label="健康快照">
+        <AnalyticsMetric icon={<Gauge size={19} />} label="最新 FPS" value={matchingHealth?.latest_fps != null ? String(matchingHealth.latest_fps) : '--'} detail="server metrics 采样" />
+        <AnalyticsMetric icon={<Users size={19} />} label="采样在线" value={matchingHealth?.latest_players != null ? String(matchingHealth.latest_players) : '--'} detail="最近一次服务器指标" />
+        <AnalyticsMetric icon={<Signal size={19} />} label="延迟 P50" value={formatMs(matchingHealth?.latest_p50)} detail="在线玩家延迟中位" />
+        <AnalyticsMetric icon={<Signal size={19} />} label="延迟 P90" value={formatMs(matchingHealth?.latest_p90)} detail="在线玩家延迟 P90" />
+      </div>
+      {!hasFPS && !hasLatency && !healthLoading ? (
+        <div className="analytics-empty">该范围内没有服务器健康采样。部署后需等待轮询写入 FPS 与延迟汇总。</div>
+      ) : healthLoading && !matchingHealth ? (
+        <SkeletonChart />
+      ) : (
+        <div className="health-charts">
+          {hasFPS ? (
+            <>
+              <div className="health-chart-block">
+                <h3>服务器 FPS</h3>
+                <ActivityChart kind="line" label="服务器 FPS" points={matchingHealth!.fps.map((point) => ({ at: point.at, value: point.fps }))} />
+              </div>
+              <div className="health-chart-block">
+                <h3>指标在线人数</h3>
+                <ActivityChart kind="line" label="指标在线人数" points={matchingHealth!.fps.map((point) => ({ at: point.at, value: point.players }))} />
+              </div>
+            </>
+          ) : null}
+          {hasLatency ? (
+            <>
+              <div className="health-chart-block">
+                <h3>延迟 P50 (ms)</h3>
+                <ActivityChart kind="line" label="延迟 P50" points={matchingHealth!.latency.map((point) => ({ at: point.at, value: point.p50 }))} />
+              </div>
+              <div className="health-chart-block">
+                <h3>延迟 P90 (ms)</h3>
+                <ActivityChart kind="line" label="延迟 P90" points={matchingHealth!.latency.map((point) => ({ at: point.at, value: point.p90 }))} />
+              </div>
+            </>
+          ) : null}
+        </div>
+      )}
+    </section>
 
     <div className="analytics-main">
       <div className="analytics-charts">

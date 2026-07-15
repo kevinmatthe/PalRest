@@ -177,7 +177,12 @@ func (r *Repository) CleanupAnalytics(ctx context.Context, cutoff time.Time, cut
 		for _, d := range []struct {
 			q string
 			a any
-		}{{`DELETE FROM player_sessions WHERE rowid IN (SELECT rowid FROM player_sessions WHERE ended_at IS NOT NULL AND ended_at<? LIMIT ?)`, formatTime(cutoff)}, {`DELETE FROM concurrency_buckets WHERE rowid IN (SELECT rowid FROM concurrency_buckets WHERE bucket_start<? LIMIT ?)`, formatTime(cutoff)}, {`DELETE FROM player_daily_stats WHERE rowid IN (SELECT rowid FROM player_daily_stats WHERE local_date<? LIMIT ?)`, cutoffDate}} {
+		}{
+			{`DELETE FROM player_sessions WHERE rowid IN (SELECT rowid FROM player_sessions WHERE ended_at IS NOT NULL AND ended_at<? LIMIT ?)`, formatTime(cutoff)},
+			{`DELETE FROM concurrency_buckets WHERE rowid IN (SELECT rowid FROM concurrency_buckets WHERE bucket_start<? LIMIT ?)`, formatTime(cutoff)},
+			{`DELETE FROM player_daily_stats WHERE rowid IN (SELECT rowid FROM player_daily_stats WHERE local_date<? LIMIT ?)`, cutoffDate},
+			{`DELETE FROM ping_summary_samples WHERE rowid IN (SELECT rowid FROM ping_summary_samples WHERE observed_at<? LIMIT ?)`, formatObservationTime(cutoff)},
+		} {
 			if _, err := tx.tx.ExecContext(ctx, d.q, d.a, batchSize); err != nil {
 				return fmt.Errorf("cleanup analytics batch: %w", err)
 			}

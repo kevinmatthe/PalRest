@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getAnalyticsActivity, getAnalyticsSummary, getGuildBases, getLivePositions, getPlayerTimeline, getPlayerWorldPOIs } from './api';
-import type { AnalyticsActivity, AnalyticsSummary, PlayerTimelineResponse, PlayerWorldPOIsResponse } from './api';
+import { getAnalyticsActivity, getAnalyticsHealth, getAnalyticsSummary, getGuildBases, getLivePositions, getPlayerTimeline, getPlayerWorldPOIs } from './api';
+import type { AnalyticsActivity, AnalyticsHealth, AnalyticsSummary, PlayerTimelineResponse, PlayerWorldPOIsResponse } from './api';
 
 const summaryFixture = {
   online_count: 1, as_of: null, today_observed_ms: 60_000, peak_count: 2, peak_at: null,
@@ -45,6 +45,26 @@ describe('analytics API', () => {
   it('preserves existing API error behavior', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ error: { message: 'bad range' } }), { status: 400 }));
     await expect(getAnalyticsActivity('7d')).rejects.toMatchObject({ message: 'bad range', status: 400 });
+  });
+
+  it('requests server health series for the selected range', async () => {
+    const payload = {
+      range: '6h',
+      start: '2026-07-11T06:00:00Z',
+      end: '2026-07-11T12:00:00Z',
+      latest_fps: 60,
+      latest_players: 3,
+      latest_p50: 42,
+      latest_p90: 80,
+      fps: [{ at: '2026-07-11T11:00:00Z', fps: 60, frame_time: 16.6, players: 3 }],
+      latency: [{ at: '2026-07-11T11:00:00Z', sample_count: 3, missing_count: 0, min: 20, p50: 42, p90: 80, p99: 90, max: 100 }],
+    } satisfies AnalyticsHealth;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(payload)));
+    const controller = new AbortController();
+
+    await expect(getAnalyticsHealth('6h', controller.signal)).resolves.toEqual(payload);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/analytics/health?range=6h');
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ signal: controller.signal }));
   });
 });
 

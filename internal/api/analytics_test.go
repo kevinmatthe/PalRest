@@ -21,6 +21,8 @@ type fakeAnalyticsQueries struct {
 	buckets  []store.ConcurrencyBucket
 	daily    []store.DailyActivity
 	player   domain.Player
+	fps      []store.ServerFPSPoint
+	ping     []store.PingSummaryPoint
 	err      error
 	dailyErr error
 }
@@ -36,6 +38,12 @@ func (f fakeAnalyticsQueries) PlayerDailyActivity(context.Context, string, strin
 }
 func (f fakeAnalyticsQueries) Player(context.Context, string) (domain.Player, error) {
 	return f.player, f.dailyErr
+}
+func (f fakeAnalyticsQueries) ServerFPSSeries(context.Context, time.Time, time.Time, int) ([]store.ServerFPSPoint, error) {
+	return f.fps, f.err
+}
+func (f fakeAnalyticsQueries) PingSummarySeries(context.Context, time.Time, time.Time, int) ([]store.PingSummaryPoint, error) {
+	return f.ping, f.err
 }
 
 type fakeAnalyticsOnline struct {
@@ -58,6 +66,9 @@ func (r *observationRecorder) RecordAnalyticsObservation(_ context.Context, obse
 	return nil
 }
 func (*observationRecorder) CleanupAnalytics(context.Context, time.Time, string, int) error {
+	return nil
+}
+func (*observationRecorder) RecordPingSummary(context.Context, store.PingSummaryInput) error {
 	return nil
 }
 
@@ -113,6 +124,12 @@ func (f *captureAnalyticsQueries) Player(context.Context, string) (domain.Player
 		return domain.Player{}, store.ErrNotFound
 	}
 	return f.player, nil
+}
+func (f *captureAnalyticsQueries) ServerFPSSeries(context.Context, time.Time, time.Time, int) ([]store.ServerFPSPoint, error) {
+	return nil, nil
+}
+func (f *captureAnalyticsQueries) PingSummarySeries(context.Context, time.Time, time.Time, int) ([]store.PingSummaryPoint, error) {
+	return nil, nil
 }
 
 func (f fakeAnalyticsOnline) Current() ([]string, time.Time)   { return f.ids, f.at }
@@ -220,8 +237,55 @@ func TestAnalyticsActivityCanSkipConcurrencyQuery(t *testing.T) {
 	}
 }
 
+func TestAnalyticsHealthReturnsFPSAndLatencySeries(t *testing.T) {
+	at := time.Date(2026, 7, 8, 11, 0, 0, 0, time.UTC)
+	p50, p90 := 40.0, 90.0
+	q := fakeAnalyticsQueries{
+		fps: []store.ServerFPSPoint{{At: at, FPS: 58, FrameTime: 17.2, Players: 3}},
+		ping: []store.PingSummaryPoint{{
+			At: at, SampleCount: 3, MissingCount: 0,
+			P50: &p50, P90: &p90,
+		}},
+	}
+	res := httptest.NewRecorder()
+	analyticsServer(q, fakeAnalyticsOnline{}).Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/analytics/health?range=6h", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	var got struct {
+		Range         string `json:"range"`
+		LatestFPS     int    `json:"latest_fps"`
+		LatestPlayers int    `json:"latest_players"`
+		LatestP50     float64 `json:"latest_p50"`
+		LatestP90     float64 `json:"latest_p90"`
+		FPS           []struct {
+			FPS     int `json:"fps"`
+			Players int `json:"players"`
+		} `json:"fps"`
+		Latency []struct {
+			SampleCount int      `json:"sample_count"`
+			P50         *float64 `json:"p50"`
+			P90         *float64 `json:"p90"`
+		} `json:"latency"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Range != "6h" || got.LatestFPS != 58 || got.LatestPlayers != 3 || got.LatestP50 != 40 || got.LatestP90 != 90 {
+		t.Fatalf("latest fields: %+v", got)
+	}
+	if len(got.FPS) != 1 || got.FPS[0].FPS != 58 || len(got.Latency) != 1 || got.Latency[0].SampleCount != 3 {
+		t.Fatalf("series: fps=%+v latency=%+v", got.FPS, got.Latency)
+	}
+}
+
 func TestAnalyticsValidationAndErrors(t *testing.T) {
-	for _, path := range []string{"/api/v1/analytics/summary?ranking=year", "/api/v1/analytics/activity?range=8d", "/api/v1/analytics/activity?include_concurrency=sometimes"} {
+	for _, path := range []string{
+		"/api/v1/analytics/summary?ranking=year",
+		"/api/v1/analytics/activity?range=8d",
+		"/api/v1/analytics/activity?include_concurrency=sometimes",
+		"/api/v1/analytics/health?range=1h",
+	} {
 		res := httptest.NewRecorder()
 		analyticsServer(fakeAnalyticsQueries{}, fakeAnalyticsOnline{}).Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
 		if res.Code != http.StatusBadRequest {

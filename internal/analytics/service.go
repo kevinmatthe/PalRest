@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ const analyticsBucketSize = 5 * time.Minute
 type Recorder interface {
 	RecordAnalyticsObservation(context.Context, store.AnalyticsObservation) error
 	CleanupAnalytics(context.Context, time.Time, string, int) error
+	RecordPingSummary(context.Context, store.PingSummaryInput) error
 }
 
 type Service struct {
@@ -89,6 +91,10 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		s.mu.Unlock()
 		return err
 	}
+	// Latency summary is best-effort: session analytics already committed.
+	if err := s.repo.RecordPingSummary(ctx, summarizeOnlinePings(at, orderedPlayers)); err != nil {
+		slog.Warn("record ping summary failed", "error", err)
+	}
 	s.lastAt = at
 	s.asOf = at
 	s.online = current
@@ -105,6 +111,19 @@ func (s *Service) Observe(ctx context.Context, at time.Time, players []domain.Pl
 		}
 	}
 	return nil
+}
+
+func summarizeOnlinePings(at time.Time, players []domain.Player) store.PingSummaryInput {
+	pings := make([]float64, 0, len(players))
+	missing := 0
+	for _, p := range players {
+		if math.IsNaN(p.Ping) || math.IsInf(p.Ping, 0) || p.Ping < 0 {
+			missing++
+			continue
+		}
+		pings = append(pings, p.Ping)
+	}
+	return store.SummarizePings(at, pings, missing)
 }
 
 // SetLocation changes the calendar timezone used by future observations.

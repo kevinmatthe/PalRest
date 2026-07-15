@@ -230,6 +230,11 @@ select:focus-visible {
 .analytics-toggle button[aria-pressed="true"] { border-color: #bbcec5; color: #1f5245; background: #fff; box-shadow: 0 0.15rem 0.4rem rgba(32, 62, 50, 0.09); }
 .analytics-empty { display: grid; min-height: 10rem; place-items: center; padding: 1rem; border: 1px dashed #ccd8d2; border-radius: 0.5rem; color: #6d7973; background: #f8faf9; text-align: center; font-size: 0.8125rem; }
 .analytics-skeleton { display: grid; gap: 0.5rem; min-height: 10rem; align-content: center; }
+.health-panel { margin-bottom: 0.75rem; }
+.health-charts { display: grid; min-width: 0; gap: 0.75rem; }
+.health-chart-block { display: grid; gap: 0.35rem; min-width: 0; }
+.health-chart-block h3 { margin: 0; color: #3f534b; font-size: 0.8125rem; font-weight: 800; }
+.health-chart-block .activity-chart svg { height: clamp(8.5rem, 22vw, 12rem); }
 .player-picker { display: grid; gap: 0.65rem; margin-bottom: 0.75rem; }
 .player-picker label { display: grid; gap: 0.3rem; color: #53635c; font-size: 0.75rem; font-weight: 800; }
 .player-picker input, .player-picker select { width: 100%; min-height: 2.75rem; padding: 0 0.7rem; border: 1px solid #c8d4ce; border-radius: 0.5rem; color: #172033; background: #fff; }
@@ -255,6 +260,7 @@ select:focus-visible {
   .view-tabs button { min-width: 7.5rem; }
   .analytics-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .player-picker { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .health-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (min-width: 1120px) {

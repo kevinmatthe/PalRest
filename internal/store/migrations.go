@@ -304,3 +304,19 @@ ON player_private_samples(user_id, observed_at);
 CREATE INDEX player_private_samples_retention
 ON player_private_samples(observed_at, id);
 `
+
+// Per-poll online latency summary for analytics health charts (M2).
+const schemaV14 = `
+CREATE TABLE IF NOT EXISTS ping_summary_samples (
+    observed_at TEXT PRIMARY KEY,
+    sample_count INTEGER NOT NULL CHECK(sample_count >= 0),
+    missing_count INTEGER NOT NULL CHECK(missing_count >= 0),
+    ping_min REAL,
+    ping_p50 REAL,
+    ping_p90 REAL,
+    ping_p99 REAL,
+    ping_max REAL
+);
+CREATE INDEX IF NOT EXISTS ping_summary_samples_retention
+ON ping_summary_samples(observed_at);
+`

@@ -253,6 +253,84 @@ func (s *Server) getAnalyticsBehavior(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) getAnalyticsHealth(w http.ResponseWriter, r *http.Request) {
+	rangeName := r.URL.Query().Get("range")
+	if rangeName == "" {
+		rangeName = "24h"
+	}
+	hours := 24
+	switch rangeName {
+	case "6h":
+		hours = 6
+	case "24h":
+		hours = 24
+	case "7d":
+		hours = 24 * 7
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_request", "range must be 6h, 24h, or 7d")
+		return
+	}
+	end := s.now().UTC()
+	start := end.Add(-time.Duration(hours) * time.Hour)
+	const limit = 10_000
+	fpsSeries, err := s.analytics.ServerFPSSeries(r.Context(), start, end, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "server health query failed")
+		return
+	}
+	pingSeries, err := s.analytics.PingSummarySeries(r.Context(), start, end, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", "latency health query failed")
+		return
+	}
+	fpsOut := make([]map[string]any, 0, len(fpsSeries))
+	for _, p := range fpsSeries {
+		fpsOut = append(fpsOut, map[string]any{
+			"at":         p.At.UTC(),
+			"fps":        p.FPS,
+			"frame_time": p.FrameTime,
+			"players":    p.Players,
+		})
+	}
+	latOut := make([]map[string]any, 0, len(pingSeries))
+	for _, p := range pingSeries {
+		latOut = append(latOut, map[string]any{
+			"at":            p.At.UTC(),
+			"sample_count":  p.SampleCount,
+			"missing_count": p.MissingCount,
+			"min":           p.Min,
+			"p50":           p.P50,
+			"p90":           p.P90,
+			"p99":           p.P99,
+			"max":           p.Max,
+		})
+	}
+	// Latest snapshot cards
+	var latestFPS any
+	var latestPlayers any
+	if n := len(fpsSeries); n > 0 {
+		latestFPS = fpsSeries[n-1].FPS
+		latestPlayers = fpsSeries[n-1].Players
+	}
+	var latestP50, latestP90 any
+	if n := len(pingSeries); n > 0 {
+		latestP50 = pingSeries[n-1].P50
+		latestP90 = pingSeries[n-1].P90
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"range":          rangeName,
+		"start":          start,
+		"end":            end,
+		"latest_fps":     latestFPS,
+		"latest_players": latestPlayers,
+		"latest_p50":     latestP50,
+		"latest_p90":     latestP90,
+		"fps":            fpsOut,
+		"latency":        latOut,
+		"note":           "FPS from server_metric_samples; latency percentiles from each successful player poll.",
+	})
+}
+
 type activityPoint struct {
 	At       time.Time `json:"at"`
 	Average  *float64  `json:"average_count"`

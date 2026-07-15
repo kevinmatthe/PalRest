@@ -37,6 +37,10 @@ func (r *fakeRecorder) CleanupAnalytics(_ context.Context, cutoff time.Time, dat
 	return r.cleanupErr
 }
 
+func (r *fakeRecorder) RecordPingSummary(context.Context, store.PingSummaryInput) error {
+	return nil
+}
+
 func TestObserveSchedulesCleanupDailyWithLocalCutoffAndIgnoresFailure(t *testing.T) {
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	repo := &fakeRecorder{cleanupErr: errors.New("cleanup failed")}

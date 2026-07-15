@@ -34,6 +34,8 @@ type AnalyticsQueries interface {
 	Concurrency(context.Context, time.Time, time.Time) ([]store.ConcurrencyBucket, error)
 	PlayerDailyActivity(context.Context, string, string, string) ([]store.DailyActivity, error)
 	Player(context.Context, string) (domain.Player, error)
+	ServerFPSSeries(context.Context, time.Time, time.Time, int) ([]store.ServerFPSPoint, error)
+	PingSummarySeries(context.Context, time.Time, time.Time, int) ([]store.PingSummaryPoint, error)
 }
 
 type AnalyticsOnline interface {
@@ -132,6 +134,7 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 	mux.HandleFunc("GET /api/v1/analytics/summary", server.getAnalyticsSummary)
 	mux.HandleFunc("GET /api/v1/analytics/activity", server.getAnalyticsActivity)
 	mux.HandleFunc("GET /api/v1/analytics/behavior", server.getAnalyticsBehavior)
+	mux.HandleFunc("GET /api/v1/analytics/health", server.getAnalyticsHealth)
 	mux.HandleFunc("POST /api/v1/players/{userID}/reset", server.resetPlayer)
 	mux.HandleFunc("GET /api/v1/policies", server.getPolicies)
 	mux.HandleFunc("PUT /api/v1/policies", server.putPolicies)
