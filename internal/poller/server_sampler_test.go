@@ -125,7 +125,7 @@ func (r *timestampRecorder) RecordSettings(_ context.Context, at time.Time, _ do
 
 func newAsyncSamplerPoller(t *testing.T, reader ServerReader, interval time.Duration, guardService Guard) *Poller {
 	t.Helper()
-	p, err := New(&fakeClient{}, guardService, &fakeAnalytics{}, interval, "warning", "kick", time.Now,
+	p, err := New(&fakeClient{}, guardService, &fakeAnalytics{}, interval, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now,
 		WithServerObservations(reader, noOpServerRecorder{}), WithServerObservationTimeout(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +175,7 @@ func TestBlockedOptionalSamplingDoesNotDelayRunOnceOrApplyConfig(t *testing.T) {
 	awaitSignal(t, reader.metricsStarted, "metrics start")
 
 	applyDone := make(chan error, 1)
-	go func() { applyDone <- p.ApplyConfig(func() error { return nil }, "warning", "kick") }()
+	go func() { applyDone <- p.ApplyConfig(func() error { return nil }, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}") }()
 	select {
 	case err := <-applyDone:
 		if err != nil {
@@ -299,7 +299,7 @@ func TestSamplerCoalescesToNewestTimestampAndEvaluatesMetadataCadenceFromIt(t *t
 		metrics: make(chan time.Time, 3), info: make(chan time.Time, 3), settings: make(chan time.Time, 3),
 		secondMetricsRelease: make(chan struct{}),
 	}
-	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", func() time.Time { return now },
+	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", func() time.Time { return now },
 		WithServerObservations(reader, recorder), WithServerObservationTimeout(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -357,7 +357,7 @@ func TestSamplerCoalescesToNewestTimestampAndEvaluatesMetadataCadenceFromIt(t *t
 }
 
 func TestServerMetadataIntervalOptionOverridesDefaultCadence(t *testing.T) {
-	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now,
+	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now,
 		WithServerObservations(&fakeServerReader{}, &fakeServerRecorder{}), WithServerMetadataInterval(17*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -395,7 +395,7 @@ func (*contextBlockingRecorder) RecordSettings(context.Context, time.Time, domai
 
 func TestSamplerCancellationJoinsContextBlockingRecorder(t *testing.T) {
 	recorder := &contextBlockingRecorder{metricsStarted: make(chan struct{}), metricsStopped: make(chan struct{})}
-	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now,
+	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now,
 		WithServerObservations(&fakeServerReader{}, recorder), WithServerObservationTimeout(time.Hour))
 	if err != nil {
 		t.Fatal(err)

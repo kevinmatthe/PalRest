@@ -166,7 +166,7 @@ func TestRunOnceOrdersAnalyticsPlayerObservationThenGuard(t *testing.T) {
 		&fakeClient{players: []domain.Player{{UserID: "steam_1"}}},
 		&fakeGuard{order: &order},
 		&fakeAnalytics{order: &order},
-		time.Minute, "warning", "kick", func() time.Time { return now },
+		time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", func() time.Time { return now },
 		WithPlayerObserver(observer),
 		WithCorrelationIDGenerator(func() string { return "poll-1" }),
 	)
@@ -190,7 +190,7 @@ func TestPlayerObservationFailureDoesNotAdvanceStatusOrRunGuard(t *testing.T) {
 	client := &fakeClient{players: []domain.Player{{UserID: "steam_1"}}}
 	observer := &fakePlayerObserver{}
 	guardService := &fakeGuard{}
-	p, err := New(client, guardService, &fakeAnalytics{}, time.Minute, "warning", "kick", func() time.Time { return now }, WithPlayerObserver(observer))
+	p, err := New(client, guardService, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", func() time.Time { return now }, WithPlayerObserver(observer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestCriticalPlayerPathFailuresNotifyPlayerObserver(t *testing.T) {
 			if option := tc.set(client, analytics); option != nil {
 				options = append(options, option)
 			}
-			p, err := New(client, &fakeGuard{}, analytics, time.Minute, "warning", "kick", func() time.Time { return now }, options...)
+			p, err := New(client, &fakeGuard{}, analytics, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", func() time.Time { return now }, options...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -262,7 +262,7 @@ func TestCriticalPlayerPathFailuresNotifyPlayerObserver(t *testing.T) {
 func TestDefaultCorrelationIDsAreNonemptyAndDistinct(t *testing.T) {
 	now := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
 	observer := &fakePlayerObserver{}
-	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", func() time.Time { return now }, WithPlayerObserver(observer))
+	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", func() time.Time { return now }, WithPlayerObserver(observer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestEmptyCorrelationIDStopsBeforeAnalyticsPersistence(t *testing.T) {
 	analytics := &fakeAnalytics{}
 	observer := &fakePlayerObserver{}
 	guardService := &fakeGuard{}
-	p, err := New(&fakeClient{}, guardService, analytics, time.Minute, "warning", "kick", time.Now,
+	p, err := New(&fakeClient{}, guardService, analytics, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now,
 		WithPlayerObserver(observer), WithCorrelationIDGenerator(func() string { return " " }))
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +304,7 @@ func TestCorrelationIDGenerationFailureStopsBeforeAnalyticsPersistence(t *testin
 	analytics := &fakeAnalytics{}
 	observer := &fakePlayerObserver{}
 	guardService := &fakeGuard{}
-	p, err := New(&fakeClient{}, guardService, analytics, time.Minute, "warning", "kick", time.Now, WithPlayerObserver(observer))
+	p, err := New(&fakeClient{}, guardService, analytics, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now, WithPlayerObserver(observer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestMetricsFailureDoesNotAffectSuccessfulPlayerPoll(t *testing.T) {
 	recorder := &fakeServerRecorder{}
 	guardService := &fakeGuard{}
 	observer := &fakePlayerObserver{}
-	p, err := New(&fakeClient{players: []domain.Player{{UserID: "steam_1"}}}, guardService, &fakeAnalytics{}, time.Minute, "warning", "kick", func() time.Time { return now }, WithPlayerObserver(observer), WithServerObservations(reader, recorder))
+	p, err := New(&fakeClient{players: []domain.Player{{UserID: "steam_1"}}}, guardService, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", func() time.Time { return now }, WithPlayerObserver(observer), WithServerObservations(reader, recorder))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestPlayersFailureStillSamplesMetricsButSkipsCriticalObservers(t *testing.T
 	analytics := &fakeAnalytics{}
 	playerObserver := &fakePlayerObserver{}
 	guardService := &fakeGuard{}
-	p, err := New(&fakeClient{listErr: errors.New("players unavailable")}, guardService, analytics, time.Minute, "warning", "kick", time.Now,
+	p, err := New(&fakeClient{listErr: errors.New("players unavailable")}, guardService, analytics, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now,
 		WithPlayerObserver(playerObserver), WithServerObservations(reader, recorder))
 	if err != nil {
 		t.Fatal(err)
@@ -375,7 +375,7 @@ func TestServerObservationCadenceUsesPollClock(t *testing.T) {
 	now := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
 	reader := &fakeServerReader{}
 	recorder := &fakeServerRecorder{}
-	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", func() time.Time { return now }, WithServerObservations(reader, recorder))
+	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", func() time.Time { return now }, WithServerObservations(reader, recorder))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestInfoAndSettingsFailuresAreIsolated(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			reader := &fakeServerReader{infoErr: tt.infoErr, settingsErr: tt.settings}
 			recorder := &fakeServerRecorder{}
-			p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now, WithServerObservations(reader, recorder))
+			p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now, WithServerObservations(reader, recorder))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -437,7 +437,7 @@ func TestOptionalRecorderFailuresDoNotAffectPlayerPoll(t *testing.T) {
 		metricsErr: errors.New("record metrics"), infoErr: errors.New("record info"), settingsErr: errors.New("record settings"),
 	}
 	guardService := &fakeGuard{}
-	p, err := New(&fakeClient{}, guardService, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now, WithServerObservations(reader, recorder))
+	p, err := New(&fakeClient{}, guardService, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now, WithServerObservations(reader, recorder))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +456,7 @@ func TestOptionalRecorderFailuresDoNotAffectPlayerPoll(t *testing.T) {
 }
 
 func TestNilOptionalCollaboratorsAreSafe(t *testing.T) {
-	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now,
+	p, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now,
 		WithPlayerObserver(nil), WithServerObservations(nil, nil), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -477,7 +477,7 @@ func TestNewRejectsIncompleteServerObservationPair(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now,
+			if _, err := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now,
 				WithServerObservations(tt.reader, tt.recorder)); err == nil {
 				t.Fatal("expected incomplete server observation pair error")
 			}
@@ -489,7 +489,7 @@ func TestApplyPolicyTimezoneExcludesPollCycleAndOrdersUpdateFirst(t *testing.T) 
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	order := []string{}
-	p, _ := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{order: &order}, time.Minute, "warning", "kick", time.Now)
+	p, _ := New(&fakeClient{}, &fakeGuard{}, &fakeAnalytics{order: &order}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now)
 	done := make(chan error, 1)
 	go func() {
 		done <- p.ApplyPolicyTimezone(func() error { order = append(order, "update"); close(entered); <-release; return nil }, time.UTC)
@@ -516,7 +516,7 @@ func TestApplyPolicyTimezoneExcludesPollCycleAndOrdersUpdateFirst(t *testing.T) 
 
 func TestApplyPolicyTimezoneFailureDoesNotChangeLocation(t *testing.T) {
 	analytics := &fakeAnalytics{}
-	p, _ := New(&fakeClient{}, &fakeGuard{}, analytics, time.Minute, "warning", "kick", time.Now)
+	p, _ := New(&fakeClient{}, &fakeGuard{}, analytics, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now)
 	want := errors.New("save failed")
 	if err := p.ApplyPolicyTimezone(func() error { return want }, time.UTC); !errors.Is(err, want) {
 		t.Fatalf("err=%v", err)
@@ -535,7 +535,7 @@ func TestRunOncePerformsAndRecordsDecisions(t *testing.T) {
 		Warnings: []guard.WarningDecision{{UserID: "steam_1", PlayerName: "Kevin", Remaining: 5 * time.Minute}},
 		Kicks:    []guard.KickDecision{{UserID: "steam_2", PlayerName: "Matt", ResetAt: now.Add(time.Hour)}},
 	}, order: &order}
-	p, err := New(client, guardService, analytics, time.Minute, "{{ .PlayerName }}: {{ .Remaining }}", "reset {{ .ResetAt }}", func() time.Time { return now })
+	p, err := New(client, guardService, analytics, time.Minute, "{{ .PlayerName }}: {{ .Remaining }}", "reset {{ .ResetAt }}", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestListFailureBreaksContinuityAndHasNoSideEffects(t *testing.T) {
 	client := &fakeClient{listErr: errors.New("offline")}
 	analytics := &fakeAnalytics{}
 	guardService := &fakeGuard{decisions: guard.Decisions{Kicks: []guard.KickDecision{{UserID: "steam_1"}}}}
-	p, _ := New(client, guardService, analytics, time.Minute, "warning", "kick", time.Now)
+	p, _ := New(client, guardService, analytics, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now)
 	if err := p.RunOnce(t.Context()); err == nil {
 		t.Fatal("expected error")
 	}
@@ -578,7 +578,7 @@ func TestAnalyticsFailureBreaksContinuityAndSkipsGuard(t *testing.T) {
 	client := &fakeClient{players: []domain.Player{{UserID: "steam_1", Name: "Kevin"}}}
 	analytics := &fakeAnalytics{err: errors.New("analytics unavailable")}
 	guardService := &fakeGuard{decisions: guard.Decisions{Kicks: []guard.KickDecision{{UserID: "steam_1"}}}}
-	p, _ := New(client, guardService, analytics, time.Minute, "warning", "kick", func() time.Time { return now })
+	p, _ := New(client, guardService, analytics, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", func() time.Time { return now })
 
 	if err := p.RunOnce(t.Context()); !errors.Is(err, analytics.err) {
 		t.Fatalf("error=%v", err)
@@ -595,7 +595,7 @@ func TestAnalyticsFailureBreaksContinuityAndSkipsGuard(t *testing.T) {
 func TestObservationFailureHasNoSideEffects(t *testing.T) {
 	client := &fakeClient{}
 	guardService := &fakeGuard{observeErr: errors.New("sqlite unavailable"), decisions: guard.Decisions{Kicks: []guard.KickDecision{{UserID: "steam_1"}}}}
-	p, _ := New(client, guardService, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now)
+	p, _ := New(client, guardService, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now)
 	if err := p.RunOnce(t.Context()); err == nil {
 		t.Fatal("expected error")
 	}
@@ -607,7 +607,7 @@ func TestObservationFailureHasNoSideEffects(t *testing.T) {
 func TestRunNeverOverlapsSlowCycles(t *testing.T) {
 	client := &blockingClient{entered: make(chan struct{}, 2), release: make(chan struct{}, 2)}
 	guardService := &fakeGuard{}
-	p, _ := New(client, guardService, &fakeAnalytics{}, 5*time.Millisecond, "warning", "kick", time.Now)
+	p, _ := New(client, guardService, &fakeAnalytics{}, 5*time.Millisecond, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); p.Run(ctx) }()
@@ -626,7 +626,7 @@ func TestRunNeverOverlapsSlowCycles(t *testing.T) {
 
 func TestConcurrentRunOnceCallsAreSerialized(t *testing.T) {
 	client := &blockingClient{entered: make(chan struct{}, 2), release: make(chan struct{}, 2)}
-	p, err := New(client, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now)
+	p, err := New(client, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,7 +660,7 @@ func TestConcurrentRunOnceCallsAreSerialized(t *testing.T) {
 
 func TestRunAllowsActiveCycleToFinishAfterStop(t *testing.T) {
 	client := &blockingClient{entered: make(chan struct{}, 1), release: make(chan struct{}, 1)}
-	p, _ := New(client, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now)
+	p, _ := New(client, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); p.Run(ctx) }()
@@ -681,13 +681,13 @@ func TestRunAllowsActiveCycleToFinishAfterStop(t *testing.T) {
 
 func TestApplyConfigWaitsForActiveCycle(t *testing.T) {
 	client := &blockingClient{entered: make(chan struct{}, 1), release: make(chan struct{}, 1)}
-	p, _ := New(client, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", time.Now)
+	p, _ := New(client, &fakeGuard{}, &fakeAnalytics{}, time.Minute, "warning", "kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}", time.Now)
 	cycleDone := make(chan error, 1)
 	go func() { cycleDone <- p.RunOnce(context.Background()) }()
 	<-client.entered
 	applied := make(chan error, 1)
 	go func() {
-		applied <- p.ApplyConfig(func() error { return nil }, "new warning", "new kick")
+		applied <- p.ApplyConfig(func() error { return nil }, "new warning", "new kick", "login {{ .PlayerName }} {{ .Remaining }} {{ .Limit }} {{ .ResetAt }}")
 	}()
 	select {
 	case <-applied:

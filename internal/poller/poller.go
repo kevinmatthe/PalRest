@@ -64,6 +64,7 @@ type Poller struct {
 	interval               time.Duration
 	announceTemplate       *template.Template
 	kickTemplate           *template.Template
+	loginTemplate          *template.Template
 	now                    func() time.Time
 	correlationID          func() (string, error)
 	cycleMu                sync.Mutex
@@ -82,7 +83,7 @@ type Poller struct {
 	latestServerSample     time.Time
 }
 
-func New(client Client, guardService Guard, analytics Analytics, interval time.Duration, announceText, kickText string, now func() time.Time, options ...Option) (*Poller, error) {
+func New(client Client, guardService Guard, analytics Analytics, interval time.Duration, announceText, kickText, loginText string, now func() time.Time, options ...Option) (*Poller, error) {
 	announce, err := template.New("announce").Option("missingkey=error").Parse(announceText)
 	if err != nil {
 		return nil, fmt.Errorf("parse announce template: %w", err)
@@ -91,9 +92,13 @@ func New(client Client, guardService Guard, analytics Analytics, interval time.D
 	if err != nil {
 		return nil, fmt.Errorf("parse kick template: %w", err)
 	}
+	login, err := template.New("login").Option("missingkey=error").Parse(loginText)
+	if err != nil {
+		return nil, fmt.Errorf("parse login template: %w", err)
+	}
 	p := &Poller{
 		client: client, guard: guardService, analytics: analytics, interval: interval,
-		announceTemplate: announce, kickTemplate: kick, now: now,
+		announceTemplate: announce, kickTemplate: kick, loginTemplate: login, now: now,
 		status:                 domain.PollStatus{StartedAt: now().UTC(), ConfigVersion: 1},
 		serverSampleSignals:    make(chan struct{}, 1),
 		serverSampleDone:       make(chan struct{}, 1),
@@ -161,6 +166,7 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 	p.mu.RLock()
 	announceTemplate := p.announceTemplate
 	kickTemplate := p.kickTemplate
+	loginTemplate := p.loginTemplate
 	p.mu.RUnlock()
 	p.updateStatus(func(status *domain.PollStatus) { status.LastAttempt = now })
 	slog.Info("poll cycle started", "at", now.Format(time.RFC3339))
@@ -223,17 +229,56 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 	slog.Info("poll cycle completed",
 		"online_count", len(players),
 		"observed_count", len(decisions.Observations),
+		"login_notices", len(decisions.Logins),
 		"warning_decisions", len(decisions.Warnings),
 		"kick_decisions", len(decisions.Kicks),
 	)
 
 	var effectErrors []error
+	// Login remaining-quota notices first (full-server announce; no private whisper API).
+	for _, decision := range decisions.Logins {
+		message, renderErr := render(loginTemplate, struct {
+			PlayerName string
+			Remaining  string
+			Limit      string
+			ResetAt    string
+		}{
+			decision.PlayerName,
+			formatDurationZH(decision.Remaining),
+			formatDurationZH(decision.Limit),
+			formatTimeZH(decision.ResetAt),
+		})
+		resultErr := renderErr
+		if resultErr == nil {
+			resultErr = p.client.Announce(ctx, message)
+		}
+		logEffectResult("login_notice", decision.UserID, decision.PlayerName, resultErr,
+			"remaining_ms", decision.Remaining.Milliseconds(),
+			"limit_ms", decision.Limit.Milliseconds(),
+			"period_key", decision.Period.Key,
+		)
+		if resultErr != nil {
+			// Best-effort: do not block kick/warning handling.
+			slog.Warn("login notice announce failed", "user_id", decision.UserID, "error", resultErr)
+			effectErrors = append(effectErrors, resultErr)
+		}
+	}
 	for _, decision := range decisions.Warnings {
+		resetAt := decision.ResetAt
+		if resetAt.IsZero() {
+			resetAt = decision.Period.End
+		}
 		message, renderErr := render(announceTemplate, struct {
 			PlayerName string
 			Remaining  string
+			Limit      string
 			ResetAt    string
-		}{decision.PlayerName, decision.Remaining.Round(time.Second).String(), decision.Period.End.Format(time.RFC3339)})
+		}{
+			decision.PlayerName,
+			formatDurationZH(decision.Remaining),
+			formatDurationZH(decision.Limit),
+			formatTimeZH(resetAt),
+		})
 		resultErr := renderErr
 		if resultErr == nil {
 			resultErr = p.client.Announce(ctx, message)
@@ -255,8 +300,9 @@ func (p *Poller) RunOnce(ctx context.Context) error {
 		message, renderErr := render(kickTemplate, struct {
 			PlayerName string
 			Remaining  string
+			Limit      string
 			ResetAt    string
-		}{decision.PlayerName, "0s", decision.ResetAt.Format(time.RFC3339)})
+		}{decision.PlayerName, formatDurationZH(0), "", formatTimeZH(decision.ResetAt)})
 		resultErr := renderErr
 		if resultErr == nil {
 			resultErr = p.client.Kick(ctx, decision.UserID, message)
@@ -296,8 +342,8 @@ func newCorrelationID() (string, error) {
 	return hex.EncodeToString(value[:]), nil
 }
 
-func (p *Poller) UpdateTemplates(announceText, kickText string) error {
-	return p.ApplyConfig(func() error { return nil }, announceText, kickText)
+func (p *Poller) UpdateTemplates(announceText, kickText, loginText string) error {
+	return p.ApplyConfig(func() error { return nil }, announceText, kickText, loginText)
 }
 
 // ApplyPolicyTimezone serializes policy persistence and its analytics calendar
@@ -315,7 +361,7 @@ func (p *Poller) ApplyPolicyTimezone(update func() error, location *time.Locatio
 	return p.analytics.SetLocation(location)
 }
 
-func (p *Poller) ApplyConfig(update func() error, announceText, kickText string) error {
+func (p *Poller) ApplyConfig(update func() error, announceText, kickText, loginText string) error {
 	announce, err := template.New("announce").Option("missingkey=error").Parse(announceText)
 	if err != nil {
 		return fmt.Errorf("parse announce template: %w", err)
@@ -323,6 +369,10 @@ func (p *Poller) ApplyConfig(update func() error, announceText, kickText string)
 	kick, err := template.New("kick").Option("missingkey=error").Parse(kickText)
 	if err != nil {
 		return fmt.Errorf("parse kick template: %w", err)
+	}
+	login, err := template.New("login").Option("missingkey=error").Parse(loginText)
+	if err != nil {
+		return fmt.Errorf("parse login template: %w", err)
 	}
 	p.cycleMu.Lock()
 	defer p.cycleMu.Unlock()
@@ -332,6 +382,7 @@ func (p *Poller) ApplyConfig(update func() error, announceText, kickText string)
 	p.mu.Lock()
 	p.announceTemplate = announce
 	p.kickTemplate = kick
+	p.loginTemplate = login
 	p.mu.Unlock()
 	slog.Info("poller templates updated")
 	return nil

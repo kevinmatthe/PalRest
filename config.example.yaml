@@ -70,8 +70,11 @@ policy:
 #     warning_before: [30m, 10m, 5m, 1m]
 
 enforcement:
-  kick_message: "Playtime limit reached. You can play again after {{ .ResetAt }}."
-  announce_message: "{{ .PlayerName }} has {{ .Remaining }} of playtime remaining."
+  # Palworld REST 只有全服广播 /announce，无法私聊单人。
+  # 可用模板字段：PlayerName, Remaining, Limit, ResetAt（时长与时间会渲染成中文）。
+  kick_message: "游玩时长已用尽，已暂时下线。可在 {{ .ResetAt }} 后再次进入。"
+  announce_message: "{{ .PlayerName }} 剩余可玩时长 {{ .Remaining }}，请合理安排（重置：{{ .ResetAt }}）。"
+  login_message: "{{ .PlayerName }} 已上线：本周期剩余 {{ .Remaining }}（额度 {{ .Limit }}，重置 {{ .ResetAt }}）。"
   kick_retry_initial: 15s
   kick_retry_max: 5m
 

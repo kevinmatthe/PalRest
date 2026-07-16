@@ -126,7 +126,7 @@ func New(configPath string) (*App, error) {
 		pollOptions = append(pollOptions, poller.WithServerObservationTimeout(cfg.Server.RequestTimeout.Duration))
 	}
 	poll, err := poller.New(client, guardService, analyticsService, cfg.Server.PollInterval.Duration,
-		cfg.Enforcement.AnnounceMessage, cfg.Enforcement.KickMessage, time.Now, pollOptions...)
+		cfg.Enforcement.AnnounceMessage, cfg.Enforcement.KickMessage, cfg.Enforcement.LoginMessage, time.Now, pollOptions...)
 	if err != nil {
 		_ = repo.Close()
 		return nil, err
@@ -318,7 +318,7 @@ func (a *App) reload() error {
 		current.Enforcement.KickRetryInitial != next.Enforcement.KickRetryInitial || current.Enforcement.KickRetryMax != next.Enforcement.KickRetryMax {
 		return a.reloadError(fmt.Errorf("server, HTTP, storage, observation, and retry settings require a restart"))
 	}
-	if err := a.poller.ApplyConfig(func() error { return nil }, next.Enforcement.AnnounceMessage, next.Enforcement.KickMessage); err != nil {
+	if err := a.poller.ApplyConfig(func() error { return nil }, next.Enforcement.AnnounceMessage, next.Enforcement.KickMessage, next.Enforcement.LoginMessage); err != nil {
 		return a.reloadError(err)
 	}
 	a.configMu.Lock()

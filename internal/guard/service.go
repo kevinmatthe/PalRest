@@ -22,6 +22,20 @@ type WarningDecision struct {
 	Period     domain.Period
 	Threshold  time.Duration
 	Remaining  time.Duration
+	Limit      time.Duration
+	ResetAt    time.Time
+}
+
+// LoginDecision is emitted once when a player first appears online after being
+// absent (or after process restart). Delivered via full-server announce because
+// Palworld REST has no per-player whisper endpoint.
+type LoginDecision struct {
+	UserID     string
+	PlayerName string
+	Period     domain.Period
+	Remaining  time.Duration
+	Limit      time.Duration
+	ResetAt    time.Time
 }
 
 type KickDecision struct {
@@ -53,6 +67,7 @@ type ObservationResult struct {
 
 type Decisions struct {
 	Observations []ObservationResult
+	Logins       []LoginDecision
 	Warnings     []WarningDecision
 	Kicks        []KickDecision
 }
@@ -179,6 +194,20 @@ func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.P
 			if err != nil {
 				return err
 			}
+			// First online observation after absence: remaining-quota notice.
+			if !continuous && rule.Enabled && !rule.Exempt {
+				name := player.Name
+				if name == "" {
+					name = player.AccountName
+				}
+				if name == "" {
+					name = player.UserID
+				}
+				decisions.Logins = append(decisions.Logins, LoginDecision{
+					UserID: player.UserID, PlayerName: name, Period: period,
+					Remaining: remaining, Limit: rule.Limit, ResetAt: resetAt,
+				})
+			}
 			if rule.Enabled && overLimit {
 				key := retryKey(player.UserID, period.Key, rule.Revision, generation)
 				retry, err := tx.EnforcementRetry(player.UserID, period.Key, rule.Revision)
@@ -212,7 +241,17 @@ func (s *Service) Observe(ctx context.Context, now time.Time, players []domain.P
 							}
 						}
 						if shouldSend {
-							decisions.Warnings = append(decisions.Warnings, WarningDecision{UserID: player.UserID, PlayerName: player.Name, Period: period, Threshold: threshold, Remaining: remaining})
+							name := player.Name
+							if name == "" {
+								name = player.AccountName
+							}
+							if name == "" {
+								name = player.UserID
+							}
+							decisions.Warnings = append(decisions.Warnings, WarningDecision{
+								UserID: player.UserID, PlayerName: name, Period: period,
+								Threshold: threshold, Remaining: remaining, Limit: rule.Limit, ResetAt: resetAt,
+							})
 						}
 						break
 					}

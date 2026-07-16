@@ -205,11 +205,26 @@ type RuleOverride struct {
 }
 
 type Enforcement struct {
-	KickMessage      string   `yaml:"kick_message" json:"kick_message"`
-	AnnounceMessage  string   `yaml:"announce_message" json:"announce_message"`
+	// KickMessage is shown when the player is disconnected for over-limit.
+	// Template fields: PlayerName, Remaining, ResetAt.
+	KickMessage string `yaml:"kick_message" json:"kick_message"`
+	// AnnounceMessage is the full-server broadcast for remaining-time warnings.
+	// Template fields: PlayerName, Remaining, ResetAt.
+	// Palworld REST has no private whisper API — all notices use /announce.
+	AnnounceMessage string `yaml:"announce_message" json:"announce_message"`
+	// LoginMessage is broadcast when a player first appears online this session.
+	// Template fields: PlayerName, Remaining, Limit, ResetAt.
+	LoginMessage     string   `yaml:"login_message" json:"login_message"`
 	KickRetryInitial Duration `yaml:"kick_retry_initial" json:"kick_retry_initial"`
 	KickRetryMax     Duration `yaml:"kick_retry_max" json:"kick_retry_max"`
 }
+
+// Default Chinese in-game notification templates (Palworld announce/kick only).
+const (
+	DefaultKickMessage = "游玩时长已用尽，已暂时下线。可在 {{ .ResetAt }} 后再次进入。"
+	DefaultAnnounceMessage = "{{ .PlayerName }} 剩余可玩时长 {{ .Remaining }}，请合理安排（重置：{{ .ResetAt }}）。"
+	DefaultLoginMessage = "{{ .PlayerName }} 已上线：本周期剩余 {{ .Remaining }}（额度 {{ .Limit }}，重置 {{ .ResetAt }}）。"
+)
 
 type HTTP struct {
 	Listen           string `yaml:"listen" json:"listen"`
@@ -300,6 +315,9 @@ func defaults() Config {
 		},
 		Policy: DefaultPolicy(),
 		Enforcement: Enforcement{
+			KickMessage:      DefaultKickMessage,
+			AnnounceMessage:  DefaultAnnounceMessage,
+			LoginMessage:     DefaultLoginMessage,
 			KickRetryInitial: Duration{15 * time.Second},
 			KickRetryMax:     Duration{5 * time.Minute},
 		},
@@ -369,8 +387,21 @@ func (c *Config) validate(lookup func(string) (string, bool)) error {
 	if c.Enforcement.KickRetryInitial.Duration <= 0 || c.Enforcement.KickRetryMax.Duration < c.Enforcement.KickRetryInitial.Duration {
 		return fmt.Errorf("enforcement retry durations are invalid")
 	}
-	data := struct{ PlayerName, Remaining, ResetAt string }{"player", "1h", "2026-07-10T04:00:00+08:00"}
-	for name, text := range map[string]string{"kick_message": c.Enforcement.KickMessage, "announce_message": c.Enforcement.AnnounceMessage} {
+	if c.Enforcement.KickMessage == "" {
+		c.Enforcement.KickMessage = DefaultKickMessage
+	}
+	if c.Enforcement.AnnounceMessage == "" {
+		c.Enforcement.AnnounceMessage = DefaultAnnounceMessage
+	}
+	if c.Enforcement.LoginMessage == "" {
+		c.Enforcement.LoginMessage = DefaultLoginMessage
+	}
+	data := struct{ PlayerName, Remaining, Limit, ResetAt string }{"玩家", "1小时0分", "2小时0分", "2026-07-10 04:00"}
+	for name, text := range map[string]string{
+		"kick_message":     c.Enforcement.KickMessage,
+		"announce_message": c.Enforcement.AnnounceMessage,
+		"login_message":    c.Enforcement.LoginMessage,
+	} {
 		tpl, err := template.New(name).Option("missingkey=error").Parse(text)
 		if err != nil {
 			return fmt.Errorf("enforcement.%s: %w", name, err)

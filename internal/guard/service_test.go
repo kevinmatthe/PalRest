@@ -727,3 +727,25 @@ func TestDisabledAndExemptPoliciesDoNotCharge(t *testing.T) {
 		t.Fatalf("usage=%s", got)
 	}
 }
+
+func TestObserveEmitsLoginNoticeOnFirstOnline(t *testing.T) {
+	h := newHarness(t, 2*time.Hour, 75*time.Second)
+	p := player()
+	first := h.observe(h.start, p)
+	if len(first.Logins) != 1 {
+		t.Fatalf("first logins=%+v", first.Logins)
+	}
+	if first.Logins[0].UserID != p.UserID || first.Logins[0].Remaining <= 0 {
+		t.Fatalf("login=%+v", first.Logins[0])
+	}
+	second := h.observe(h.start.Add(time.Minute), p)
+	if len(second.Logins) != 0 {
+		t.Fatalf("continuous login notices=%+v", second.Logins)
+	}
+	// leave (empty online set) then rejoin
+	_ = h.observe(h.start.Add(2 * time.Minute))
+	rejoin := h.observe(h.start.Add(3*time.Minute), p)
+	if len(rejoin.Logins) != 1 {
+		t.Fatalf("rejoin logins=%+v", rejoin.Logins)
+	}
+}
