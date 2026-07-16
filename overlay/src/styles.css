@@ -75,65 +75,35 @@
 
 .overlay__locator {
   position: relative;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.32em;
   width: calc(var(--overlay-map-size) * var(--overlay-scale));
   min-width: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--overlay-accent) 48%, transparent);
+  border: 1px solid rgba(220, 233, 232, 0.16);
   border-radius: calc(0.35rem * var(--overlay-scale));
-  background:
-    linear-gradient(rgba(115, 232, 234, 0.08) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(115, 232, 234, 0.08) 1px, transparent 1px),
-    radial-gradient(circle at 50% 52%, rgba(115, 232, 234, 0.14), rgba(4, 12, 15, 0.78) 66%);
-  background-size: 0.65rem 0.65rem, 0.65rem 0.65rem, auto;
-  box-shadow: inset 0 0 1rem rgba(0, 0, 0, 0.65);
+  background: rgba(220, 233, 232, 0.025);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
 }
 
-.overlay__locator::before,
-.overlay__locator::after {
-  position: absolute;
-  content: "";
-  background: color-mix(in srgb, var(--overlay-accent) 25%, transparent);
-}
-
-.overlay__locator::before {
-  width: 1px;
-  height: 68%;
-}
-
-.overlay__locator::after {
-  width: 68%;
-  height: 1px;
-}
-
-.overlay__locator-ring {
-  display: grid;
-  z-index: 1;
-  place-items: center;
-  width: 1.35em;
-  height: 1.35em;
-  border: 1px solid var(--overlay-accent);
-  border-radius: 50%;
-  box-shadow: 0 0 0.55em color-mix(in srgb, var(--overlay-accent) 35%, transparent);
-}
-
-.overlay__locator-dot {
-  width: 0.34em;
-  height: 0.34em;
-  border-radius: 50%;
-  background: var(--overlay-accent);
-  box-shadow: 0 0 0.3em var(--overlay-accent);
+.overlay__locator-label {
+  color: rgba(220, 233, 232, 0.52);
+  font-size: 0.55em;
+  font-weight: 650;
+  letter-spacing: 0.16em;
 }
 
 .overlay__coordinates {
-  position: absolute;
-  right: 0.25em;
-  bottom: 0.15em;
-  z-index: 1;
-  color: rgba(220, 233, 232, 0.65);
-  font-size: 0.49em;
+  max-width: 100%;
+  overflow: hidden;
+  color: rgba(220, 233, 232, 0.76);
+  font-size: 0.52em;
   letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .overlay__content {

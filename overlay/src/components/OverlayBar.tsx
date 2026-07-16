@@ -101,11 +101,9 @@ export function OverlayBar({
             className="overlay__locator"
             data-testid="capability-map"
             data-capability="map"
-            aria-label={`当前位置，横坐标 ${snapshot.map!.x}，纵坐标 ${snapshot.map!.y}`}
+            aria-label={`位置数据占位，横坐标 ${snapshot.map!.x}，纵坐标 ${snapshot.map!.y}`}
           >
-            <span className="overlay__locator-ring" aria-hidden="true">
-              <span className="overlay__locator-dot" />
-            </span>
+            <span className="overlay__locator-label" aria-hidden="true">位置</span>
             <span className="overlay__coordinates" aria-hidden="true">
               {snapshot.map!.x.toFixed(0)} · {snapshot.map!.y.toFixed(0)}
             </span>
