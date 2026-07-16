@@ -144,11 +144,13 @@ function parseTimer(value: unknown, index: number): Timer {
     throw new Error(`${path}.semantic is unknown`)
   }
   if (!TIMER_TONES.has(tone as TimerTone)) throw new Error(`${path}.tone is unknown`)
+  const valueMS = integer(raw.value_ms, `${path}.value_ms`)
+  if (valueMS < 0) throw new Error(`${path}.value_ms must not be negative`)
 
   const timer: Timer = {
     id: string(raw.id, `${path}.id`),
     label: string(raw.label, `${path}.label`),
-    value_ms: integer(raw.value_ms, `${path}.value_ms`),
+    value_ms: valueMS,
     semantic: semantic as TimerSemantic,
     tone: tone as TimerTone,
   }

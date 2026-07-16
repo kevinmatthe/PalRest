@@ -38,6 +38,57 @@ describe('parseSnapshot', () => {
     expect(parseSnapshot(value).timers?.[0].tone).toBe('muted')
   })
 
+  it('accepts legal zero numeric values', () => {
+    const value = snapshot()
+    ;(value.identity as Record<string, unknown>).level = 0
+    ;(value.latency as Record<string, unknown>).milliseconds = 0
+    const timer = (value.timers as Record<string, unknown>[])[0]
+    timer.value_ms = 0
+    timer.progress = 0
+    ;(value.map as Record<string, unknown>).x = 0
+    ;(value.map as Record<string, unknown>).y = 0
+
+    const parsed = parseSnapshot(value)
+    expect(parsed.identity.level).toBe(0)
+    expect(parsed.latency?.milliseconds).toBe(0)
+    expect(parsed.timers?.[0]).toMatchObject({ value_ms: 0, progress: 0 })
+    expect(parsed.map).toMatchObject({ x: 0, y: 0 })
+  })
+
+  it('rejects a negative duration with its field path', () => {
+    const value = snapshot()
+    ;(value.timers as Record<string, unknown>[])[0].value_ms = -1
+
+    expect(() => parseSnapshot(value)).toThrow(
+      /timers\[0\]\.value_ms must not be negative/,
+    )
+  })
+
+  it('accepts Go zero, fractional, and offset RFC3339 timestamps', () => {
+    const value = snapshot()
+    value.observed_at = '0001-01-01T00:00:00Z'
+    value.fresh_until = '2026-07-16T20:00:15.123+08:00'
+
+    expect(parseSnapshot(value)).toMatchObject({
+      observed_at: value.observed_at,
+      fresh_until: value.fresh_until,
+    })
+  })
+
+  it('does not mutate its input and returns detached nested values', () => {
+    const value = snapshot()
+    const original = structuredClone(value)
+    const parsed = parseSnapshot(value)
+
+    parsed.identity.display_name = 'Changed'
+    parsed.capabilities.push('identity')
+    parsed.latency!.milliseconds = 0
+    parsed.timers![0].label = 'Changed'
+    parsed.map!.x = 0
+
+    expect(value).toEqual(original)
+  })
+
   it('rejects a newer schema', () => {
     expect(() =>
       parseSnapshot({ ...snapshot(), schema: 'overlay.snapshot/v2' }),
