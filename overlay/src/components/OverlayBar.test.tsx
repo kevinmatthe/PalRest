@@ -64,9 +64,15 @@ describe('OverlayBar', () => {
     ])
 
     const css = readFileSync('src/styles.css', 'utf8')
+    expect(css).toMatch(/html,\s*body,\s*#root\s*\{[^}]*margin:\s*0[^}]*padding:\s*0[^}]*width:\s*100%[^}]*height:\s*100%[^}]*overflow:\s*hidden[^}]*background:\s*transparent/s)
     expect(css).toMatch(/--overlay-width:\s*30rem/)
     expect(css).toMatch(/--overlay-height:\s*4\.75rem/)
     expect(css).toMatch(/--overlay-map-size:\s*3\.875rem/)
+    expect(css).toMatch(/width:\s*min\(100%,\s*var\(--overlay-width\)\)/)
+    expect(css).toMatch(/height:\s*min\(100%,\s*var\(--overlay-height\)\)/)
+    expect(css).toMatch(/width:\s*var\(--overlay-map-size\)/)
+    expect(css).toMatch(/height:\s*var\(--overlay-map-size\)/)
+    expect(css).not.toMatch(/var\(--overlay-(?:width|height|map-size)\)\s*\*\s*var\(--overlay-scale\)/)
   })
 
   it.each([
@@ -80,6 +86,8 @@ describe('OverlayBar', () => {
     expect(screen.getByText(copy)).toBeInTheDocument()
     expect(screen.getByText('39 ms')).toBeInTheDocument()
     expect(screen.getByText('更新 2026-07-16 12:00 UTC')).toBeInTheDocument()
+    expect(screen.queryByText(/当前数据/)).not.toBeInTheDocument()
+    expect(screen.getAllByText(/2026-07-16 12:00 UTC/)).toHaveLength(1)
   })
 
   it('uses warning and danger styling without disruptive alert behavior', () => {
@@ -96,7 +104,7 @@ describe('OverlayBar', () => {
   })
 
   it.each([
-    ['ready', '在线 · 当前数据'],
+    ['ready', '更新 2026-07-16 12:00 UTC'],
     ['stale', '数据已过期 · 最后更新 2026-07-16 12:00 UTC'],
     ['disconnected', '连接已断开 · 最后更新 2026-07-16 12:00 UTC'],
   ] as const)('retains snapshot values while the poller state is %s', (status, copy) => {
@@ -105,6 +113,25 @@ describe('OverlayBar', () => {
     expect(screen.getByText('Lamball Keeper · Lv.42')).toBeInTheDocument()
     expect(screen.getByText('频控剩余')).toBeInTheDocument()
     expect(screen.getByLabelText('数据状态')).toHaveTextContent(copy)
+    expect(screen.getAllByText(/2026-07-16 12:00 UTC/)).toHaveLength(1)
+  })
+
+  it('uses policy cycle usage rather than inverse remaining progress for the rail', () => {
+    const value = canonicalSnapshot()
+    value.timers![2] = {
+      ...value.timers![2],
+      id: 'policy_cycle_used',
+      progress: 0.75,
+    }
+    value.timers![3] = {
+      ...value.timers![3],
+      id: 'policy_remaining',
+      progress: 0.25,
+    }
+
+    render(<OverlayBar snapshot={value} />)
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '75')
+    expect(screen.getByRole('progressbar')).toHaveAccessibleName('本周期已用进度')
   })
 
   it('removes only capability regions whose data is absent', () => {
@@ -154,8 +181,17 @@ describe('OverlayBar', () => {
     expect(overlay).toHaveAttribute('data-tauri-drag-region')
     expect(overlay).toHaveStyle({ '--overlay-scale': '0.85' })
     expect(dragHint).toHaveClass('overlay__drag-hint')
+    expect(dragHint).toHaveAttribute('data-tauri-drag-region')
+
+    rerender(<OverlayBar snapshot={canonicalSnapshot()} adjustMode scale={0.1} />)
+    expect(overlay).toHaveStyle({ '--overlay-scale': '0.8' })
+    rerender(<OverlayBar snapshot={canonicalSnapshot()} adjustMode scale={3} />)
+    expect(overlay).toHaveStyle({ '--overlay-scale': '1.25' })
 
     const css = readFileSync('src/styles.css', 'utf8')
     expect(css).toMatch(/\.overlay__drag-hint\s*\{[^}]*min-height:\s*2\.75rem/s)
+    expect(css).toMatch(/\.overlay__drag-hint\s*>\s*\*\s*\{[^}]*pointer-events:\s*none/s)
+    expect(css).toMatch(/\.overlay--adjusting\s*\{[^}]*inset/s)
+    expect(css).not.toMatch(/outline-offset:\s*[1-9]/)
   })
 })

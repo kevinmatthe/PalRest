@@ -38,7 +38,7 @@ function formatObservedAt(value: string): string {
 }
 
 function dataStatusCopy(status: OverlayConnectionStatus, observedAt: string): string {
-  if (status === 'ready') return '当前数据'
+  if (status === 'ready') return `更新 ${observedAt}`
   if (status === 'stale') return `数据已过期 · 最后更新 ${observedAt}`
   return `连接已断开 · 最后更新 ${observedAt}`
 }
@@ -52,15 +52,18 @@ function identityCopy(snapshot: Snapshot): string {
 
 function progressTimer(timers: Timer[] | undefined): Timer | undefined {
   if (!timers) return undefined
-  for (let index = timers.length - 1; index >= 0; index -= 1) {
-    if (timers[index].progress !== undefined) return timers[index]
+  let fallback: Timer | undefined
+  for (const timer of timers) {
+    if (timer.progress === undefined) continue
+    if (timer.id === 'policy_cycle_used') return timer
+    fallback ??= timer
   }
-  return undefined
+  return fallback
 }
 
 function safeScale(scale: number): number {
   if (!Number.isFinite(scale)) return 1
-  return Math.min(2, Math.max(0.5, scale))
+  return Math.min(1.25, Math.max(0.8, scale))
 }
 
 export function OverlayBar({
@@ -123,7 +126,7 @@ export function OverlayBar({
 
             <div className="overlay__meta" role="status" aria-label="数据状态">
               <span className="overlay__connection">
-                {status === 'ready' ? `${sourceStatus} · ` : ''}{dataStatusCopy(status, observedAt)}
+                {dataStatusCopy(status, observedAt)}
               </span>
               {hasLatency ? (
                 <span
@@ -135,7 +138,6 @@ export function OverlayBar({
                   {Math.round(snapshot.latency!.milliseconds)} ms
                 </span>
               ) : null}
-              <span className="overlay__freshness">更新 {observedAt}</span>
             </div>
           </div>
 
