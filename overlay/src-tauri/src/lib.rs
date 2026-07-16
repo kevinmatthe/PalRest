@@ -7,7 +7,7 @@ pub mod tray;
 
 #[cfg(feature = "native")]
 mod native {
-    use super::{config, http, lifecycle, tray};
+    use super::{config, http, lifecycle, platform, tray};
     use tauri::{AppHandle, Manager, State, Window, WindowEvent};
 
     fn config_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -59,10 +59,9 @@ mod native {
         }
     }
 
-    // Task 10 adds the platform-specific registry probe. Until then UID selection remains manual.
     #[tauri::command]
     fn detected_palworld_user_id() -> Option<String> {
-        None
+        platform::detected_palworld_user_id()
     }
 
     #[tauri::command]
