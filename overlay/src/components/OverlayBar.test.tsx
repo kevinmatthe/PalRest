@@ -75,6 +75,25 @@ describe('OverlayBar', () => {
     expect(css).not.toMatch(/var\(--overlay-(?:width|height|map-size)\)\s*\*\s*var\(--overlay-scale\)/)
   })
 
+  it('applies scale once per readable text role instead of compounding em sizes', () => {
+    render(<OverlayBar snapshot={canonicalSnapshot()} scale={0.8} status="stale" />)
+    expect(screen.getAllByRole('term')).toHaveLength(4)
+    expect(screen.getByLabelText('数据状态')).toHaveTextContent('数据已过期 · 最后更新')
+
+    const css = readFileSync('src/styles.css', 'utf8')
+    expect(css).toMatch(/\.overlay\s*\{[^}]*font-size:\s*1rem/s)
+    expect(css).not.toMatch(/\.overlay\s*\{[^}]*font-size:[^;]*var\(--overlay-scale\)/s)
+    expect(css).toMatch(/\.overlay__name\s*\{[^}]*font-size:\s*clamp\(0\.75rem,[^;]*var\(--overlay-scale\)[^;]*0\.875rem\)/s)
+    expect(css).toMatch(/\.overlay__source-status\s*\{[^}]*font-size:\s*clamp\(0\.75rem,[^;]*var\(--overlay-scale\)[^;]*0\.8125rem\)/s)
+    expect(css).toMatch(/\.overlay__meta\s*\{[^}]*font-size:\s*clamp\(0\.625rem,[^;]*var\(--overlay-scale\)[^;]*0\.6875rem\)/s)
+    expect(css).toMatch(/\.overlay__connection\s*\{[^}]*flex:\s*0\s+0\s+auto/s)
+    expect(css).toMatch(/\.overlay__latency\s*\{[^}]*flex:\s*0\s+1\s+auto[^}]*min-width:\s*0/s)
+    expect(css).toMatch(/\.overlay__locator-label\s*\{[^}]*font-size:\s*clamp\(0\.625rem,/s)
+    expect(css).toMatch(/\.overlay__coordinates\s*\{[^}]*font-size:\s*clamp\(0\.625rem,/s)
+    expect(css).toMatch(/\.overlay__timer dt\s*\{[^}]*font-size:\s*clamp\(0\.625rem,/s)
+    expect(css).toMatch(/\.overlay__timer dd\s*\{[^}]*font-size:\s*clamp\(0\.75rem,/s)
+  })
+
   it.each([
     ['online', '在线'],
     ['offline', '离线'],

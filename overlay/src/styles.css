@@ -48,7 +48,7 @@ body,
     0 0 0 1px rgba(0, 0, 0, 0.32);
   backdrop-filter: blur(0.8rem) saturate(112%);
   font-family: "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
-  font-size: clamp(0.625rem, calc(0.75rem * var(--overlay-scale)), 0.875rem);
+  font-size: 1rem;
   font-variant-numeric: tabular-nums;
   transition: border-color 160ms ease, box-shadow 160ms ease, filter 160ms ease;
 }
@@ -103,7 +103,7 @@ body,
 
 .overlay__locator-label {
   color: rgba(220, 233, 232, 0.52);
-  font-size: 0.55em;
+  font-size: clamp(0.625rem, calc(0.625rem * var(--overlay-scale)), 0.6875rem);
   font-weight: 650;
   letter-spacing: 0.16em;
 }
@@ -112,7 +112,7 @@ body,
   max-width: 100%;
   overflow: hidden;
   color: rgba(220, 233, 232, 0.76);
-  font-size: 0.52em;
+  font-size: clamp(0.625rem, calc(0.625rem * var(--overlay-scale)), 0.6875rem);
   letter-spacing: 0.06em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -143,7 +143,7 @@ body,
 .overlay__name {
   overflow: hidden;
   color: #eef8f7;
-  font-size: 0.78em;
+  font-size: clamp(0.75rem, calc(0.78rem * var(--overlay-scale)), 0.875rem);
   font-weight: 700;
   letter-spacing: 0.015em;
   text-overflow: ellipsis;
@@ -153,7 +153,7 @@ body,
 .overlay__source-status {
   flex: none;
   color: var(--overlay-accent);
-  font-size: 0.61em;
+  font-size: clamp(0.75rem, calc(0.75rem * var(--overlay-scale)), 0.8125rem);
   font-weight: 700;
 }
 
@@ -166,21 +166,26 @@ body,
   max-width: 58%;
   overflow: hidden;
   color: #a9b9b9;
-  font-size: 0.55em;
+  font-size: clamp(0.625rem, calc(0.625rem * var(--overlay-scale)), 0.6875rem);
   white-space: nowrap;
 }
 
 .overlay__connection {
+  flex: 0 0 auto;
+  max-width: 100%;
   overflow: hidden;
   color: var(--overlay-accent);
   text-overflow: ellipsis;
 }
 
 .overlay__latency {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
   padding-left: 0.45em;
   border-left: 1px solid rgba(220, 233, 232, 0.18);
   color: var(--overlay-cyan-soft);
+  text-overflow: ellipsis;
 }
 
 .overlay__timers {
@@ -217,14 +222,14 @@ body,
 
 .overlay__timer dt {
   color: #8fa2a2;
-  font-size: 0.53em;
+  font-size: clamp(0.625rem, calc(0.625rem * var(--overlay-scale)), 0.6875rem);
   letter-spacing: 0.04em;
 }
 
 .overlay__timer dd {
   margin-top: 0.08em;
   color: var(--overlay-cyan-soft);
-  font-size: 0.75em;
+  font-size: clamp(0.75rem, calc(0.75rem * var(--overlay-scale)), 0.8125rem);
   font-weight: 750;
 }
 
