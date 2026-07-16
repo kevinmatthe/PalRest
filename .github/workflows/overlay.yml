@@ -12,8 +12,8 @@ jobs:
   service-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
           cache: true
@@ -30,16 +30,16 @@ jobs:
           - windows-latest
           - macos-14
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.13.0
           cache: npm
           cache-dependency-path: overlay/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: overlay/src-tauri
 
@@ -52,10 +52,81 @@ jobs:
       - name: Test native bridge
         run: cargo test --manifest-path overlay/src-tauri/Cargo.toml
 
-      # Secrets are mapped into this shell step first so later `if` expressions
-      # depend only on ordinary job environment values.
-      - name: Select macOS delivery mode
+      - name: Build Windows development installers
+        if: runner.os == 'Windows'
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
+        with:
+          projectPath: overlay
+          tauriScript: npm run tauri
+          args: --bundles nsis,msi
+
+      - name: Build ad-hoc macOS development bundles
         if: runner.os == 'macOS'
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
+        with:
+          projectPath: overlay
+          tauriScript: npm run tauri
+          args: --bundles app,dmg
+
+      - name: Package ad-hoc macOS app and label development artifacts
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          apps=(overlay/src-tauri/target/release/bundle/macos/*.app)
+          dmgs=(overlay/src-tauri/target/release/bundle/dmg/*.dmg)
+          [[ ${#apps[@]} -eq 1 && ${#dmgs[@]} -eq 1 ]]
+          ditto -c -k --sequesterRsrc --keepParent "${apps[0]}" \
+            overlay/src-tauri/target/release/bundle/macos/PalREST-Game-Overlay-development-unsigned.app.zip
+          mv "${dmgs[0]}" \
+            overlay/src-tauri/target/release/bundle/dmg/PalREST-Game-Overlay-development-unsigned.dmg
+
+      - name: Upload Windows NSIS and MSI installers
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: overlay-windows-development-installers
+          if-no-files-found: error
+          path: |
+            overlay/src-tauri/target/release/bundle/nsis/*.exe
+            overlay/src-tauri/target/release/bundle/msi/*.msi
+
+      - name: Upload ad-hoc macOS development bundles
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: overlay-macos-development-unsigned
+          if-no-files-found: error
+          path: |
+            overlay/src-tauri/target/release/bundle/dmg/PalREST-Game-Overlay-development-unsigned.dmg
+            overlay/src-tauri/target/release/bundle/macos/PalREST-Game-Overlay-development-unsigned.app.zip
+
+  macos-signed-delivery:
+    name: macOS signed delivery
+    needs: overlay-test
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: macos-14
+    permissions:
+      contents: read
+    environment: overlay-release
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+          cache-dependency-path: overlay/package-lock.json
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: overlay/src-tauri
+      - name: Install overlay dependencies
+        run: npm --prefix overlay ci
+
+      - name: Verify all Apple delivery credentials are available
+        id: signing
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -65,30 +136,24 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          if [[ -n "$APPLE_CERTIFICATE" && \
-                -n "$APPLE_CERTIFICATE_PASSWORD" && \
-                -n "$APPLE_SIGNING_IDENTITY" && \
-                -n "$APPLE_ID" && \
-                -n "$APPLE_PASSWORD" && \
-                -n "$APPLE_TEAM_ID" ]]; then
-            echo "MACOS_SIGNING_AVAILABLE=true" >> "$GITHUB_ENV"
-            echo "MACOS_ARTIFACT_LABEL=signed-notarized" >> "$GITHUB_ENV"
-          else
-            echo "MACOS_SIGNING_AVAILABLE=false" >> "$GITHUB_ENV"
-            echo "MACOS_ARTIFACT_LABEL=development-unsigned" >> "$GITHUB_ENV"
-          fi
+          available=true
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then
+              available=false
+            fi
+          done
+          echo "available=$available" >> "$GITHUB_OUTPUT"
 
-      - name: Build Windows installers
-        if: runner.os == 'Windows'
-        uses: tauri-apps/tauri-action@v1
-        with:
-          projectPath: overlay
-          tauriScript: npm run tauri
-          args: --bundles nsis,msi
+      - name: Stop when Apple delivery credentials are incomplete
+        if: steps.signing.outputs.available != 'true'
+        run: |
+          echo "All six Apple delivery secrets are required in overlay-release."
+          exit 1
 
       - name: Build signed and notarized macOS bundles
-        if: runner.os == 'macOS' && env.MACOS_SIGNING_AVAILABLE == 'true'
-        uses: tauri-apps/tauri-action@v1
+        if: steps.signing.outputs.available == 'true'
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -101,34 +166,25 @@ jobs:
           tauriScript: npm run tauri
           args: --bundles app,dmg
 
-      - name: Build development-only macOS bundles
-        if: runner.os == 'macOS' && env.MACOS_SIGNING_AVAILABLE != 'true'
-        uses: tauri-apps/tauri-action@v1
-        env:
-          # Ad-hoc signing is required for a usable Apple Silicon development app,
-          # but it does not satisfy Developer ID or Gatekeeper acceptance.
-          APPLE_SIGNING_IDENTITY: '-'
-        with:
-          projectPath: overlay
-          tauriScript: npm run tauri
-          args: --bundles app,dmg
+      - name: Package signed app and label delivery artifacts
+        if: steps.signing.outputs.available == 'true'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          apps=(overlay/src-tauri/target/release/bundle/macos/*.app)
+          dmgs=(overlay/src-tauri/target/release/bundle/dmg/*.dmg)
+          [[ ${#apps[@]} -eq 1 && ${#dmgs[@]} -eq 1 ]]
+          ditto -c -k --sequesterRsrc --keepParent "${apps[0]}" \
+            overlay/src-tauri/target/release/bundle/macos/PalREST-Game-Overlay-signed-notarized.app.zip
+          mv "${dmgs[0]}" \
+            overlay/src-tauri/target/release/bundle/dmg/PalREST-Game-Overlay-signed-notarized.dmg
 
-      - name: Upload Windows NSIS and MSI installers
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+      - name: Upload signed and notarized macOS bundles
+        if: steps.signing.outputs.available == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: overlay-windows-installers
+          name: overlay-macos-signed-notarized
           if-no-files-found: error
           path: |
-            overlay/src-tauri/target/release/bundle/nsis/*.exe
-            overlay/src-tauri/target/release/bundle/msi/*.msi
-
-      - name: Upload macOS DMG and app
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: overlay-macos-${{ env.MACOS_ARTIFACT_LABEL }}
-          if-no-files-found: error
-          path: |
-            overlay/src-tauri/target/release/bundle/dmg/*.dmg
-            overlay/src-tauri/target/release/bundle/macos/*.app
+            overlay/src-tauri/target/release/bundle/dmg/PalREST-Game-Overlay-signed-notarized.dmg
+            overlay/src-tauri/target/release/bundle/macos/PalREST-Game-Overlay-signed-notarized.app.zip
