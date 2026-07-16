@@ -1,8 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Allow local overlay windows to invoke application commands only.",
+  "description": "Allow local overlay windows to subscribe to native lifecycle events.",
   "local": true,
   "windows": ["overlay", "settings"],
-  "permissions": []
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
 }

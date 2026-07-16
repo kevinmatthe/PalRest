@@ -210,6 +210,7 @@ body.settings-window {
 .settings-message--error { color: #ff9a90; }
 
 .overlay-state {
+  position: relative;
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -223,6 +224,11 @@ body.settings-window {
   color: #dce9e8;
   background: rgba(7, 15, 19, 0.94);
   font: 700 0.8rem/1.4 "Microsoft YaHei UI", "PingFang SC", sans-serif;
+}
+
+.overlay-state--adjusting {
+  border-color: rgba(157, 242, 239, 0.88);
+  cursor: grab;
 }
 
 @media (min-width: 35rem) {

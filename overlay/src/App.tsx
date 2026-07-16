@@ -20,8 +20,11 @@ type Bootstrap =
       detectedUserId?: string | null
     }
 
-function CompactState({ children }: { children: string }) {
-  return <main className="overlay-state" role="status">{children}</main>
+function CompactState({ children, adjustMode = false }: { children: string; adjustMode?: boolean }) {
+  return <main className={`overlay-state${adjustMode ? ' overlay-state--adjusting' : ''}`} role="status" data-tauri-drag-region={adjustMode || undefined}>
+    <span data-tauri-drag-region={adjustMode || undefined}>{children}</span>
+    {adjustMode ? <span className="overlay__drag-hint" data-tauri-drag-region>拖动调整位置</span> : null}
+  </main>
 }
 
 function LiveOverlay({ bridge, config, adjustMode }: { bridge: DesktopBridge; config: OverlayConfigV1; adjustMode: boolean }) {
@@ -48,10 +51,10 @@ function LiveOverlay({ bridge, config, adjustMode }: { bridge: DesktopBridge; co
   if (state.status === 'disconnected' && state.snapshot) {
     return <OverlayBar snapshot={state.snapshot} status="disconnected" mapBaseUrl={config.baseUrl} scale={config.scale} adjustMode={adjustMode} />
   }
-  if (state.status === 'needs-player') return <CompactState>玩家已失效，请在设置中重新选择</CompactState>
-  if (state.status === 'incompatible') return <CompactState>服务版本不兼容，请更新应用</CompactState>
-  if (state.status === 'disconnected') return <CompactState>暂时无法连接服务</CompactState>
-  return <CompactState>正在读取玩家状态…</CompactState>
+  if (state.status === 'needs-player') return <CompactState adjustMode={adjustMode}>玩家已失效，请在设置中重新选择</CompactState>
+  if (state.status === 'incompatible') return <CompactState adjustMode={adjustMode}>服务版本不兼容，请更新应用</CompactState>
+  if (state.status === 'disconnected') return <CompactState adjustMode={adjustMode}>暂时无法连接服务</CompactState>
+  return <CompactState adjustMode={adjustMode}>正在读取玩家状态…</CompactState>
 }
 
 export default function App({ bridge }: AppProps) {
@@ -126,8 +129,8 @@ export default function App({ bridge }: AppProps) {
     void bridge.openSettings().catch(() => undefined)
   }, [bootstrap, bridge])
 
-  if (bootstrap.status === 'loading') return <CompactState>正在读取本地设置…</CompactState>
-  if (bootstrap.status === 'error') return <CompactState>无法读取悬浮条设置</CompactState>
+  if (bootstrap.status === 'loading') return <CompactState adjustMode={adjustMode}>正在读取本地设置…</CompactState>
+  if (bootstrap.status === 'error') return <CompactState adjustMode={adjustMode}>无法读取悬浮条设置</CompactState>
   if (bootstrap.label === 'settings') {
     return <SettingsView
       bridge={bridge}
@@ -138,6 +141,6 @@ export default function App({ bridge }: AppProps) {
       onSaved={(config) => setBootstrap({ ...bootstrap, config })}
     />
   }
-  if (!bootstrap.config) return <CompactState>需要先完成设置</CompactState>
+  if (!bootstrap.config) return <CompactState adjustMode={adjustMode}>需要先完成设置</CompactState>
   return <LiveOverlay bridge={bridge} config={bootstrap.config} adjustMode={adjustMode} />
 }

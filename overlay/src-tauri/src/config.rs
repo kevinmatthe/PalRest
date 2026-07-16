@@ -152,11 +152,40 @@ pub fn save_editable_to_path(config_dir: &Path, incoming: &OverlayConfig) -> io:
             current.game_id = incoming.game_id.clone();
             current.user_id = incoming.user_id.clone();
             current.scale = incoming.scale;
+            current.locked = incoming.locked;
             current
         }
         None => incoming.clone(),
     };
     save_to_path(config_dir, &merged)
+}
+
+pub fn save_geometry_to_path(
+    config_dir: &Path,
+    display_id: Option<String>,
+    x: f64,
+    y: f64,
+) -> io::Result<Option<OverlayConfig>> {
+    let Some(mut current) = load_from_path(config_dir)? else {
+        return Ok(None);
+    };
+    let backup = current.clone();
+    current.display_id = display_id;
+    current.x = Some(x);
+    current.y = Some(y);
+    current.locked = true;
+    save_to_path(config_dir, &current)?;
+    Ok(Some(backup))
+}
+
+pub fn restore_geometry_to_path(
+    config_dir: &Path,
+    backup: Option<&OverlayConfig>,
+) -> io::Result<()> {
+    if let Some(config) = backup {
+        save_to_path(config_dir, config)?;
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -171,7 +200,10 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{OverlayConfig, load_from_path, save_editable_to_path, save_to_path};
+    use super::{
+        OverlayConfig, load_from_path, restore_geometry_to_path, save_editable_to_path,
+        save_geometry_to_path, save_to_path,
+    };
     use std::fs;
 
     fn config() -> OverlayConfig {
@@ -289,8 +321,30 @@ mod tests {
         assert_eq!(merged.display_id, native.display_id);
         assert_eq!(merged.x, native.x);
         assert_eq!(merged.y, native.y);
-        assert!(merged.locked);
+        assert!(!merged.locked);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restores_old_geometry_after_a_later_window_failure() {
+        let dir = temp_dir("geometry-rollback");
+        let original = config();
+        save_to_path(&dir, &original).unwrap();
+        let backup = save_geometry_to_path(&dir, Some("new-display".into()), 80.0, 90.0).unwrap();
+        assert_eq!(load_from_path(&dir).unwrap().unwrap().x, Some(80.0));
+        restore_geometry_to_path(&dir, backup.as_ref()).unwrap();
+        assert_eq!(load_from_path(&dir).unwrap(), Some(original));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn capability_allows_only_required_event_listen_operations() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        assert_eq!(
+            capability["permissions"],
+            serde_json::json!(["core:event:allow-listen", "core:event:allow-unlisten"])
+        );
     }
 
     #[test]

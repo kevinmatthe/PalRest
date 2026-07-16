@@ -193,4 +193,18 @@ describe('App window routing', () => {
     expect(await screen.findByText('无法读取悬浮条设置')).toBeInTheDocument()
     expect(screen.queryByText(/secret path/)).not.toBeInTheDocument()
   })
+
+  it('keeps compact loading and disconnected states draggable during adjustment', async () => {
+    let notify!: (enabled: boolean) => void
+    const api = bridge({
+      onAdjustmentModeChanged: vi.fn(async (handler) => { notify = handler; return () => {} }),
+      fetchSnapshot: vi.fn<DesktopBridge['fetchSnapshot']>(() => new Promise(() => {})),
+    })
+    render(<App bridge={api} />)
+    await waitFor(() => expect(api.fetchSnapshot).toHaveBeenCalled())
+    notify(true)
+    const loading = await screen.findByText('正在读取玩家状态…')
+    expect(loading.closest('main')).toHaveAttribute('data-tauri-drag-region')
+    expect(screen.getByText('拖动调整位置')).toBeInTheDocument()
+  })
 })

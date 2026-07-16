@@ -51,6 +51,8 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
   const saveGeneration = useRef(0)
   const adjustGeneration = useRef(0)
   const lastReselectSignal = useRef(0)
+  const suppressKnownIdentity = useRef(false)
+  const explicitlySelectedUserId = useRef<string | null>(null)
 
   useEffect(() => {
     mounted.current = true
@@ -85,7 +87,7 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
     setLoadedBaseUrl(null)
   }
 
-  async function loadPlayers(selectKnownIdentity = true) {
+  async function loadPlayers() {
     listController.current?.abort()
     const generation = ++listGeneration.current
     setLoadedBaseUrl(null)
@@ -110,11 +112,13 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
       setBaseUrl(normalized)
       setPlayers(listed)
       setLoadedBaseUrl(normalized)
-      const exactSaved = selectKnownIdentity && initialConfig && listed.some((player) => player.user_id === initialConfig.userId)
+      const exactExplicit = explicitlySelectedUserId.current && listed.some((player) => player.user_id === explicitlySelectedUserId.current)
+        ? explicitlySelectedUserId.current : ''
+      const exactSaved = !suppressKnownIdentity.current && initialConfig && listed.some((player) => player.user_id === initialConfig.userId)
         ? initialConfig.userId : ''
-      const exactDetected = selectKnownIdentity && platform === 'windows' && detectedUserId && listed.some((player) => player.user_id === detectedUserId)
+      const exactDetected = !suppressKnownIdentity.current && platform === 'windows' && detectedUserId && listed.some((player) => player.user_id === detectedUserId)
         ? detectedUserId : ''
-      setUserId(exactSaved || exactDetected || '')
+      setUserId(exactExplicit || exactSaved || exactDetected || '')
       setMessage(listed.length ? null : { tone: 'status', text: '未找到可选择的玩家' })
     } catch {
       if (mounted.current && generation === listGeneration.current && !controller.signal.aborted) {
@@ -131,7 +135,9 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
   useEffect(() => {
     if (lastReselectSignal.current === reselectSignal) return
     lastReselectSignal.current = reselectSignal
-    void loadPlayers(false)
+    suppressKnownIdentity.current = true
+    explicitlySelectedUserId.current = null
+    void loadPlayers()
   }, [reselectSignal])
 
   async function save(event: FormEvent) {
@@ -220,7 +226,14 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
           </div>
           <label className="settings-field">
             <span>玩家</span>
-            <select value={userId} onChange={(event) => setUserId(event.target.value)}>
+            <select value={userId} onChange={(event) => {
+              const nextUserId = event.target.value
+              if (nextUserId) {
+                suppressKnownIdentity.current = false
+                explicitlySelectedUserId.current = nextUserId
+              }
+              setUserId(nextUserId)
+            }}>
               <option value="">请选择精确玩家 UID</option>
               {players.map((player) => <option key={player.user_id} value={player.user_id}>{playerLabel(player)}</option>)}
             </select>

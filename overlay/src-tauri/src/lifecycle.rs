@@ -56,12 +56,31 @@ pub fn reduce(mut state: LifecycleState, event: LifecycleEvent) -> LifecycleStat
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleEffect {
     PersistGeometry,
+    RestorePosition(i32, i32),
     Show,
     Hide,
     SetClickThrough(bool),
     SetFocusable(bool),
     Focus,
     EmitAdjustment(bool),
+}
+
+#[must_use]
+pub fn initial_window_effects(
+    x: Option<f64>,
+    y: Option<f64>,
+    locked: bool,
+) -> Vec<LifecycleEffect> {
+    let mut effects = Vec::with_capacity(3);
+    if let (Some(x), Some(y)) = (x, y) {
+        effects.push(LifecycleEffect::RestorePosition(
+            x.round() as i32,
+            y.round() as i32,
+        ));
+    }
+    effects.push(LifecycleEffect::SetFocusable(!locked));
+    effects.push(LifecycleEffect::SetClickThrough(locked));
+    effects
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,7 +201,7 @@ pub fn close_action(label: &str) -> CloseAction {
 mod native {
     use super::{
         LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState, SCAN_INTERVAL,
-        execute_effects, plan_transition,
+        execute_effects, initial_window_effects, plan_transition,
     };
     use crate::{config, process::ProcessMonitor};
     use std::sync::Mutex;
@@ -223,7 +242,14 @@ mod native {
             let overlay = app
                 .get_webview_window("overlay")
                 .ok_or_else(|| "overlay window is unavailable".to_string())?;
-            execute_effects(&mut NativeExecutor { app, overlay }, &plan.effects)?;
+            execute_effects(
+                &mut NativeExecutor {
+                    app,
+                    overlay,
+                    geometry_backup: None,
+                },
+                &plan.effects,
+            )?;
             let mut state = self
                 .state
                 .lock()
@@ -236,19 +262,29 @@ mod native {
         fn quitting(&self) -> bool {
             self.state.lock().map_or(true, |state| state.quitting)
         }
+
+        fn set_initial_locked(&self, locked: bool) -> Result<(), String> {
+            self.state
+                .lock()
+                .map_err(|_| "lifecycle state is unavailable".to_string())?
+                .click_through = locked;
+            Ok(())
+        }
     }
 
     struct NativeExecutor<'a> {
         app: &'a AppHandle,
         overlay: tauri::WebviewWindow,
+        geometry_backup: Option<(std::path::PathBuf, Option<config::OverlayConfig>)>,
     }
 
     impl LifecycleEffectExecutor for NativeExecutor<'_> {
         fn apply(&mut self, effect: LifecycleEffect) -> Result<(), String> {
             let result = match effect {
-                LifecycleEffect::PersistGeometry => {
-                    return persist_geometry(self.app, &self.overlay);
-                }
+                LifecycleEffect::PersistGeometry => return self.persist_geometry(),
+                LifecycleEffect::RestorePosition(x, y) => self
+                    .overlay
+                    .set_position(tauri::PhysicalPosition::new(x, y)),
                 LifecycleEffect::Show => self.overlay.show(),
                 LifecycleEffect::Hide => self.overlay.hide(),
                 LifecycleEffect::SetClickThrough(value) => {
@@ -265,7 +301,12 @@ mod native {
 
         fn rollback(&mut self, effect: LifecycleEffect) {
             match effect {
-                LifecycleEffect::PersistGeometry => {}
+                LifecycleEffect::PersistGeometry => {
+                    if let Some((dir, backup)) = &self.geometry_backup {
+                        let _ = config::restore_geometry_to_path(dir, backup.as_ref());
+                    }
+                }
+                LifecycleEffect::RestorePosition(_, _) => {}
                 LifecycleEffect::Show => {
                     let _ = self.overlay.hide();
                 }
@@ -288,6 +329,33 @@ mod native {
         }
     }
 
+    impl NativeExecutor<'_> {
+        fn persist_geometry(&mut self) -> Result<(), String> {
+            let config_dir =
+                self.app.path().app_config_dir().map_err(|_| {
+                    "could not resolve the application config directory".to_string()
+                })?;
+            let position = self
+                .overlay
+                .outer_position()
+                .map_err(|error| error.to_string())?;
+            let display_id = self
+                .overlay
+                .current_monitor()
+                .map_err(|error| error.to_string())?
+                .and_then(|monitor| monitor.name().map(ToOwned::to_owned));
+            let backup = config::save_geometry_to_path(
+                &config_dir,
+                display_id,
+                f64::from(position.x),
+                f64::from(position.y),
+            )
+            .map_err(|error| error.to_string())?;
+            self.geometry_backup = Some((config_dir, backup));
+            Ok(())
+        }
+    }
+
     fn current_platform() -> &'static str {
         if cfg!(target_os = "windows") {
             "windows"
@@ -298,39 +366,28 @@ mod native {
         }
     }
 
-    fn persist_geometry(app: &AppHandle, overlay: &tauri::WebviewWindow) -> Result<(), String> {
-        let config_dir = app
-            .path()
-            .app_config_dir()
-            .map_err(|_| "could not resolve the application config directory".to_string())?;
-        let Some(mut saved) =
-            config::load_from_path(&config_dir).map_err(|error| error.to_string())?
-        else {
-            return Ok(());
-        };
-        let position = overlay
-            .outer_position()
-            .map_err(|error| error.to_string())?;
-        saved.x = Some(f64::from(position.x));
-        saved.y = Some(f64::from(position.y));
-        saved.display_id = overlay
-            .current_monitor()
-            .map_err(|error| error.to_string())?
-            .and_then(|monitor| monitor.name().map(ToOwned::to_owned));
-        saved.locked = true;
-        config::save_to_path(&config_dir, &saved).map_err(|error| error.to_string())
-    }
-
     pub fn initialise(app: &AppHandle) -> Result<(), String> {
         let overlay = app
             .get_webview_window("overlay")
             .ok_or_else(|| "overlay window is unavailable".to_string())?;
-        overlay
-            .set_ignore_cursor_events(true)
-            .map_err(|error| error.to_string())?;
-        overlay
-            .set_focusable(false)
-            .map_err(|error| error.to_string())
+        let saved = app
+            .path()
+            .app_config_dir()
+            .ok()
+            .and_then(|dir| config::load_from_path(&dir).ok().flatten());
+        let (x, y, locked) = saved.as_ref().map_or((None, None, true), |config| {
+            (config.x, config.y, config.locked)
+        });
+        execute_effects(
+            &mut NativeExecutor {
+                app,
+                overlay,
+                geometry_backup: None,
+            },
+            &initial_window_effects(x, y, locked),
+        )?;
+        app.state::<LifecycleController>()
+            .set_initial_locked(locked)
     }
 
     pub fn start_monitor(app: AppHandle) {
@@ -358,7 +415,8 @@ pub use native::{LifecycleController, initialise, start_monitor};
 mod tests {
     use super::{
         CloseAction, LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState,
-        SCAN_INTERVAL, close_action, execute_effects, plan_transition, reduce,
+        SCAN_INTERVAL, close_action, execute_effects, initial_window_effects, plan_transition,
+        reduce,
     };
     use std::time::Duration;
 
@@ -531,6 +589,29 @@ mod tests {
             vec![
                 LifecycleEffect::SetClickThrough(true),
                 LifecycleEffect::PersistGeometry,
+            ]
+        );
+    }
+
+    #[test]
+    fn initial_window_restores_position_before_applying_unlocked_input_state() {
+        assert_eq!(
+            initial_window_effects(Some(12.0), Some(34.0), false),
+            vec![
+                LifecycleEffect::RestorePosition(12, 34),
+                LifecycleEffect::SetFocusable(true),
+                LifecycleEffect::SetClickThrough(false),
+            ]
+        );
+    }
+
+    #[test]
+    fn initial_window_without_geometry_uses_locked_safe_defaults() {
+        assert_eq!(
+            initial_window_effects(None, None, true),
+            vec![
+                LifecycleEffect::SetFocusable(false),
+                LifecycleEffect::SetClickThrough(true),
             ]
         );
     }
