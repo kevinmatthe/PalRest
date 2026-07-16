@@ -1,0 +1,63 @@
+{
+  "schema": "overlay.snapshot/v1",
+  "game_id": "palworld",
+  "user_id": "steam_76561198000000001",
+  "observed_at": "2026-07-16T12:00:00Z",
+  "fresh_until": "2026-07-16T12:00:15Z",
+  "source_status": "online",
+  "capabilities": [
+    "identity",
+    "latency",
+    "timers",
+    "map"
+  ],
+  "identity": {
+    "display_name": "Lamball Keeper",
+    "account_name": "steam_76561198000000001",
+    "level": 42
+  },
+  "latency": {
+    "milliseconds": 38.5
+  },
+  "timers": [
+    {
+      "id": "today_observed",
+      "label": "Today observed",
+      "value_ms": 7200000,
+      "semantic": "duration",
+      "tone": "normal",
+      "progress": 0.333333
+    },
+    {
+      "id": "week_observed",
+      "label": "Week observed",
+      "value_ms": 21600000,
+      "semantic": "duration",
+      "tone": "normal",
+      "progress": 0.428571
+    },
+    {
+      "id": "policy_cycle_used",
+      "label": "Policy cycle used",
+      "value_ms": 21600000,
+      "semantic": "duration",
+      "tone": "warning",
+      "progress": 0.75
+    },
+    {
+      "id": "policy_remaining",
+      "label": "Policy remaining",
+      "value_ms": 7200000,
+      "semantic": "duration",
+      "tone": "warning",
+      "progress": 0.25
+    }
+  ],
+  "map": {
+    "x": 187.25,
+    "y": -64.5,
+    "projection": "palworld_world_v1",
+    "tile_set": "palworld_default_v1",
+    "tile_url": "/map/tiles/{z}/{x}/{y}.png"
+  }
+}
