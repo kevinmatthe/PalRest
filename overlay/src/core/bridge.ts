@@ -1,3 +1,5 @@
+import type { OverlayConfigV1 } from './config'
+
 export type FetchSnapshotRequest = {
   baseUrl: string
   gameId: string
@@ -16,4 +18,21 @@ export interface OverlayBridge {
     request: FetchSnapshotRequest,
     signal: AbortSignal,
   ): Promise<FetchSnapshotResult>
+}
+
+export type PlayerListItem = {
+  user_id: string
+  name: string
+  account_name: string
+}
+
+export interface DesktopBridge extends OverlayBridge {
+  loadConfig(): Promise<OverlayConfigV1 | null>
+  saveConfig(config: OverlayConfigV1): Promise<void>
+  listPlayers(baseUrl: string, signal: AbortSignal): Promise<PlayerListItem[]>
+  currentWindowLabel(): Promise<'overlay' | 'settings'>
+  setAdjustmentMode(enabled: boolean): Promise<void>
+  openSettings?(): Promise<void>
+  currentPlatform?(): Promise<'windows' | 'macos' | string>
+  detectedPalworldUserId?(): Promise<string | null>
 }

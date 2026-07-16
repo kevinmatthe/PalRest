@@ -1,3 +1,88 @@
-export default function App() {
-  return <main aria-live="polite">Overlay loading</main>
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+
+import { OverlayBar } from './components/OverlayBar'
+import type { DesktopBridge } from './core/bridge'
+import { parseOverlayConfig, type OverlayConfigV1 } from './core/config'
+import { SnapshotPoller } from './core/poller'
+import { SettingsView } from './settings/SettingsView'
+import './styles.css'
+
+export interface AppProps { bridge: DesktopBridge }
+
+type Bootstrap =
+  | { status: 'loading' }
+  | { status: 'error' }
+  | { status: 'ready'; label: 'overlay' | 'settings'; config: OverlayConfigV1 | null }
+
+function CompactState({ children }: { children: string }) {
+  return <main className="overlay-state" role="status">{children}</main>
+}
+
+function LiveOverlay({ bridge, config }: { bridge: DesktopBridge; config: OverlayConfigV1 }) {
+  const poller = useMemo(() => new SnapshotPoller({
+    bridge,
+    config: { baseUrl: config.baseUrl, gameId: config.gameId, userId: config.userId },
+  }), [bridge, config])
+  const state = useSyncExternalStore(poller.subscribe, poller.getState, poller.getState)
+
+  useEffect(() => {
+    poller.start()
+    return () => poller.stop()
+  }, [poller])
+
+  useEffect(() => {
+    if (state.status === 'needs-player' && bridge.openSettings) {
+      void bridge.openSettings().catch(() => undefined)
+    }
+  }, [bridge, state.status])
+
+  if (state.status === 'ready' || state.status === 'stale') {
+    return <OverlayBar snapshot={state.snapshot} status={state.status} mapBaseUrl={config.baseUrl} scale={config.scale} />
+  }
+  if (state.status === 'disconnected' && state.snapshot) {
+    return <OverlayBar snapshot={state.snapshot} status="disconnected" mapBaseUrl={config.baseUrl} scale={config.scale} />
+  }
+  if (state.status === 'needs-player') return <CompactState>玩家已失效，请在设置中重新选择</CompactState>
+  if (state.status === 'incompatible') return <CompactState>服务版本不兼容，请更新应用</CompactState>
+  if (state.status === 'disconnected') return <CompactState>暂时无法连接服务</CompactState>
+  return <CompactState>正在读取玩家状态…</CompactState>
+}
+
+export default function App({ bridge }: AppProps) {
+  const [bootstrap, setBootstrap] = useState<Bootstrap>({ status: 'loading' })
+
+  useEffect(() => {
+    let active = true
+    const labelPromise = bridge.currentWindowLabel()
+    const configPromise = bridge.loadConfig()
+    void Promise.all([labelPromise, configPromise]).then(([label, rawConfig]) => {
+      if (!active) return
+      if (label !== 'overlay' && label !== 'settings') {
+        setBootstrap({ status: 'error' })
+        return
+      }
+      const config = rawConfig === null ? null : parseOverlayConfig(rawConfig)
+      if (rawConfig !== null && !config) {
+        setBootstrap({ status: 'error' })
+        return
+      }
+      setBootstrap({ status: 'ready', label, config })
+    }).catch(() => {
+      if (active) setBootstrap({ status: 'error' })
+    })
+    return () => { active = false }
+  }, [bridge])
+
+  useEffect(() => {
+    if (bootstrap.status !== 'ready' || bootstrap.label !== 'overlay' || bootstrap.config || !bridge.openSettings) return
+    void bridge.openSettings().catch(() => undefined)
+  }, [bootstrap, bridge])
+
+  if (bootstrap.status === 'loading') return <CompactState>正在读取本地设置…</CompactState>
+  if (bootstrap.status === 'error') return <CompactState>无法读取悬浮条设置</CompactState>
+  if (bootstrap.label === 'settings') {
+    return <SettingsView bridge={bridge} initialConfig={bootstrap.config} onSaved={(config) => setBootstrap({ ...bootstrap, config })} />
+  }
+  if (!bootstrap.config) return <CompactState>需要先完成设置</CompactState>
+  return <LiveOverlay bridge={bridge} config={bootstrap.config} />
 }
