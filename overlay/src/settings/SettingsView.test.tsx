@@ -92,4 +92,24 @@ describe('SettingsView', () => {
     fireEvent.click(screen.getByRole('button', { name: '调整悬浮条位置' }))
     expect(api.setAdjustmentMode).toHaveBeenCalledWith(true)
   })
+
+  it('invalidates a loaded player when the service changes and saves only after reloading', async () => {
+    const api = bridge({
+      listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Lamball', account_name: 'steam' }]),
+      saveConfig: vi.fn(async () => {}),
+    })
+    render(<SettingsView bridge={api} initialConfig={saved} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+
+    fireEvent.change(screen.getByLabelText('服务地址'), { target: { value: 'https://other.test' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    expect(api.saveConfig).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert')).toHaveTextContent('重新加载玩家')
+
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(api.listPlayers).toHaveBeenLastCalledWith('https://other.test', expect.any(AbortSignal)))
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    await waitFor(() => expect(api.saveConfig).toHaveBeenCalledWith({ ...saved, baseUrl: 'https://other.test' }))
+  })
 })

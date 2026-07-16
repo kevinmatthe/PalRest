@@ -25,10 +25,23 @@ const MALFORMED_PERCENT = /%(?![0-9a-f]{2})/i
 const SCALES = new Set<unknown>([0.8, 1, 1.25])
 
 export function normalizeBaseUrl(input: unknown): string {
-  if (typeof input !== 'string' || CONTROL_CHARACTER.test(input) || MALFORMED_PERCENT.test(input)) {
+  if (typeof input !== 'string' || CONTROL_CHARACTER.test(input)) {
     throw new Error('invalid base URL')
   }
   const trimmed = input.trim()
+  if (!/^https?:\/\//i.test(trimmed) || trimmed.includes('\\') || trimmed.includes('?') ||
+      trimmed.includes('#') || MALFORMED_PERCENT.test(trimmed)) {
+    throw new Error('invalid base URL')
+  }
+  const authorityStart = trimmed.indexOf('//') + 2
+  const authorityEnd = trimmed.indexOf('/', authorityStart)
+  const authority = authorityEnd === -1 ? trimmed.slice(authorityStart) : trimmed.slice(authorityStart, authorityEnd)
+  if (authority.includes('@')) throw new Error('invalid base URL')
+  const portDelimiter = authority.startsWith('[')
+    ? authority.indexOf(':', authority.indexOf(']') + 1)
+    : authority.lastIndexOf(':')
+  const explicitPort = portDelimiter === -1 ? '' : authority.slice(portDelimiter + 1)
+  if (portDelimiter !== -1 && !/^\d+$/.test(explicitPort)) throw new Error('invalid base URL')
   let url: URL
   try {
     url = new URL(trimmed)
@@ -39,7 +52,7 @@ export function normalizeBaseUrl(input: unknown): string {
       url.username || url.password || url.search || url.hash || url.pathname !== '/') {
     throw new Error('invalid base URL')
   }
-  return url.origin
+  return `${url.protocol}//${url.hostname}${explicitPort ? `:${explicitPort}` : ''}`
 }
 
 export function parseOverlayConfig(input: unknown): OverlayConfigV1 | null {

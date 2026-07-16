@@ -33,6 +33,7 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
   const [baseUrl, setBaseUrl] = useState(initialConfig?.baseUrl ?? '')
   const [players, setPlayers] = useState<PlayerListItem[]>([])
   const [userId, setUserId] = useState('')
+  const [loadedBaseUrl, setLoadedBaseUrl] = useState<string | null>(null)
   const [scale, setScale] = useState(String(initialConfig?.scale ?? 1))
   const [locked, setLocked] = useState(initialConfig?.locked ?? true)
   const [loading, setLoading] = useState(false)
@@ -49,6 +50,23 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
       document.body.classList.remove('settings-window')
     }
   }, [])
+
+  function changeBaseUrl(value: string) {
+    setBaseUrl(value)
+    let normalized: string | null = null
+    try {
+      normalized = normalizeBaseUrl(value)
+    } catch {
+      // An invalid edit always invalidates the list tied to the previous service.
+    }
+    if (normalized === loadedBaseUrl) return
+    listController.current?.abort()
+    listController.current = null
+    setLoading(false)
+    setPlayers([])
+    setUserId('')
+    setLoadedBaseUrl(null)
+  }
 
   async function loadPlayers() {
     let normalized: string
@@ -68,6 +86,7 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
       if (controller.signal.aborted) return
       setBaseUrl(normalized)
       setPlayers(listed)
+      setLoadedBaseUrl(normalized)
       const exactSaved = initialConfig && listed.some((player) => player.user_id === initialConfig.userId)
         ? initialConfig.userId : ''
       const exactDetected = platform === 'windows' && detectedUserId && listed.some((player) => player.user_id === detectedUserId)
@@ -87,12 +106,23 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
   async function save(event: FormEvent) {
     event.preventDefault()
     if (saving) return
+    let normalized: string
+    try {
+      normalized = normalizeBaseUrl(baseUrl)
+    } catch {
+      setMessage({ tone: 'error', text: '请输入有效的 HTTP 或 HTTPS 服务地址' })
+      return
+    }
+    if (loadedBaseUrl !== normalized) {
+      setMessage({ tone: 'error', text: '服务地址已更改，请重新加载玩家' })
+      return
+    }
     if (!players.some((player) => player.user_id === userId)) {
       setMessage({ tone: 'error', text: '请从已加载的列表中选择玩家' })
       return
     }
     const config = buildOverlayConfig({
-      baseUrl, userId, scale, locked,
+      baseUrl: normalized, userId, scale, locked,
       displayId: initialConfig?.displayId, x: initialConfig?.x, y: initialConfig?.y,
     })
     if (!config) {
@@ -137,7 +167,7 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
           <div className="settings-inline">
             <label className="settings-field settings-field--grow">
               <span>服务地址</span>
-              <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://palbox.tailnet.ts.net:9443" autoComplete="url" />
+              <input value={baseUrl} onChange={(event) => changeBaseUrl(event.target.value)} placeholder="https://palbox.tailnet.ts.net:9443" autoComplete="url" />
             </label>
             <button className="settings-button settings-button--secondary" type="button" aria-label="加载玩家" onClick={loadPlayers}>
               {loading ? '正在加载…' : '加载玩家'}

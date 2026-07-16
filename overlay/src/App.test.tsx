@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopBridge, FetchSnapshotResult } from './core/bridge'
@@ -25,6 +25,51 @@ describe('App window routing', () => {
     expect(api.loadConfig).toHaveBeenCalledTimes(1)
     expect(screen.getByText('正在读取本地设置…')).toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: '悬浮条设置' })).toBeInTheDocument()
+  })
+
+  it('selects an exact detected Windows UID after the settings player list loads', async () => {
+    const api = bridge({
+      currentWindowLabel: vi.fn(async () => 'settings' as const),
+      loadConfig: vi.fn(async () => null),
+      currentPlatform: vi.fn(async () => 'windows'),
+      detectedPalworldUserId: vi.fn(async () => 'steam_42'),
+      listPlayers: vi.fn(async () => [{ user_id: 'steam_42', name: 'Lamball', account_name: 'keeper' }]),
+    })
+    render(<App bridge={api} />)
+    await screen.findByRole('heading', { name: '悬浮条设置' })
+    fireEvent.change(screen.getByLabelText('服务地址'), { target: { value: 'https://palbox.test' } })
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('steam_42'))
+  })
+
+  it('does not guess a missing Windows candidate from player names', async () => {
+    const api = bridge({
+      currentWindowLabel: vi.fn(async () => 'settings' as const), loadConfig: vi.fn(async () => null),
+      currentPlatform: vi.fn(async () => 'windows'), detectedPalworldUserId: vi.fn(async () => 'steam_42'),
+      listPlayers: vi.fn(async () => [{ user_id: 'other', name: 'steam_42', account_name: 'steam_42' }]),
+    })
+    render(<App bridge={api} />)
+    await screen.findByRole('heading', { name: '悬浮条设置' })
+    fireEvent.change(screen.getByLabelText('服务地址'), { target: { value: 'https://palbox.test' } })
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(api.listPlayers).toHaveBeenCalled())
+    expect(screen.getByLabelText('玩家')).toHaveValue('')
+  })
+
+  it('keeps macOS manual and never asks for a Windows candidate', async () => {
+    const detectedPalworldUserId = vi.fn(async () => 'steam_42')
+    const api = bridge({
+      currentWindowLabel: vi.fn(async () => 'settings' as const), loadConfig: vi.fn(async () => null),
+      currentPlatform: vi.fn(async () => 'macos'), detectedPalworldUserId,
+      listPlayers: vi.fn(async () => [{ user_id: 'steam_42', name: 'Lamball', account_name: '' }]),
+    })
+    render(<App bridge={api} />)
+    await screen.findByRole('heading', { name: '悬浮条设置' })
+    fireEvent.change(screen.getByLabelText('服务地址'), { target: { value: 'https://palbox.test' } })
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(api.listPlayers).toHaveBeenCalled())
+    expect(detectedPalworldUserId).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('玩家')).toHaveValue('')
   })
 
   it('opens settings once and keeps a compact first-run state in the overlay window', async () => {

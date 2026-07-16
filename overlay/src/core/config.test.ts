@@ -25,12 +25,23 @@ describe('overlay config', () => {
     expect(input).toEqual({ ...valid, extra: 'future-safe' })
   })
 
+  it('preserves an explicitly configured port, including a scheme default port', () => {
+    expect(normalizeBaseUrl('https://PalBox.tailnet.ts.net:443/')).toBe('https://palbox.tailnet.ts.net:443')
+    expect(normalizeBaseUrl('http://127.0.0.1:8212')).toBe('http://127.0.0.1:8212')
+  })
+
   it.each([
     'ftp://palbox.test',
     'https://user:secret@palbox.test',
+    'https://@palbox.test',
+    'https://user:@palbox.test',
+    'https://:secret@palbox.test',
     'https://palbox.test/path',
     'https://palbox.test?token=x',
+    'https://palbox.test?',
+    'https://palbox.test#',
     'https://palbox.test/#part',
+    'https:\\palbox.test',
     'https://palbox.test/%zz',
     'https://palbox.test\n',
     'not a url',

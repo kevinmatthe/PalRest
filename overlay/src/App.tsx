@@ -12,7 +12,13 @@ export interface AppProps { bridge: DesktopBridge }
 type Bootstrap =
   | { status: 'loading' }
   | { status: 'error' }
-  | { status: 'ready'; label: 'overlay' | 'settings'; config: OverlayConfigV1 | null }
+  | {
+      status: 'ready'
+      label: 'overlay' | 'settings'
+      config: OverlayConfigV1 | null
+      platform?: string
+      detectedUserId?: string | null
+    }
 
 function CompactState({ children }: { children: string }) {
   return <main className="overlay-state" role="status">{children}</main>
@@ -55,7 +61,7 @@ export default function App({ bridge }: AppProps) {
     let active = true
     const labelPromise = bridge.currentWindowLabel()
     const configPromise = bridge.loadConfig()
-    void Promise.all([labelPromise, configPromise]).then(([label, rawConfig]) => {
+    void Promise.all([labelPromise, configPromise]).then(async ([label, rawConfig]) => {
       if (!active) return
       if (label !== 'overlay' && label !== 'settings') {
         setBootstrap({ status: 'error' })
@@ -66,7 +72,23 @@ export default function App({ bridge }: AppProps) {
         setBootstrap({ status: 'error' })
         return
       }
-      setBootstrap({ status: 'ready', label, config })
+      let platform: string | undefined
+      let detectedUserId: string | null | undefined
+      if (label === 'settings' && bridge.currentPlatform) {
+        try {
+          platform = await bridge.currentPlatform()
+          if (platform === 'windows' && bridge.detectedPalworldUserId) {
+            try {
+              detectedUserId = await bridge.detectedPalworldUserId()
+            } catch {
+              detectedUserId = null
+            }
+          }
+        } catch {
+          platform = undefined
+        }
+      }
+      if (active) setBootstrap({ status: 'ready', label, config, platform, detectedUserId })
     }).catch(() => {
       if (active) setBootstrap({ status: 'error' })
     })
@@ -81,7 +103,13 @@ export default function App({ bridge }: AppProps) {
   if (bootstrap.status === 'loading') return <CompactState>正在读取本地设置…</CompactState>
   if (bootstrap.status === 'error') return <CompactState>无法读取悬浮条设置</CompactState>
   if (bootstrap.label === 'settings') {
-    return <SettingsView bridge={bridge} initialConfig={bootstrap.config} onSaved={(config) => setBootstrap({ ...bootstrap, config })} />
+    return <SettingsView
+      bridge={bridge}
+      initialConfig={bootstrap.config}
+      platform={bootstrap.platform}
+      detectedUserId={bootstrap.detectedUserId}
+      onSaved={(config) => setBootstrap({ ...bootstrap, config })}
+    />
   }
   if (!bootstrap.config) return <CompactState>需要先完成设置</CompactState>
   return <LiveOverlay bridge={bridge} config={bootstrap.config} />
