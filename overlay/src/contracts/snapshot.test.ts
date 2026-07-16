@@ -55,13 +55,11 @@ describe('parseSnapshot', () => {
     expect(parsed.map).toMatchObject({ x: 0, y: 0 })
   })
 
-  it('rejects a negative duration with its field path', () => {
+  it('accepts and preserves a negative safe-integer duration', () => {
     const value = snapshot()
     ;(value.timers as Record<string, unknown>[])[0].value_ms = -1
 
-    expect(() => parseSnapshot(value)).toThrow(
-      /timers\[0\]\.value_ms must not be negative/,
-    )
+    expect(parseSnapshot(value).timers?.[0].value_ms).toBe(-1)
   })
 
   it('accepts Go zero, fractional, and offset RFC3339 timestamps', () => {
@@ -159,6 +157,8 @@ describe('parseSnapshot', () => {
     ['identity level', (value: Record<string, unknown>) => { value.identity = { display_name: 'Player', level: 1.5 } }],
     ['latency', (value: Record<string, unknown>) => { value.latency = { milliseconds: Number.NaN } }],
     ['timer value', (value: Record<string, unknown>) => { (value.timers as Record<string, unknown>[])[0].value_ms = 1.5 }],
+    ['unsafe timer value', (value: Record<string, unknown>) => { (value.timers as Record<string, unknown>[])[0].value_ms = Number.MAX_SAFE_INTEGER + 1 }],
+    ['nonfinite timer value', (value: Record<string, unknown>) => { (value.timers as Record<string, unknown>[])[0].value_ms = Number.NEGATIVE_INFINITY }],
     ['timer semantic', (value: Record<string, unknown>) => { (value.timers as Record<string, unknown>[])[0].semantic = 'count' }],
     ['timer tone', (value: Record<string, unknown>) => { (value.timers as Record<string, unknown>[])[0].tone = 'urgent' }],
     ['timer progress', (value: Record<string, unknown>) => { (value.timers as Record<string, unknown>[])[0].progress = 1.01 }],

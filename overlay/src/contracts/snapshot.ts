@@ -145,7 +145,6 @@ function parseTimer(value: unknown, index: number): Timer {
   }
   if (!TIMER_TONES.has(tone as TimerTone)) throw new Error(`${path}.tone is unknown`)
   const valueMS = integer(raw.value_ms, `${path}.value_ms`)
-  if (valueMS < 0) throw new Error(`${path}.value_ms must not be negative`)
 
   const timer: Timer = {
     id: string(raw.id, `${path}.id`),
