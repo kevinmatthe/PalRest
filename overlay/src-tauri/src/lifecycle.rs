@@ -94,7 +94,7 @@ pub fn initial_lifecycle_state(locked: bool) -> LifecycleState {
 
 #[must_use]
 pub fn focus_rollback_effects(platform: &str) -> Vec<LifecycleEffect> {
-    if platform == "macos" {
+    if needs_reliable_defocus(platform) {
         vec![
             LifecycleEffect::Hide,
             LifecycleEffect::SetFocusable(false),
@@ -103,6 +103,10 @@ pub fn focus_rollback_effects(platform: &str) -> Vec<LifecycleEffect> {
     } else {
         vec![LifecycleEffect::SetFocusable(false)]
     }
+}
+
+fn needs_reliable_defocus(platform: &str) -> bool {
+    matches!(platform, "windows" | "macos")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,7 +159,7 @@ pub fn plan_transition(
             if previous.click_through != next.click_through {
                 effects.push(LifecycleEffect::SetClickThrough(next.click_through));
             }
-            if platform == "macos" && next.overlay_visible {
+            if needs_reliable_defocus(platform) && next.overlay_visible {
                 effects.extend([
                     LifecycleEffect::Hide,
                     LifecycleEffect::SetFocusable(false),
@@ -679,7 +683,35 @@ mod tests {
         );
         assert_eq!(
             focus_rollback_effects("windows"),
-            vec![LifecycleEffect::SetFocusable(false),]
+            vec![
+                LifecycleEffect::Hide,
+                LifecycleEffect::SetFocusable(false),
+                LifecycleEffect::Show,
+            ]
+        );
+        assert_eq!(
+            focus_rollback_effects("linux"),
+            vec![LifecycleEffect::SetFocusable(false)]
+        );
+    }
+
+    #[test]
+    fn windows_lock_uses_the_same_reliable_defocus_sequence_as_macos() {
+        let adjusted = LifecycleState {
+            game_running: true,
+            adjustment: true,
+            overlay_visible: true,
+            click_through: false,
+            quitting: false,
+        };
+        let effects = plan_transition(adjusted, LifecycleEvent::Lock, "windows").effects;
+        assert_eq!(
+            &effects[2..5],
+            &[
+                LifecycleEffect::Hide,
+                LifecycleEffect::SetFocusable(false),
+                LifecycleEffect::Show,
+            ]
         );
     }
 }
