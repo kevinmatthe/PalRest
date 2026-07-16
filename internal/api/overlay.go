@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
+	"reflect"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -24,16 +26,37 @@ type overlayOption struct {
 }
 
 func WithOverlayProvider(provider OverlayProvider) any {
+	if isNilOverlayProvider(provider) {
+		panic("api: nil overlay provider")
+	}
 	return overlayOption{provider: provider}
 }
 
+func isNilOverlayProvider(provider OverlayProvider) bool {
+	if provider == nil {
+		return true
+	}
+	value := reflect.ValueOf(provider)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
 func (s *Server) getOverlaySnapshot(w http.ResponseWriter, r *http.Request) {
-	gameID, ok := overlayQueryValue(r, "game_id", 64)
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "query parameters are invalid")
+		return
+	}
+	gameID, ok := overlayQueryValue(query, "game_id", 64)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid_request", "game_id must be provided exactly once and be valid")
 		return
 	}
-	userID, ok := overlayQueryValue(r, "user_id", 256)
+	userID, ok := overlayQueryValue(query, "user_id", 256)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid_request", "user_id must be provided exactly once and be valid")
 		return
@@ -76,8 +99,8 @@ func (s *Server) getOverlaySnapshot(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(append(payload, '\n'))
 }
 
-func overlayQueryValue(r *http.Request, name string, maxBytes int) (string, bool) {
-	values, found := r.URL.Query()[name]
+func overlayQueryValue(query url.Values, name string, maxBytes int) (string, bool) {
+	values, found := query[name]
 	if !found || len(values) != 1 {
 		return "", false
 	}

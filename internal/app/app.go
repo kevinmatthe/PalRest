@@ -49,6 +49,41 @@ type App struct {
 	closeErr     error
 }
 
+type overlayPolicyCoordinator struct {
+	mu       sync.RWMutex
+	updater  api.PolicyUpdater
+	provider *overlay.PalworldProvider
+}
+
+func newOverlayPolicyCoordinator(updater api.PolicyUpdater, provider *overlay.PalworldProvider) *overlayPolicyCoordinator {
+	if updater == nil {
+		panic("app: nil policy updater")
+	}
+	if provider == nil {
+		panic("app: nil overlay provider")
+	}
+	return &overlayPolicyCoordinator{updater: updater, provider: provider}
+}
+
+func (c *overlayPolicyCoordinator) Snapshot(ctx context.Context, gameID, userID string) (overlay.Snapshot, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.provider.Snapshot(ctx, gameID, userID)
+}
+
+func (c *overlayPolicyCoordinator) ApplyPolicyTimezone(update func() error, location *time.Location) error {
+	if location == nil {
+		return errors.New("overlay policy location is nil")
+	}
+	// Lock order is coordinator, then updater/provider. Neither dependency calls back into the coordinator.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.updater.ApplyPolicyTimezone(update, location); err != nil {
+		return err
+	}
+	return c.provider.SetLocation(location)
+}
+
 func New(configPath string) (*App, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -139,7 +174,8 @@ func New(configPath string) (*App, error) {
 	}
 	adminUser, adminPass := cfg.AdminCredentials()
 	overlayProvider := overlay.NewPalworldProvider(guardService, repo, poll, location, cfg.Server.MaxObservationGap.Duration)
-	apiOptions := []any{poll, worldPOIs, api.WithOverlayProvider(overlayProvider)}
+	overlayCoordinator := newOverlayPolicyCoordinator(poll, overlayProvider)
+	apiOptions := []any{overlayCoordinator, worldPOIs, api.WithOverlayProvider(overlayCoordinator)}
 	if saveImporter != nil {
 		apiOptions = append(apiOptions, saveImporter)
 	}

@@ -118,6 +118,67 @@ func TestPalworldProviderUsesMondayWeekBoundary(t *testing.T) {
 	}
 }
 
+func TestPalworldProviderSetLocationUpdatesCalendarBoundaries(t *testing.T) {
+	now := time.Date(2026, 7, 13, 1, 0, 0, 0, time.UTC)
+	daily := &fakeDailySource{}
+	p := NewPalworldProvider(&fakeSnapshotSource{}, daily, fakeStatusSource{}, time.UTC, time.Minute)
+	p.now = func() time.Time { return now }
+
+	if _, err := p.Snapshot(t.Context(), "palworld", "u"); err != nil {
+		t.Fatal(err)
+	}
+	if daily.startDate != "2026-07-13" || daily.endDate != "2026-07-14" {
+		t.Fatalf("UTC date range=[%s,%s)", daily.startDate, daily.endDate)
+	}
+
+	losAngeles, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetLocation(losAngeles); err != nil {
+		t.Fatalf("SetLocation() error=%v", err)
+	}
+	if _, err := p.Snapshot(t.Context(), "palworld", "u"); err != nil {
+		t.Fatal(err)
+	}
+	if daily.startDate != "2026-07-06" || daily.endDate != "2026-07-13" {
+		t.Fatalf("Los Angeles date range=[%s,%s), want [2026-07-06,2026-07-13)", daily.startDate, daily.endDate)
+	}
+
+	if err := p.SetLocation(nil); err == nil {
+		t.Fatal("SetLocation(nil) error=nil")
+	}
+	if _, err := p.Snapshot(t.Context(), "palworld", "u"); err != nil {
+		t.Fatal(err)
+	}
+	if daily.startDate != "2026-07-06" || daily.endDate != "2026-07-13" {
+		t.Fatalf("nil update changed date range=[%s,%s)", daily.startDate, daily.endDate)
+	}
+}
+
+func TestPalworldProviderLocationIsRaceSafe(t *testing.T) {
+	p := NewPalworldProvider(&fakeSnapshotSource{}, &fakeDailySource{}, fakeStatusSource{}, time.UTC, time.Minute)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			location := time.UTC
+			if i%2 == 0 {
+				location = time.FixedZone("alternate", 14*60*60)
+			}
+			if err := p.SetLocation(location); err != nil {
+				panic(err)
+			}
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		if _, err := p.Snapshot(t.Context(), "palworld", "u"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-done
+}
+
 func TestPalworldProviderMarksStalePollUnknown(t *testing.T) {
 	now := time.Date(2026, 7, 16, 12, 1, 0, 0, time.UTC)
 	lastSuccess := now.Add(-31 * time.Second)

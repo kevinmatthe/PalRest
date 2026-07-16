@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +17,146 @@ import (
 	"time"
 
 	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/overlay"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
 )
+
+type overlayCoordinatorUpdaterFake struct {
+	apply func(func() error, *time.Location) error
+}
+
+func (f overlayCoordinatorUpdaterFake) ApplyPolicyTimezone(update func() error, location *time.Location) error {
+	return f.apply(update, location)
+}
+
+type overlayCoordinatorSnapshots struct{}
+
+func (overlayCoordinatorSnapshots) Snapshot(context.Context, string) (domain.PlayerSnapshot, error) {
+	return domain.PlayerSnapshot{}, nil
+}
+
+type overlayCoordinatorDaily struct {
+	called chan struct{}
+	mu     sync.Mutex
+	start  string
+	end    string
+}
+
+func (d *overlayCoordinatorDaily) PlayerDailyActivity(_ context.Context, _, start, end string) ([]store.DailyActivity, error) {
+	d.mu.Lock()
+	d.start, d.end = start, end
+	d.mu.Unlock()
+	select {
+	case d.called <- struct{}{}:
+	default:
+	}
+	return nil, nil
+}
+
+func (d *overlayCoordinatorDaily) dateRange() (string, string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.start, d.end
+}
+
+type overlayCoordinatorStatus struct{}
+
+func (overlayCoordinatorStatus) Status() domain.PollStatus { return domain.PollStatus{} }
+
+func expectedOverlayRange(now time.Time, location *time.Location) (string, string) {
+	local := now.In(location)
+	offset := (int(local.Weekday()) + 6) % 7
+	return local.AddDate(0, 0, -offset).Format("2006-01-02"), local.AddDate(0, 0, 1).Format("2006-01-02")
+}
+
+func TestOverlayPolicyCoordinatorBlocksSnapshotsUntilTimezoneUpdateCompletes(t *testing.T) {
+	initial := time.FixedZone("initial", -12*60*60)
+	next := time.FixedZone("next", 14*60*60)
+	daily := &overlayCoordinatorDaily{called: make(chan struct{}, 1)}
+	provider := overlay.NewPalworldProvider(overlayCoordinatorSnapshots{}, daily, overlayCoordinatorStatus{}, initial, time.Minute)
+	updateApplied := make(chan struct{})
+	release := make(chan struct{})
+	base := overlayCoordinatorUpdaterFake{apply: func(update func() error, location *time.Location) error {
+		if location != next {
+			t.Errorf("base location=%v want next", location)
+		}
+		if err := update(); err != nil {
+			return err
+		}
+		close(updateApplied)
+		<-release
+		return nil
+	}}
+	coordinator := newOverlayPolicyCoordinator(base, provider)
+	policyUpdated := false
+	applyDone := make(chan error, 1)
+	go func() {
+		applyDone <- coordinator.ApplyPolicyTimezone(func() error {
+			policyUpdated = true
+			return nil
+		}, next)
+	}()
+	<-updateApplied
+	if !policyUpdated {
+		t.Fatal("policy update was not applied by base updater")
+	}
+
+	snapshotStarted := make(chan struct{})
+	snapshotDone := make(chan error, 1)
+	before := time.Now()
+	go func() {
+		close(snapshotStarted)
+		_, err := coordinator.Snapshot(t.Context(), "palworld", "u")
+		snapshotDone <- err
+	}()
+	<-snapshotStarted
+	select {
+	case <-daily.called:
+		t.Fatal("snapshot reached provider while timezone update was incomplete")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-applyDone; err != nil {
+		t.Fatalf("ApplyPolicyTimezone() error=%v", err)
+	}
+	if err := <-snapshotDone; err != nil {
+		t.Fatalf("Snapshot() error=%v", err)
+	}
+	start, end := daily.dateRange()
+	wantStart, wantEnd := expectedOverlayRange(before, next)
+	if start != wantStart || end != wantEnd {
+		t.Fatalf("snapshot range=[%s,%s), want new timezone [%s,%s)", start, end, wantStart, wantEnd)
+	}
+}
+
+func TestOverlayPolicyCoordinatorKeepsLocationWhenBaseUpdateFails(t *testing.T) {
+	initial := time.FixedZone("initial", -12*60*60)
+	next := time.FixedZone("next", 14*60*60)
+	daily := &overlayCoordinatorDaily{called: make(chan struct{}, 1)}
+	provider := overlay.NewPalworldProvider(overlayCoordinatorSnapshots{}, daily, overlayCoordinatorStatus{}, initial, time.Minute)
+	wantErr := errors.New("analytics update failed")
+	base := overlayCoordinatorUpdaterFake{apply: func(update func() error, _ *time.Location) error {
+		if err := update(); err != nil {
+			return err
+		}
+		return wantErr
+	}}
+	coordinator := newOverlayPolicyCoordinator(base, provider)
+	if err := coordinator.ApplyPolicyTimezone(func() error { return nil }, next); !errors.Is(err, wantErr) {
+		t.Fatalf("ApplyPolicyTimezone() error=%v want=%v", err, wantErr)
+	}
+
+	before := time.Now()
+	if _, err := coordinator.Snapshot(t.Context(), "palworld", "u"); err != nil {
+		t.Fatal(err)
+	}
+	start, end := daily.dateRange()
+	wantStart, wantEnd := expectedOverlayRange(before, initial)
+	if start != wantStart || end != wantEnd {
+		t.Fatalf("snapshot range=[%s,%s), want unchanged timezone [%s,%s)", start, end, wantStart, wantEnd)
+	}
+}
 
 func appConfig(baseURL, dbPath, listen string, enabled bool) string {
 	return fmt.Sprintf(`

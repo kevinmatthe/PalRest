@@ -160,6 +160,12 @@ func TestOverlaySnapshotReturnsETagAndSupportsConditionalGET(t *testing.T) {
 	if notModified.Body.Len() != 0 {
 		t.Fatalf("304 body=%q want empty", notModified.Body.String())
 	}
+	if got := notModified.Header().Get("ETag"); got != wantETag {
+		t.Fatalf("304 ETag=%q want=%q", got, wantETag)
+	}
+	if got := notModified.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("304 Cache-Control=%q want=no-cache", got)
+	}
 	if provider.calls != 2 {
 		t.Fatalf("provider calls=%d want=2 (one per request)", provider.calls)
 	}
@@ -170,6 +176,30 @@ func TestOverlaySnapshotReturnsETagAndSupportsConditionalGET(t *testing.T) {
 	}
 	if provider.calls != 3 {
 		t.Fatalf("provider calls=%d want=3 (one per request)", provider.calls)
+	}
+}
+
+func TestOverlaySnapshotRejectsMalformedRawQueryBeforeProvider(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawQuery string
+	}{
+		{name: "invalid percent encoding", rawQuery: "game_id=palworld&user_id=%ZZ"},
+		{name: "raw semicolon", rawQuery: "game_id=palworld;user_id=u"},
+		{name: "valid and malformed duplicate", rawQuery: "game_id=palworld&user_id=u&user_id=%ZZ"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &overlayProviderFake{}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/overlay/snapshot", nil)
+			req.URL.RawQuery = tt.rawQuery
+			res := httptest.NewRecorder()
+			newOverlayTestServer(provider).Handler().ServeHTTP(res, req)
+			requireOverlayError(t, res, http.StatusBadRequest, "invalid_request")
+			if provider.calls != 0 {
+				t.Fatalf("provider calls=%d want=0", provider.calls)
+			}
+		})
 	}
 }
 
@@ -203,6 +233,26 @@ func TestOverlaySnapshotRejectsInvalidQueryBeforeProvider(t *testing.T) {
 func TestOverlaySnapshotFailsSafelyWithoutProvider(t *testing.T) {
 	res := overlayRequest(t, newOverlayTestServer(nil), "/api/v1/overlay/snapshot?game_id=palworld&user_id=steam_1", nil)
 	requireOverlayError(t, res, http.StatusServiceUnavailable, "snapshot_unavailable")
+}
+
+func TestWithOverlayProviderRejectsNil(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider OverlayProvider
+	}{
+		{name: "nil"},
+		{name: "typed nil", provider: (*overlayProviderFake)(nil)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("WithOverlayProvider did not panic")
+				}
+			}()
+			WithOverlayProvider(tt.provider)
+		})
+	}
 }
 
 func TestOverlaySnapshotDoesNotExposeForbiddenKeys(t *testing.T) {

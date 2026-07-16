@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
@@ -34,12 +35,23 @@ type StatusSource interface {
 }
 
 type PalworldProvider struct {
-	snapshots SnapshotSource
-	daily     DailySource
-	status    StatusSource
-	location  *time.Location
-	maxGap    time.Duration
-	now       func() time.Time
+	snapshots  SnapshotSource
+	daily      DailySource
+	status     StatusSource
+	locationMu sync.RWMutex
+	location   *time.Location
+	maxGap     time.Duration
+	now        func() time.Time
+}
+
+func (p *PalworldProvider) SetLocation(location *time.Location) error {
+	if location == nil {
+		return errors.New("overlay: location is nil")
+	}
+	p.locationMu.Lock()
+	p.location = location
+	p.locationMu.Unlock()
+	return nil
 }
 
 func NewPalworldProvider(s SnapshotSource, d DailySource, status StatusSource, location *time.Location, maxGap time.Duration) *PalworldProvider {
@@ -83,7 +95,10 @@ func (p *PalworldProvider) Snapshot(ctx context.Context, gameID, userID string) 
 	}
 
 	now := p.now()
-	localNow := now.In(p.location)
+	p.locationMu.RLock()
+	location := p.location
+	p.locationMu.RUnlock()
+	localNow := now.In(location)
 	today := dateString(localNow)
 	monday := localNow.AddDate(0, 0, -mondayOffset(localNow.Weekday()))
 	tomorrow := localNow.AddDate(0, 0, 1)
