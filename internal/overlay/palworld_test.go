@@ -245,6 +245,21 @@ func TestPalworldProviderRejectsInvalidRequests(t *testing.T) {
 	}
 }
 
+func TestPalworldProviderPolicyProgressOmitsOnlyZeroDenominator(t *testing.T) {
+	used, remaining := policyProgress(time.Minute, -2*time.Minute)
+	if used == nil || remaining == nil {
+		t.Fatalf("negative nonzero denominator progress = (%v, %v), want values", used, remaining)
+	}
+	if *used != 0 || *remaining != 1 {
+		t.Errorf("negative nonzero denominator progress = (%v, %v), want (0, 1)", *used, *remaining)
+	}
+
+	used, remaining = policyProgress(time.Minute, -time.Minute)
+	if used != nil || remaining != nil {
+		t.Errorf("zero denominator progress = (%v, %v), want nil values", used, remaining)
+	}
+}
+
 func assertTimer(t *testing.T, timers []Timer, id, label string, value time.Duration) Timer {
 	t.Helper()
 	for _, timer := range timers {

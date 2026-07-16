@@ -196,7 +196,7 @@ func policyTone(remaining time.Duration, warnings []time.Duration) string {
 
 func policyProgress(used, remaining time.Duration) (*float64, *float64) {
 	denominator := used + remaining
-	if denominator <= 0 {
+	if denominator == 0 {
 		return nil, nil
 	}
 	usedValue := clamp(float64(used) / float64(denominator))
