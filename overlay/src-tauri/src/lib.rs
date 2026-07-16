@@ -1,10 +1,14 @@
 pub mod config;
 pub mod http;
+pub mod lifecycle;
+mod platform;
+pub mod process;
+pub mod tray;
 
 #[cfg(feature = "native")]
 mod native {
-    use super::{config, http};
-    use tauri::{AppHandle, Manager, State, Window};
+    use super::{config, http, lifecycle, tray};
+    use tauri::{AppHandle, Manager, State, Window, WindowEvent};
 
     fn config_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         app.path()
@@ -60,14 +64,34 @@ mod native {
         None
     }
 
-    // Task 10 owns click-through and window positioning. Register the stable IPC surface now.
     #[tauri::command]
-    fn set_adjustment_mode(_window: Window, _enabled: bool) {}
+    fn set_adjustment_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
+        let event = if enabled {
+            lifecycle::LifecycleEvent::EnterAdjustment
+        } else {
+            lifecycle::LifecycleEvent::Lock
+        };
+        app.state::<lifecycle::LifecycleController>()
+            .transition(&app, event)
+    }
 
     pub fn run() {
         let bridge = http::HttpBridge::new().expect("failed to create the restricted HTTP client");
         tauri::Builder::default()
             .manage(bridge)
+            .manage(lifecycle::LifecycleController::default())
+            .setup(|app| {
+                lifecycle::initialise(app.handle()).map_err(std::io::Error::other)?;
+                tray::setup(app)?;
+                lifecycle::start_monitor(app.handle().clone());
+                Ok(())
+            })
+            .on_window_event(|window, event| {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            })
             .invoke_handler(tauri::generate_handler![
                 load_config,
                 save_config,
