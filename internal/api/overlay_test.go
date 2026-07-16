@@ -8,6 +8,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -286,4 +289,77 @@ func TestOverlaySnapshotDoesNotExposeForbiddenKeys(t *testing.T) {
 		}
 	}
 	inspect(body)
+}
+
+func TestOverlayHandlerMatchesCanonicalFixture(t *testing.T) {
+	level := 42
+	progressToday := 0.333333
+	progressWeek := 0.428571
+	progressCycle := 0.75
+	progressRemaining := 0.25
+	provider := &overlayProviderFake{snapshot: overlay.Snapshot{
+		Schema:       overlay.SchemaV1,
+		GameID:       "palworld",
+		UserID:       "steam_76561198000000001",
+		ObservedAt:   time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC),
+		FreshUntil:   time.Date(2026, 7, 16, 12, 0, 15, 0, time.UTC),
+		SourceStatus: "online",
+		Capabilities: []string{"identity", "latency", "timers", "map"},
+		Identity: overlay.Identity{
+			DisplayName: "Lamball Keeper",
+			AccountName: "steam_76561198000000001",
+			Level:       &level,
+		},
+		Latency: &overlay.Latency{Milliseconds: 38.5},
+		Timers: []overlay.Timer{
+			{ID: "today_observed", Label: "Today observed", ValueMS: 7_200_000, Semantic: "duration", Tone: "normal", Progress: &progressToday},
+			{ID: "week_observed", Label: "Week observed", ValueMS: 21_600_000, Semantic: "duration", Tone: "normal", Progress: &progressWeek},
+			{ID: "policy_cycle_used", Label: "Policy cycle used", ValueMS: 21_600_000, Semantic: "duration", Tone: "warning", Progress: &progressCycle},
+			{ID: "policy_remaining", Label: "Policy remaining", ValueMS: 7_200_000, Semantic: "duration", Tone: "warning", Progress: &progressRemaining},
+		},
+		Map: &overlay.MapPosition{
+			X:          187.25,
+			Y:          -64.5,
+			Projection: "palworld_world_v1",
+			TileSet:    "palworld_default_v1",
+			TileURL:    "/map/tiles/{z}/{x}/{y}.png",
+		},
+	}}
+	res := overlayRequest(t, newOverlayTestServer(provider), "/api/v1/overlay/snapshot?game_id=palworld&user_id=steam_76561198000000001", nil)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", res.Code, http.StatusOK, res.Body.String())
+	}
+	if got := res.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("Content-Type=%q", got)
+	}
+	if got := res.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("Cache-Control=%q", got)
+	}
+	payload, err := json.Marshal(provider.snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	wantETag := `"` + hex.EncodeToString(digest[:]) + `"`
+	if got := res.Header().Get("ETag"); got != wantETag {
+		t.Fatalf("ETag=%q want=%q", got, wantETag)
+	}
+	if provider.calls != 1 || provider.gameID != "palworld" || provider.userID != "steam_76561198000000001" {
+		t.Fatalf("provider calls=%d gameID=%q userID=%q", provider.calls, provider.gameID, provider.userID)
+	}
+
+	fixtureBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "overlay", "palworld_snapshot_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, want any
+	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode handler response: %v", err)
+	}
+	if err := json.Unmarshal(fixtureBytes, &want); err != nil {
+		t.Fatalf("decode canonical fixture: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("handler response does not match canonical fixture\ngot:  %#v\nwant: %#v", got, want)
+	}
 }
