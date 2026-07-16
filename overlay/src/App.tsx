@@ -74,12 +74,15 @@ export default function App({ bridge }: AppProps) {
       }
       let platform: string | undefined
       let detectedUserId: string | null | undefined
-      if (label === 'settings' && bridge.currentPlatform) {
+      const currentPlatform = bridge.currentPlatform
+      const detectedPalworldUserId = bridge.detectedPalworldUserId
+      if (label === 'settings' && currentPlatform) {
         try {
-          platform = await bridge.currentPlatform()
-          if (platform === 'windows' && bridge.detectedPalworldUserId) {
+          platform = await currentPlatform()
+          if (!active) return
+          if (platform === 'windows' && detectedPalworldUserId) {
             try {
-              detectedUserId = await bridge.detectedPalworldUserId()
+              detectedUserId = await detectedPalworldUserId()
             } catch {
               detectedUserId = null
             }

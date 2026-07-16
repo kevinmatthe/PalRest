@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -70,6 +71,30 @@ describe('App window routing', () => {
     await waitFor(() => expect(api.listPlayers).toHaveBeenCalled())
     expect(detectedPalworldUserId).not.toHaveBeenCalled()
     expect(screen.getByLabelText('玩家')).toHaveValue('')
+  })
+
+  it('does not start detected-user work after unmount while platform is pending', async () => {
+    let resolvePlatform!: (platform: string) => void
+    const currentPlatform = vi.fn(() => new Promise<string>((resolve) => { resolvePlatform = resolve }))
+    const detectedPalworldUserId = vi.fn(async () => 'steam_42')
+    const api = bridge({
+      currentWindowLabel: vi.fn(async () => 'settings' as const), loadConfig: vi.fn(async () => null),
+      currentPlatform, detectedPalworldUserId,
+    })
+    const { unmount } = render(<App bridge={api} />)
+    await waitFor(() => expect(currentPlatform).toHaveBeenCalledTimes(1))
+    unmount()
+    resolvePlatform('windows')
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(detectedPalworldUserId).not.toHaveBeenCalled()
+  })
+
+  it('mounts through the exported desktop bridge factory', () => {
+    const source = readFileSync('src/main.tsx', 'utf8')
+    expect(source).toMatch(/import\s+\{\s*createDesktopBridge\s*\}\s+from\s+['"]\.\/core\/bridge['"]/)
+    expect(source).toMatch(/<App\s+bridge=\{createDesktopBridge\(\)\}\s*\/>/)
+    expect(source).not.toContain('createBrowserPlaceholderBridge')
   })
 
   it('opens settings once and keeps a compact first-run state in the overlay window', async () => {

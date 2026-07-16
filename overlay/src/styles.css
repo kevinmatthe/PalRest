@@ -65,7 +65,7 @@ body.settings-window {
 .settings-header p {
   margin: 0.25rem 0 0;
   color: var(--settings-muted);
-  font-size: 0.8rem;
+  font-size: 0.875rem;
   line-height: 1.45;
 }
 
@@ -99,7 +99,7 @@ body.settings-window {
 .settings-group__title h2 {
   margin: 0;
   color: #d9e8e7;
-  font-size: 0.86rem;
+  font-size: 0.875rem;
   letter-spacing: 0.06em;
 }
 
@@ -115,7 +115,7 @@ body.settings-window {
 
 .settings-field > span {
   color: #aabdbc;
-  font-size: 0.75rem;
+  font-size: 0.875rem;
   font-weight: 650;
 }
 
@@ -130,7 +130,7 @@ body.settings-window {
   color: #edf8f7;
   background: rgba(3, 11, 14, 0.78);
   font: inherit;
-  font-size: 0.86rem;
+  font-size: 0.875rem;
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
@@ -162,7 +162,7 @@ body.settings-window {
   gap: 0.6rem;
   min-height: 2.75rem;
   color: #bacbca;
-  font-size: 0.79rem;
+  font-size: 0.875rem;
   cursor: pointer;
 }
 
@@ -180,7 +180,7 @@ body.settings-window {
   color: #dcebea;
   background: rgba(25, 45, 50, 0.9);
   font: inherit;
-  font-size: 0.8rem;
+  font-size: 0.875rem;
   font-weight: 750;
   cursor: pointer;
 }
@@ -192,15 +192,20 @@ body.settings-window {
 .settings-button--ghost { border-color: rgba(159, 189, 187, 0.24); background: transparent; }
 
 .settings-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0.55rem;
+  padding: 0.55rem 0 0.15rem;
+  background: linear-gradient(180deg, transparent, #071014 30%);
 }
 
 .settings-actions > div { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-left: auto; }
-.settings-message { margin: 0; font-size: 0.76rem; }
+.settings-message { margin: 0; font-size: 0.875rem; }
 .settings-message--status { color: #8ce5c1; }
 .settings-message--error { color: #ff9a90; }
 

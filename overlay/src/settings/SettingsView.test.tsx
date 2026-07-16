@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -20,6 +21,14 @@ const saved: OverlayConfigV1 = {
 }
 
 describe('SettingsView', () => {
+  it('keeps essential controls readable and save actions reachable in the settings client area', () => {
+    const css = readFileSync('src/styles.css', 'utf8')
+    expect(css).toMatch(/\.settings-actions\s*\{[^}]*position:\s*sticky[^}]*bottom:\s*0/s)
+    expect(css).toMatch(/\.settings-field\s*>\s*span\s*\{[^}]*font-size:\s*0\.875rem/s)
+    expect(css).toMatch(/\.settings-button\s*\{[^}]*min-height:\s*2\.75rem[^}]*font-size:\s*0\.875rem/s)
+    expect(css).toMatch(/\.settings-message\s*\{[^}]*font-size:\s*0\.875rem/s)
+  })
+
   it('loads, deduplicates, and selects players only by exact UID', async () => {
     const api = bridge({ listPlayers: vi.fn(async () => [
       { user_id: 'uid-1', name: 'Same', account_name: 'one' },
@@ -35,6 +44,24 @@ describe('SettingsView', () => {
     const select = screen.getByLabelText('玩家')
     expect(select.querySelectorAll('option')).toHaveLength(3)
     expect(select).toHaveValue('uid-2')
+  })
+
+  it('skips malformed runtime rows and trims stable player identities', async () => {
+    const runtimeRows = [
+      null, 42, 'row', {},
+      { user_id: ' uid-1 ', name: ' First ', account_name: ' account ' },
+      { user_id: 'uid-1', name: 'Duplicate', account_name: 'ignored' },
+      { user_id: 'uid-2', name: 9, account_name: '' },
+      { user_id: 'uid-3', name: 'Third', account_name: 'three' },
+    ]
+    const api = bridge({ listPlayers: vi.fn(async () => runtimeRows as never) })
+    render(<SettingsView bridge={api} initialConfig={null} />)
+    fireEvent.change(screen.getByLabelText('服务地址'), { target: { value: 'https://palbox.test' } })
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(screen.getByLabelText('玩家').querySelectorAll('option')).toHaveLength(3))
+    expect(Array.from(screen.getByLabelText('玩家').querySelectorAll('option')).map((option) => option.value))
+      .toEqual(['', 'uid-1', 'uid-3'])
+    expect(screen.getByText('First · account — uid-1')).toBeInTheDocument()
   })
 
   it('never guesses by name and preserves a saved UID only when the list contains it', async () => {
@@ -111,5 +138,48 @@ describe('SettingsView', () => {
     await waitFor(() => expect(api.listPlayers).toHaveBeenLastCalledWith('https://other.test', expect.any(AbortSignal)))
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
     await waitFor(() => expect(api.saveConfig).toHaveBeenCalledWith({ ...saved, baseUrl: 'https://other.test' }))
+  })
+
+  it('invalidates an old UID for hanging and failed same-service refreshes until success', async () => {
+    let rejectRefresh!: (reason?: unknown) => void
+    const refresh = new Promise<never>((_resolve, reject) => { rejectRefresh = reject })
+    const listPlayers = vi.fn<DesktopBridge['listPlayers']>()
+      .mockResolvedValueOnce([{ user_id: 'uid-2', name: 'Old', account_name: '' }])
+      .mockReturnValueOnce(refresh)
+      .mockResolvedValueOnce([{ user_id: 'uid-2', name: 'Fresh', account_name: '' }])
+    const api = bridge({ listPlayers, saveConfig: vi.fn(async () => {}) })
+    render(<SettingsView bridge={api} initialConfig={saved} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    expect(screen.getByRole('button', { name: '保存设置' })).toBeDisabled()
+    expect(screen.getByLabelText('玩家')).toHaveValue('')
+    rejectRefresh(new Error('offline'))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('玩家列表加载失败'))
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    expect(api.saveConfig).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    await waitFor(() => expect(api.saveConfig).toHaveBeenCalledTimes(1))
+  })
+
+  it('does not publish save completion after unmount', async () => {
+    let finish!: () => void
+    const api = bridge({
+      listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Player', account_name: '' }]),
+      saveConfig: vi.fn(() => new Promise<void>((resolve) => { finish = resolve })),
+    })
+    const onSaved = vi.fn()
+    const { unmount } = render(<SettingsView bridge={api} initialConfig={saved} onSaved={onSaved} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    unmount()
+    finish()
+    await Promise.resolve()
+    expect(onSaved).not.toHaveBeenCalled()
   })
 })

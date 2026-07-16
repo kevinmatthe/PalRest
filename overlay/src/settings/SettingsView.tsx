@@ -12,14 +12,19 @@ export interface SettingsViewProps {
   onSaved?: (config: OverlayConfigV1) => void
 }
 
-function uniquePlayers(rows: PlayerListItem[]): PlayerListItem[] {
+function uniquePlayers(value: unknown): PlayerListItem[] {
+  if (!Array.isArray(value)) throw new Error('invalid player list')
   const seen = new Set<string>()
   const result: PlayerListItem[] = []
-  for (const row of rows) {
-    const uid = typeof row.user_id === 'string' ? row.user_id.trim() : ''
+  for (const row of value) {
+    if (typeof row !== 'object' || row === null || Array.isArray(row)) continue
+    const candidate = row as Record<string, unknown>
+    if (typeof candidate.user_id !== 'string' || typeof candidate.name !== 'string' ||
+        typeof candidate.account_name !== 'string') continue
+    const uid = candidate.user_id.trim()
     if (!uid || seen.has(uid)) continue
     seen.add(uid)
-    result.push({ user_id: uid, name: row.name ?? '', account_name: row.account_name ?? '' })
+    result.push({ user_id: uid, name: candidate.name.trim(), account_name: candidate.account_name.trim() })
   }
   return result
 }
@@ -40,11 +45,20 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ tone: 'status' | 'error'; text: string } | null>(null)
   const listController = useRef<AbortController | null>(null)
+  const mounted = useRef(false)
+  const listGeneration = useRef(0)
+  const saveGeneration = useRef(0)
+  const adjustGeneration = useRef(0)
 
   useEffect(() => {
+    mounted.current = true
     document.documentElement.classList.add('settings-window')
     document.body.classList.add('settings-window')
     return () => {
+      mounted.current = false
+      listGeneration.current += 1
+      saveGeneration.current += 1
+      adjustGeneration.current += 1
       listController.current?.abort()
       document.documentElement.classList.remove('settings-window')
       document.body.classList.remove('settings-window')
@@ -60,6 +74,7 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
       // An invalid edit always invalidates the list tied to the previous service.
     }
     if (normalized === loadedBaseUrl) return
+    listGeneration.current += 1
     listController.current?.abort()
     listController.current = null
     setLoading(false)
@@ -69,6 +84,12 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
   }
 
   async function loadPlayers() {
+    listController.current?.abort()
+    const generation = ++listGeneration.current
+    setLoadedBaseUrl(null)
+    setPlayers([])
+    setUserId('')
+    setLoading(false)
     let normalized: string
     try {
       normalized = normalizeBaseUrl(baseUrl)
@@ -76,14 +97,14 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
       setMessage({ tone: 'error', text: '请输入有效的 HTTP 或 HTTPS 服务地址' })
       return
     }
-    listController.current?.abort()
     const controller = new AbortController()
     listController.current = controller
     setLoading(true)
     setMessage(null)
     try {
-      const listed = uniquePlayers(await bridge.listPlayers(normalized, controller.signal))
-      if (controller.signal.aborted) return
+      const response: unknown = await bridge.listPlayers(normalized, controller.signal)
+      const listed = uniquePlayers(response)
+      if (!mounted.current || generation !== listGeneration.current || controller.signal.aborted) return
       setBaseUrl(normalized)
       setPlayers(listed)
       setLoadedBaseUrl(normalized)
@@ -94,9 +115,11 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
       setUserId(exactSaved || exactDetected || '')
       setMessage(listed.length ? null : { tone: 'status', text: '未找到可选择的玩家' })
     } catch {
-      if (!controller.signal.aborted) setMessage({ tone: 'error', text: '玩家列表加载失败，请检查服务后重试' })
+      if (mounted.current && generation === listGeneration.current && !controller.signal.aborted) {
+        setMessage({ tone: 'error', text: '玩家列表加载失败，请检查服务后重试' })
+      }
     } finally {
-      if (listController.current === controller) {
+      if (mounted.current && generation === listGeneration.current && listController.current === controller) {
         listController.current = null
         setLoading(false)
       }
@@ -131,23 +154,27 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
     }
     setSaving(true)
     setMessage(null)
+    const generation = ++saveGeneration.current
     try {
       await bridge.saveConfig(config)
+      if (!mounted.current || generation !== saveGeneration.current) return
       setMessage({ tone: 'status', text: '设置已保存' })
       onSaved?.(config)
     } catch {
-      setMessage({ tone: 'error', text: '保存失败，请稍后重试' })
+      if (mounted.current && generation === saveGeneration.current) setMessage({ tone: 'error', text: '保存失败，请稍后重试' })
     } finally {
-      setSaving(false)
+      if (mounted.current && generation === saveGeneration.current) setSaving(false)
     }
   }
 
   async function adjustPosition() {
+    const generation = ++adjustGeneration.current
     try {
       await bridge.setAdjustmentMode(true)
+      if (!mounted.current || generation !== adjustGeneration.current) return
       setMessage({ tone: 'status', text: '现在可以拖动悬浮条调整位置' })
     } catch {
-      setMessage({ tone: 'error', text: '暂时无法进入位置调整模式' })
+      if (mounted.current && generation === adjustGeneration.current) setMessage({ tone: 'error', text: '暂时无法进入位置调整模式' })
     }
   }
 
@@ -205,7 +232,7 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
           {message ? <p role={message.tone === 'error' ? 'alert' : 'status'} className={`settings-message settings-message--${message.tone}`}>{message.text}</p> : <span />}
           <div>
             {initialConfig ? <button className="settings-button settings-button--ghost" type="button" onClick={adjustPosition}>调整悬浮条位置</button> : null}
-            <button className="settings-button settings-button--primary" type="submit" disabled={saving}>{saving ? '正在保存…' : '保存设置'}</button>
+            <button className="settings-button settings-button--primary" type="submit" disabled={saving || loading}>{saving ? '正在保存…' : '保存设置'}</button>
           </div>
         </footer>
       </form>

@@ -36,6 +36,8 @@ export function normalizeBaseUrl(input: unknown): string {
   const authorityStart = trimmed.indexOf('//') + 2
   const authorityEnd = trimmed.indexOf('/', authorityStart)
   const authority = authorityEnd === -1 ? trimmed.slice(authorityStart) : trimmed.slice(authorityStart, authorityEnd)
+  const rawSuffix = authorityEnd === -1 ? '' : trimmed.slice(authorityEnd)
+  if (rawSuffix !== '' && rawSuffix !== '/') throw new Error('invalid base URL')
   if (authority.includes('@')) throw new Error('invalid base URL')
   const portDelimiter = authority.startsWith('[')
     ? authority.indexOf(':', authority.indexOf(']') + 1)

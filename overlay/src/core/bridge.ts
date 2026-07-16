@@ -36,3 +36,19 @@ export interface DesktopBridge extends OverlayBridge {
   currentPlatform?(): Promise<'windows' | 'macos' | string>
   detectedPalworldUserId?(): Promise<string | null>
 }
+
+export function createBrowserPlaceholderBridge(): DesktopBridge {
+  return {
+    async currentWindowLabel() { return 'overlay' },
+    async loadConfig() { return null },
+    async saveConfig() { throw new Error('desktop bridge unavailable') },
+    async listPlayers() { throw new Error('desktop bridge unavailable') },
+    async setAdjustmentMode() { throw new Error('desktop bridge unavailable') },
+    async fetchSnapshot() { throw new Error('desktop bridge unavailable') },
+  }
+}
+
+/** Task 9 replaces this selection point with the native Tauri bridge. */
+export function createDesktopBridge(): DesktopBridge {
+  return createBrowserPlaceholderBridge()
+}
