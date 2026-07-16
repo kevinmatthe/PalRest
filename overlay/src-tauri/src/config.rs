@@ -43,10 +43,15 @@ pub(crate) fn parse_base_url(raw: &str) -> Result<Url, &'static str> {
         return Err("invalid base URL");
     }
     let authority_start = raw.find("://").ok_or("invalid base URL")? + 3;
-    let raw_suffix = raw[authority_start..]
-        .find('/')
-        .map(|index| &raw[authority_start + index..])
-        .unwrap_or("");
+    let slash = raw[authority_start..].find('/');
+    let authority_end = slash
+        .map(|index| authority_start + index)
+        .unwrap_or(raw.len());
+    let authority = &raw[authority_start..authority_end];
+    let raw_suffix = &raw[authority_end..];
+    if authority.contains('@') {
+        return Err("invalid base URL");
+    }
     if !matches!(raw_suffix, "" | "/") {
         return Err("invalid base URL");
     }
@@ -234,5 +239,16 @@ mod tests {
         invalid.base_url = "https://palbox.test/a/..".into();
         assert!(save_to_path(&dir, &invalid).is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_any_raw_authority_userinfo_marker() {
+        for base_url in ["https://user@palbox.test", "https://@palbox.test"] {
+            let dir = temp_dir("userinfo");
+            let mut invalid = config();
+            invalid.base_url = base_url.into();
+            assert!(save_to_path(&dir, &invalid).is_err(), "accepted {base_url}");
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 }
