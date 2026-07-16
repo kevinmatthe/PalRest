@@ -65,18 +65,56 @@ pub enum LifecycleEffect {
     EmitAdjustment(bool),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonitorBounds {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl MonitorBounds {
+    #[must_use]
+    pub const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn contains(self, x: i32, y: i32) -> bool {
+        let x = i64::from(x);
+        let y = i64::from(y);
+        let left = i64::from(self.x);
+        let top = i64::from(self.y);
+        x >= left
+            && x < left + i64::from(self.width)
+            && y >= top
+            && y < top + i64::from(self.height)
+    }
+}
+
+#[must_use]
+pub fn position_is_available(x: i32, y: i32, monitors: &[MonitorBounds]) -> bool {
+    monitors.iter().any(|monitor| monitor.contains(x, y))
+}
+
 #[must_use]
 pub fn initial_window_effects(
     x: Option<f64>,
     y: Option<f64>,
     locked: bool,
+    monitors: &[MonitorBounds],
 ) -> Vec<LifecycleEffect> {
     let mut effects = Vec::with_capacity(3);
     if let (Some(x), Some(y)) = (x, y) {
-        effects.push(LifecycleEffect::RestorePosition(
-            x.round() as i32,
-            y.round() as i32,
-        ));
+        let x = x.round() as i32;
+        let y = y.round() as i32;
+        if position_is_available(x, y, monitors) {
+            effects.push(LifecycleEffect::RestorePosition(x, y));
+        }
     }
     effects.push(LifecycleEffect::SetFocusable(!locked));
     effects.push(LifecycleEffect::SetClickThrough(locked));
@@ -226,9 +264,9 @@ pub fn close_action(label: &str) -> CloseAction {
 #[cfg(feature = "native")]
 mod native {
     use super::{
-        LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState, SCAN_INTERVAL,
-        execute_effects, focus_rollback_effects, initial_lifecycle_state, initial_window_effects,
-        plan_transition,
+        LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState, MonitorBounds,
+        SCAN_INTERVAL, execute_effects, focus_rollback_effects, initial_lifecycle_state,
+        initial_window_effects, plan_transition,
     };
     use crate::{config, process::ProcessMonitor};
     use std::sync::Mutex;
@@ -419,13 +457,23 @@ mod native {
         let (x, y, locked) = saved.as_ref().map_or((None, None, true), |config| {
             (config.x, config.y, config.locked)
         });
+        let monitors = overlay
+            .available_monitors()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|monitor| {
+                let position = monitor.position();
+                let size = monitor.size();
+                MonitorBounds::new(position.x, position.y, size.width, size.height)
+            })
+            .collect::<Vec<_>>();
         execute_effects(
             &mut NativeExecutor {
                 app,
                 overlay,
                 geometry_backup: None,
             },
-            &initial_window_effects(x, y, locked),
+            &initial_window_effects(x, y, locked, &monitors),
         )?;
         app.state::<LifecycleController>()
             .set_initial_locked(locked)
@@ -456,10 +504,24 @@ pub use native::{LifecycleController, initialise, start_monitor};
 mod tests {
     use super::{
         CloseAction, LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState,
-        SCAN_INTERVAL, close_action, execute_effects, focus_rollback_effects,
+        MonitorBounds, SCAN_INTERVAL, close_action, execute_effects, focus_rollback_effects,
         initial_lifecycle_state, initial_window_effects, plan_transition, reduce,
     };
     use std::time::Duration;
+
+    #[test]
+    fn restores_only_positions_inside_a_current_available_monitor() {
+        let monitors = [
+            MonitorBounds::new(-1920, 0, 1920, 1080),
+            MonitorBounds::new(0, 0, 2560, 1440),
+        ];
+
+        assert!(super::position_is_available(-100, 100, &monitors));
+        assert!(super::position_is_available(2000, 1000, &monitors));
+        assert!(!super::position_is_available(3000, 100, &monitors));
+        assert!(!super::position_is_available(0, 1440, &monitors));
+        assert!(!super::position_is_available(0, 0, &[]));
+    }
 
     #[test]
     fn one_second_scans_meet_the_two_second_visibility_bound() {
@@ -636,8 +698,9 @@ mod tests {
 
     #[test]
     fn initial_window_restores_position_before_applying_unlocked_input_state() {
+        let monitors = [MonitorBounds::new(0, 0, 1920, 1080)];
         assert_eq!(
-            initial_window_effects(Some(12.0), Some(34.0), false),
+            initial_window_effects(Some(12.0), Some(34.0), false, &monitors),
             vec![
                 LifecycleEffect::RestorePosition(12, 34),
                 LifecycleEffect::SetFocusable(true),
@@ -649,7 +712,7 @@ mod tests {
     #[test]
     fn initial_window_without_geometry_uses_locked_safe_defaults() {
         assert_eq!(
-            initial_window_effects(None, None, true),
+            initial_window_effects(None, None, true, &[]),
             vec![
                 LifecycleEffect::SetFocusable(false),
                 LifecycleEffect::SetClickThrough(true),
@@ -664,7 +727,7 @@ mod tests {
         assert!(!state.click_through);
         assert!(!state.overlay_visible);
         assert!(
-            !initial_window_effects(None, None, false)
+            !initial_window_effects(None, None, false, &[])
                 .iter()
                 .any(|effect| { matches!(effect, LifecycleEffect::Show | LifecycleEffect::Focus) })
         );

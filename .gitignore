@@ -7,3 +7,6 @@ coverage.out
 pal-saves/
 __pycache__/
 *.pyc
+/overlay/node_modules/
+/overlay/dist/
+/overlay/src-tauri/target/

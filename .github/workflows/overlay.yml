@@ -1,0 +1,134 @@
+name: Overlay
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  service-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test snapshot service
+        run: go test ./internal/... -count=1
+
+  overlay-test:
+    name: Overlay (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+          cache-dependency-path: overlay/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: overlay/src-tauri
+
+      - name: Install overlay dependencies
+        run: npm --prefix overlay ci
+      - name: Test overlay frontend
+        run: npm --prefix overlay test
+      - name: Build overlay frontend
+        run: npm --prefix overlay run build
+      - name: Test native bridge
+        run: cargo test --manifest-path overlay/src-tauri/Cargo.toml
+
+      # Secrets are mapped into this shell step first so later `if` expressions
+      # depend only on ordinary job environment values.
+      - name: Select macOS delivery mode
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [[ -n "$APPLE_CERTIFICATE" && \
+                -n "$APPLE_CERTIFICATE_PASSWORD" && \
+                -n "$APPLE_SIGNING_IDENTITY" && \
+                -n "$APPLE_ID" && \
+                -n "$APPLE_PASSWORD" && \
+                -n "$APPLE_TEAM_ID" ]]; then
+            echo "MACOS_SIGNING_AVAILABLE=true" >> "$GITHUB_ENV"
+            echo "MACOS_ARTIFACT_LABEL=signed-notarized" >> "$GITHUB_ENV"
+          else
+            echo "MACOS_SIGNING_AVAILABLE=false" >> "$GITHUB_ENV"
+            echo "MACOS_ARTIFACT_LABEL=development-unsigned" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build Windows installers
+        if: runner.os == 'Windows'
+        uses: tauri-apps/tauri-action@v1
+        with:
+          projectPath: overlay
+          tauriScript: npm run tauri
+          args: --bundles nsis,msi
+
+      - name: Build signed and notarized macOS bundles
+        if: runner.os == 'macOS' && env.MACOS_SIGNING_AVAILABLE == 'true'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: overlay
+          tauriScript: npm run tauri
+          args: --bundles app,dmg
+
+      - name: Build development-only macOS bundles
+        if: runner.os == 'macOS' && env.MACOS_SIGNING_AVAILABLE != 'true'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          # Ad-hoc signing is required for a usable Apple Silicon development app,
+          # but it does not satisfy Developer ID or Gatekeeper acceptance.
+          APPLE_SIGNING_IDENTITY: '-'
+        with:
+          projectPath: overlay
+          tauriScript: npm run tauri
+          args: --bundles app,dmg
+
+      - name: Upload Windows NSIS and MSI installers
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: overlay-windows-installers
+          if-no-files-found: error
+          path: |
+            overlay/src-tauri/target/release/bundle/nsis/*.exe
+            overlay/src-tauri/target/release/bundle/msi/*.msi
+
+      - name: Upload macOS DMG and app
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: overlay-macos-${{ env.MACOS_ARTIFACT_LABEL }}
+          if-no-files-found: error
+          path: |
+            overlay/src-tauri/target/release/bundle/dmg/*.dmg
+            overlay/src-tauri/target/release/bundle/macos/*.app

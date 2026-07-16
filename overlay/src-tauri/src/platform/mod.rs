@@ -3,12 +3,23 @@ use std::path::Path;
 #[cfg(any(target_os = "windows", test))]
 mod windows;
 
+#[cfg(any(target_os = "macos", test))]
+mod macos;
+
 #[cfg(all(any(feature = "native", test), target_os = "windows"))]
 pub(crate) fn detected_palworld_user_id() -> Option<String> {
     windows::detected_palworld_user_id()
 }
 
-#[cfg(all(any(feature = "native", test), not(target_os = "windows")))]
+#[cfg(all(any(feature = "native", test), target_os = "macos"))]
+pub(crate) fn detected_palworld_user_id() -> Option<String> {
+    macos::detected_palworld_user_id()
+}
+
+#[cfg(all(
+    any(feature = "native", test),
+    not(any(target_os = "windows", target_os = "macos"))
+))]
 pub(crate) fn detected_palworld_user_id() -> Option<String> {
     None
 }
