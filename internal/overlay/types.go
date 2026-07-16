@@ -11,10 +11,10 @@ type Snapshot struct {
 	ObservedAt   time.Time    `json:"observed_at"`
 	FreshUntil   time.Time    `json:"fresh_until"`
 	SourceStatus string       `json:"source_status"`
-	Capabilities []string     `json:"capabilities,omitempty"`
+	Capabilities []string     `json:"capabilities"`
 	Identity     Identity     `json:"identity"`
 	Latency      *Latency     `json:"latency,omitempty"`
-	Timers       []Timer      `json:"timers"`
+	Timers       []Timer      `json:"timers,omitempty"`
 	Map          *MapPosition `json:"map,omitempty"`
 }
 
