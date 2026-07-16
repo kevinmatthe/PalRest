@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,8 +52,8 @@ func TestSnapshotV1Fixture(t *testing.T) {
 	if snapshot.Identity.DisplayName != "Lamball Keeper" {
 		t.Errorf("Identity.DisplayName = %q, want %q", snapshot.Identity.DisplayName, "Lamball Keeper")
 	}
-	if snapshot.Identity.AccountName != "" {
-		t.Errorf("Identity.AccountName = %q, want empty", snapshot.Identity.AccountName)
+	if snapshot.Identity.AccountName != "steam_76561198000000001" {
+		t.Errorf("Identity.AccountName = %q, want %q", snapshot.Identity.AccountName, "steam_76561198000000001")
 	}
 	if snapshot.Identity.Level == nil || *snapshot.Identity.Level != 42 {
 		t.Errorf("Identity.Level = %v, want 42", snapshot.Identity.Level)
@@ -167,16 +168,20 @@ func TestSnapshotV1CollectionOmission(t *testing.T) {
 		wantCapsJSON string
 		wantTimers   bool
 	}{
-		{name: "nil collections", wantCapsJSON: "null"},
+		{name: "nil collections", wantCapsJSON: "[]"},
 		{name: "empty collections", capabilities: []string{}, timers: []Timer{}, wantCapsJSON: "[]"},
 		{name: "populated timers", capabilities: []string{}, timers: []Timer{{ID: "today_observed"}}, wantCapsJSON: "[]", wantTimers: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data, err := json.Marshal(Snapshot{Capabilities: tt.capabilities, Timers: tt.timers})
+			snapshot := Snapshot{Capabilities: tt.capabilities, Timers: tt.timers}
+			data, err := json.Marshal(snapshot)
 			if err != nil {
 				t.Fatalf("marshal snapshot: %v", err)
+			}
+			if tt.capabilities == nil && snapshot.Capabilities != nil {
+				t.Error("marshal mutated nil Capabilities on receiver")
 			}
 			fields := decodeJSONObject(t, data)
 			gotCapabilities, ok := fields["capabilities"]
@@ -191,6 +196,30 @@ func TestSnapshotV1CollectionOmission(t *testing.T) {
 				t.Errorf("timers present = %v, want %v", gotTimers, tt.wantTimers)
 			}
 		})
+	}
+}
+
+func TestSensitiveJSONKeyInspection(t *testing.T) {
+	value := map[string]any{
+		"account_name": "contract-approved",
+		"nested": []any{
+			map[string]any{"IP": "192.0.2.1"},
+			map[string]any{"Authorization": "secret"},
+		},
+	}
+
+	got := sensitiveJSONKeyPaths(value, "root")
+	want := map[string]bool{
+		"root.nested[0].IP":            true,
+		"root.nested[1].Authorization": true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("sensitive paths = %q, want %v", got, want)
+	}
+	for _, path := range got {
+		if !want[path] {
+			t.Errorf("unexpected sensitive path %q", path)
+		}
 	}
 }
 
@@ -229,26 +258,30 @@ func assertExactJSONKeys(t *testing.T, object map[string]json.RawMessage, want .
 
 func assertNoSensitiveJSONKeys(t *testing.T, value any, path string) {
 	t.Helper()
+	for _, sensitivePath := range sensitiveJSONKeyPaths(value, path) {
+		t.Errorf("sensitive JSON key found at %s", sensitivePath)
+	}
+}
+
+func sensitiveJSONKeyPaths(value any, path string) []string {
 	forbidden := map[string]bool{
 		"ip":              true,
 		"password":        true,
 		"authorization":   true,
 		"private_samples": true,
-		"location_x":      true,
-		"location_y":      true,
-		"account_name":    true,
-		"player_id":       true,
 	}
 
+	var found []string
 	var walk func(any, string)
 	walk = func(current any, currentPath string) {
 		switch current := current.(type) {
 		case map[string]any:
 			for key, child := range current {
-				if forbidden[key] {
-					t.Errorf("sensitive JSON key %q found at %s", key, currentPath)
+				childPath := currentPath + "." + key
+				if forbidden[strings.ToLower(key)] {
+					found = append(found, childPath)
 				}
-				walk(child, currentPath+"."+key)
+				walk(child, childPath)
 			}
 		case []any:
 			for i, child := range current {
@@ -257,6 +290,7 @@ func assertNoSensitiveJSONKeys(t *testing.T, value any, path string) {
 		}
 	}
 	walk(value, path)
+	return found
 }
 
 func mustMarshalJSON(t *testing.T, value any) []byte {

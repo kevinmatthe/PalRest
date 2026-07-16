@@ -1,6 +1,9 @@
 package overlay
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const SchemaV1 = "overlay.snapshot/v1"
 
@@ -16,6 +19,15 @@ type Snapshot struct {
 	Latency      *Latency     `json:"latency,omitempty"`
 	Timers       []Timer      `json:"timers,omitempty"`
 	Map          *MapPosition `json:"map,omitempty"`
+}
+
+func (s Snapshot) MarshalJSON() ([]byte, error) {
+	type snapshotAlias Snapshot
+	normalized := snapshotAlias(s)
+	if normalized.Capabilities == nil {
+		normalized.Capabilities = []string{}
+	}
+	return json.Marshal(normalized)
 }
 
 type Identity struct {
