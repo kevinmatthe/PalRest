@@ -5,6 +5,7 @@ import type { CSSProperties } from 'react'
 import type { Snapshot, SourceStatus, Timer } from '../contracts/snapshot'
 import type { GameAdapter } from '../games/types'
 import { palworldAdapter } from '../games/palworld/adapter'
+import { PalworldMiniMap } from './PalworldMiniMap'
 import '../styles.css'
 
 export type OverlayConnectionStatus = 'ready' | 'stale' | 'disconnected'
@@ -15,6 +16,7 @@ export interface OverlayBarProps {
   adapter?: GameAdapter
   adjustMode?: boolean
   scale?: number
+  mapBaseUrl?: string
 }
 
 type OverlayStyle = CSSProperties & { '--overlay-scale': string }
@@ -72,6 +74,7 @@ export function OverlayBar({
   adapter = palworldAdapter,
   adjustMode = false,
   scale = 1,
+  mapBaseUrl,
 }: OverlayBarProps) {
   const tone = adapter.overallTone(snapshot)
   const observedAt = formatObservedAt(snapshot.observed_at)
@@ -79,6 +82,8 @@ export function OverlayBar({
   const hasLatency = snapshot.capabilities.includes('latency') && snapshot.latency !== undefined
   const hasTimers = snapshot.capabilities.includes('timers') && snapshot.timers !== undefined
   const hasMap = snapshot.capabilities.includes('map') && snapshot.map !== undefined
+  const hasPalworldMap = snapshot.game_id === palworldAdapter.id &&
+    adapter.id === palworldAdapter.id
   const railTimer = progressTimer(hasTimers ? snapshot.timers : undefined)
   const rootClasses = [
     'overlay',
@@ -100,17 +105,18 @@ export function OverlayBar({
     >
       <div className="overlay__frame">
         {hasMap ? (
-          <div
-            className="overlay__locator"
-            data-testid="capability-map"
-            data-capability="map"
-            aria-label={`位置数据占位，横坐标 ${snapshot.map!.x}，纵坐标 ${snapshot.map!.y}`}
-          >
-            <span className="overlay__locator-label" aria-hidden="true">位置</span>
-            <span className="overlay__coordinates" aria-hidden="true">
-              {snapshot.map!.x.toFixed(0)} · {snapshot.map!.y.toFixed(0)}
-            </span>
-          </div>
+          hasPalworldMap && mapBaseUrl ? (
+            <PalworldMiniMap map={snapshot.map!} serviceBaseUrl={mapBaseUrl} />
+          ) : (
+            <div
+              className="overlay__locator"
+              data-testid="capability-map"
+              data-capability="map"
+              style={{ pointerEvents: 'none' }}
+            >
+              <span role="status" className="overlay__locator-label">地图不可用</span>
+            </div>
+          )
         ) : null}
 
         <div className="overlay__content">

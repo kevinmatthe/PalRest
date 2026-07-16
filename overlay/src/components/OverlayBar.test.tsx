@@ -167,26 +167,28 @@ describe('OverlayBar', () => {
     expect(screen.queryByTestId('capability-map')).not.toBeInTheDocument()
   })
 
-  it('keeps a neutral position-data seam without simulated cartography', () => {
-    const { rerender } = render(<OverlayBar snapshot={canonicalSnapshot()} />)
+  it('renders the private Palworld map only when map capability and base URL are present', () => {
+    const { rerender } = render(
+      <OverlayBar snapshot={canonicalSnapshot()} mapBaseUrl="https://palbox.tailnet.ts.net:9443/" />,
+    )
     const position = screen.getByTestId('capability-map')
 
-    expect(position).toHaveAccessibleName('位置数据占位，横坐标 187.25，纵坐标 -64.5')
-    expect(within(position).getByText('位置')).toBeInTheDocument()
-    expect(within(position).getByText('187 · -65')).toBeInTheDocument()
-    expect(position.querySelector('.overlay__locator-ring')).not.toBeInTheDocument()
-    expect(position.querySelector('.overlay__locator-dot')).not.toBeInTheDocument()
-
-    const css = readFileSync('src/styles.css', 'utf8')
-    expect(css).not.toMatch(/\.overlay__locator::(?:before|after)/)
-    expect(css).not.toMatch(/\.overlay__locator-(?:ring|dot)/)
-    expect(css).not.toContain('repeating-radial-gradient')
+    expect(within(position).getByTestId('palworld-mini-map-canvas')).toBeInTheDocument()
 
     const value = canonicalSnapshot()
     value.capabilities = value.capabilities.filter((capability) => capability !== 'map')
     delete value.map
     rerender(<OverlayBar snapshot={value} />)
     expect(screen.queryByTestId('capability-map')).not.toBeInTheDocument()
+  })
+
+  it('renders an unavailable map region without a private base and preserves other stats', () => {
+    render(<OverlayBar snapshot={canonicalSnapshot()} />)
+
+    expect(screen.getByTestId('capability-map')).toBeInTheDocument()
+    expect(within(screen.getByTestId('capability-map')).getByRole('status')).toHaveTextContent('地图不可用')
+    expect(screen.getByText('Lamball Keeper · Lv.42')).toBeInTheDocument()
+    expect(screen.getByText('频控剩余')).toBeInTheDocument()
   })
 
   it('adds a 44px drag affordance only in adjust mode', () => {
