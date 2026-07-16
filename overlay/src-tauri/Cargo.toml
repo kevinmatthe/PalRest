@@ -1,0 +1,33 @@
+[package]
+name = "palrest-game-overlay"
+version = "0.1.0"
+description = "A small Palworld status overlay"
+authors = ["PalREST contributors"]
+edition = "2024"
+
+[lib]
+name = "palrest_game_overlay_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "palrest-game-overlay"
+path = "src/main.rs"
+required-features = ["native"]
+
+[features]
+default = ["native"]
+native = ["dep:tauri"]
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+url = "2"
+sysinfo = "0.37"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

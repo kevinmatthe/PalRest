@@ -1,4 +1,5 @@
 import type { OverlayConfigV1 } from './config'
+import { invoke, isTauri } from '@tauri-apps/api/core'
 
 export type FetchSnapshotRequest = {
   baseUrl: string
@@ -48,7 +49,46 @@ export function createBrowserPlaceholderBridge(): DesktopBridge {
   }
 }
 
-/** Task 9 replaces this selection point with the native Tauri bridge. */
+function abortError(): DOMException {
+  return new DOMException('The operation was aborted', 'AbortError')
+}
+
+async function invokeAbortable<T>(
+  command: string,
+  args: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<T> {
+  if (signal.aborted) throw abortError()
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortError())
+    signal.addEventListener('abort', onAbort, { once: true })
+    void invoke<T>(command, args).then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        if (signal.aborted) reject(abortError())
+        else resolve(value)
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
+function createTauriBridge(): DesktopBridge {
+  return {
+    currentWindowLabel: () => invoke('current_window_label'),
+    loadConfig: () => invoke('load_config'),
+    saveConfig: (config) => invoke('save_config', { config }),
+    listPlayers: (baseUrl, signal) => invokeAbortable('list_players', { baseUrl }, signal),
+    setAdjustmentMode: (enabled) => invoke('set_adjustment_mode', { enabled }),
+    fetchSnapshot: (request, signal) => invokeAbortable('fetch_snapshot', { request }, signal),
+    currentPlatform: () => invoke('current_platform'),
+    detectedPalworldUserId: () => invoke('detected_palworld_user_id'),
+  }
+}
+
 export function createDesktopBridge(): DesktopBridge {
-  return createBrowserPlaceholderBridge()
+  return isTauri() ? createTauriBridge() : createBrowserPlaceholderBridge()
 }
