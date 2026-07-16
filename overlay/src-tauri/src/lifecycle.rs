@@ -83,6 +83,28 @@ pub fn initial_window_effects(
     effects
 }
 
+#[must_use]
+pub fn initial_lifecycle_state(locked: bool) -> LifecycleState {
+    LifecycleState {
+        adjustment: !locked,
+        click_through: locked,
+        ..LifecycleState::default()
+    }
+}
+
+#[must_use]
+pub fn focus_rollback_effects(platform: &str) -> Vec<LifecycleEffect> {
+    if platform == "macos" {
+        vec![
+            LifecycleEffect::Hide,
+            LifecycleEffect::SetFocusable(false),
+            LifecycleEffect::Show,
+        ]
+    } else {
+        vec![LifecycleEffect::SetFocusable(false)]
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransitionPlan {
     pub previous: LifecycleState,
@@ -201,7 +223,8 @@ pub fn close_action(label: &str) -> CloseAction {
 mod native {
     use super::{
         LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState, SCAN_INTERVAL,
-        execute_effects, initial_window_effects, plan_transition,
+        execute_effects, focus_rollback_effects, initial_lifecycle_state, initial_window_effects,
+        plan_transition,
     };
     use crate::{config, process::ProcessMonitor};
     use std::sync::Mutex;
@@ -264,10 +287,11 @@ mod native {
         }
 
         fn set_initial_locked(&self, locked: bool) -> Result<(), String> {
-            self.state
+            *self
+                .state
                 .lock()
-                .map_err(|_| "lifecycle state is unavailable".to_string())?
-                .click_through = locked;
+                .map_err(|_| "lifecycle state is unavailable".to_string())? =
+                initial_lifecycle_state(locked);
             Ok(())
         }
     }
@@ -320,7 +344,20 @@ mod native {
                     let _ = self.overlay.set_focusable(!value);
                 }
                 LifecycleEffect::Focus => {
-                    let _ = self.overlay.set_focusable(false);
+                    for rollback in focus_rollback_effects(current_platform()) {
+                        match rollback {
+                            LifecycleEffect::Hide => {
+                                let _ = self.overlay.hide();
+                            }
+                            LifecycleEffect::Show => {
+                                let _ = self.overlay.show();
+                            }
+                            LifecycleEffect::SetFocusable(value) => {
+                                let _ = self.overlay.set_focusable(value);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 LifecycleEffect::EmitAdjustment(value) => {
                     let _ = self.overlay.emit("adjustment-mode-changed", !value);
@@ -415,8 +452,8 @@ pub use native::{LifecycleController, initialise, start_monitor};
 mod tests {
     use super::{
         CloseAction, LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState,
-        SCAN_INTERVAL, close_action, execute_effects, initial_window_effects, plan_transition,
-        reduce,
+        SCAN_INTERVAL, close_action, execute_effects, focus_rollback_effects,
+        initial_lifecycle_state, initial_window_effects, plan_transition, reduce,
     };
     use std::time::Duration;
 
@@ -613,6 +650,36 @@ mod tests {
                 LifecycleEffect::SetFocusable(false),
                 LifecycleEffect::SetClickThrough(true),
             ]
+        );
+    }
+
+    #[test]
+    fn unlocked_config_preloads_full_adjustment_state_without_window_show_or_focus() {
+        let state = initial_lifecycle_state(false);
+        assert!(state.adjustment);
+        assert!(!state.click_through);
+        assert!(!state.overlay_visible);
+        assert!(
+            !initial_window_effects(None, None, false)
+                .iter()
+                .any(|effect| { matches!(effect, LifecycleEffect::Show | LifecycleEffect::Focus) })
+        );
+        assert!(reduce(state, LifecycleEvent::GameDetected(false)).overlay_visible);
+    }
+
+    #[test]
+    fn focus_rollback_is_reliable_on_macos_and_non_focusing_elsewhere() {
+        assert_eq!(
+            focus_rollback_effects("macos"),
+            vec![
+                LifecycleEffect::Hide,
+                LifecycleEffect::SetFocusable(false),
+                LifecycleEffect::Show,
+            ]
+        );
+        assert_eq!(
+            focus_rollback_effects("windows"),
+            vec![LifecycleEffect::SetFocusable(false),]
         );
     }
 }

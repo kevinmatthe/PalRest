@@ -108,16 +108,47 @@ describe('SettingsView', () => {
     fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
     await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
     fireEvent.change(screen.getByLabelText('缩放'), { target: { value: '1.25' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: '锁定并保持鼠标穿透' }))
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
     fireEvent.click(screen.getByRole('button', { name: '正在保存…' }))
     expect(api.saveConfig).toHaveBeenCalledTimes(1)
-    expect(api.saveConfig).toHaveBeenCalledWith({ ...saved, scale: 1.25 })
+    expect(api.saveConfig).toHaveBeenCalledWith({ ...saved, scale: 1.25, locked: false })
     finish()
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
+    expect(api.setAdjustmentMode).toHaveBeenCalledWith(true)
     expect(screen.getByRole('status')).toHaveTextContent('设置已保存')
 
     fireEvent.click(screen.getByRole('button', { name: '调整悬浮条位置' }))
     expect(api.setAdjustmentMode).toHaveBeenCalledWith(true)
+  })
+
+  it('locks native lifecycle before publishing a locked save', async () => {
+    const api = bridge({
+      listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Player', account_name: '' }]),
+      saveConfig: vi.fn(async () => {}), setAdjustmentMode: vi.fn(async () => {}),
+    })
+    const onSaved = vi.fn()
+    render(<SettingsView bridge={api} initialConfig={saved} onSaved={onSaved} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    await waitFor(() => expect(api.setAdjustmentMode).toHaveBeenCalledWith(false))
+    expect(onSaved).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports lifecycle sync failure without publishing a completed save', async () => {
+    const api = bridge({
+      listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Player', account_name: '' }]),
+      saveConfig: vi.fn(async () => {}),
+      setAdjustmentMode: vi.fn(async () => { throw new Error('native failure') }),
+    })
+    const onSaved = vi.fn()
+    render(<SettingsView bridge={api} initialConfig={saved} onSaved={onSaved} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('设置已保存，但悬浮条状态同步失败')
+    expect(onSaved).not.toHaveBeenCalled()
   })
 
   it('invalidates a loaded player when the service changes and saves only after reloading', async () => {
@@ -181,6 +212,7 @@ describe('SettingsView', () => {
     finish()
     await Promise.resolve()
     expect(onSaved).not.toHaveBeenCalled()
+    expect(api.setAdjustmentMode).not.toHaveBeenCalled()
   })
 
   it('reselect signal clears the saved UID and reloads without selecting it again', async () => {
@@ -202,5 +234,9 @@ describe('SettingsView', () => {
     fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
     await waitFor(() => expect(api.listPlayers).toHaveBeenCalledTimes(4))
     expect(screen.getByLabelText('玩家')).toHaveValue('uid-3')
+    fireEvent.change(screen.getByLabelText('玩家'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(api.listPlayers).toHaveBeenCalledTimes(5))
+    expect(screen.getByLabelText('玩家')).toHaveValue('')
   })
 })

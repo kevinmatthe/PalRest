@@ -169,13 +169,22 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
     setSaving(true)
     setMessage(null)
     const generation = ++saveGeneration.current
+    let persisted = false
     try {
       await bridge.saveConfig(config)
+      persisted = true
+      if (!mounted.current || generation !== saveGeneration.current) return
+      await bridge.setAdjustmentMode(!config.locked)
       if (!mounted.current || generation !== saveGeneration.current) return
       setMessage({ tone: 'status', text: '设置已保存' })
       onSaved?.(config)
     } catch {
-      if (mounted.current && generation === saveGeneration.current) setMessage({ tone: 'error', text: '保存失败，请稍后重试' })
+      if (mounted.current && generation === saveGeneration.current) {
+        setMessage({
+          tone: 'error',
+          text: persisted ? '设置已保存，但悬浮条状态同步失败' : '保存失败，请稍后重试',
+        })
+      }
     } finally {
       if (mounted.current && generation === saveGeneration.current) setSaving(false)
     }
@@ -231,6 +240,9 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
               if (nextUserId) {
                 suppressKnownIdentity.current = false
                 explicitlySelectedUserId.current = nextUserId
+              } else {
+                suppressKnownIdentity.current = true
+                explicitlySelectedUserId.current = null
               }
               setUserId(nextUserId)
             }}>

@@ -207,4 +207,14 @@ describe('App window routing', () => {
     expect(loading.closest('main')).toHaveAttribute('data-tauri-drag-region')
     expect(screen.getByText('拖动调整位置')).toBeInTheDocument()
   })
+
+  it('starts in adjustment UI when the loaded config is unlocked', async () => {
+    const api = bridge({
+      loadConfig: vi.fn(async () => ({ ...config, locked: false })),
+      fetchSnapshot: vi.fn<DesktopBridge['fetchSnapshot']>(() => new Promise(() => {})),
+    })
+    render(<App bridge={api} />)
+    await waitFor(() => expect(api.fetchSnapshot).toHaveBeenCalled())
+    expect(await screen.findByText('拖动调整位置')).toBeInTheDocument()
+  })
 })

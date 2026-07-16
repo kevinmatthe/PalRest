@@ -98,6 +98,7 @@ export default function App({ bridge }: AppProps) {
         setBootstrap({ status: 'error' })
         return
       }
+      setAdjustMode(config ? !config.locked : false)
       let platform: string | undefined
       let detectedUserId: string | null | undefined
       const currentPlatform = bridge.currentPlatform
