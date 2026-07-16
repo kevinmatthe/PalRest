@@ -182,4 +182,18 @@ describe('SettingsView', () => {
     await Promise.resolve()
     expect(onSaved).not.toHaveBeenCalled()
   })
+
+  it('reselect signal clears the saved UID and reloads without selecting it again', async () => {
+    const api = bridge({ listPlayers: vi.fn(async () => [
+      { user_id: 'uid-2', name: 'Player', account_name: '' },
+      { user_id: 'uid-3', name: 'Other', account_name: '' },
+    ]) })
+    const { rerender } = render(<SettingsView bridge={api} initialConfig={saved} reselectSignal={0} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+
+    rerender(<SettingsView bridge={api} initialConfig={saved} reselectSignal={1} />)
+    await waitFor(() => expect(api.listPlayers).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue(''))
+  })
 })

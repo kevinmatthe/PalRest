@@ -9,6 +9,7 @@ export interface SettingsViewProps {
   initialConfig: OverlayConfigV1 | null
   detectedUserId?: string | null
   platform?: string
+  reselectSignal?: number
   onSaved?: (config: OverlayConfigV1) => void
 }
 
@@ -34,7 +35,7 @@ function playerLabel(player: PlayerListItem): string {
   return context ? `${context} — ${player.user_id}` : player.user_id
 }
 
-export function SettingsView({ bridge, initialConfig, detectedUserId, platform, onSaved }: SettingsViewProps) {
+export function SettingsView({ bridge, initialConfig, detectedUserId, platform, reselectSignal = 0, onSaved }: SettingsViewProps) {
   const [baseUrl, setBaseUrl] = useState(initialConfig?.baseUrl ?? '')
   const [players, setPlayers] = useState<PlayerListItem[]>([])
   const [userId, setUserId] = useState('')
@@ -49,6 +50,7 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
   const listGeneration = useRef(0)
   const saveGeneration = useRef(0)
   const adjustGeneration = useRef(0)
+  const lastReselectSignal = useRef(0)
 
   useEffect(() => {
     mounted.current = true
@@ -83,7 +85,7 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
     setLoadedBaseUrl(null)
   }
 
-  async function loadPlayers() {
+  async function loadPlayers(selectKnownIdentity = true) {
     listController.current?.abort()
     const generation = ++listGeneration.current
     setLoadedBaseUrl(null)
@@ -108,9 +110,9 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
       setBaseUrl(normalized)
       setPlayers(listed)
       setLoadedBaseUrl(normalized)
-      const exactSaved = initialConfig && listed.some((player) => player.user_id === initialConfig.userId)
+      const exactSaved = selectKnownIdentity && initialConfig && listed.some((player) => player.user_id === initialConfig.userId)
         ? initialConfig.userId : ''
-      const exactDetected = platform === 'windows' && detectedUserId && listed.some((player) => player.user_id === detectedUserId)
+      const exactDetected = selectKnownIdentity && platform === 'windows' && detectedUserId && listed.some((player) => player.user_id === detectedUserId)
         ? detectedUserId : ''
       setUserId(exactSaved || exactDetected || '')
       setMessage(listed.length ? null : { tone: 'status', text: '未找到可选择的玩家' })
@@ -125,6 +127,12 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
       }
     }
   }
+
+  useEffect(() => {
+    if (lastReselectSignal.current === reselectSignal) return
+    lastReselectSignal.current = reselectSignal
+    void loadPlayers(false)
+  }, [reselectSignal])
 
   async function save(event: FormEvent) {
     event.preventDefault()
@@ -196,7 +204,7 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
               <span>服务地址</span>
               <input value={baseUrl} onChange={(event) => changeBaseUrl(event.target.value)} placeholder="https://palbox.tailnet.ts.net:9443" autoComplete="url" />
             </label>
-            <button className="settings-button settings-button--secondary" type="button" aria-label="加载玩家" onClick={loadPlayers}>
+            <button className="settings-button settings-button--secondary" type="button" aria-label="加载玩家" onClick={() => { void loadPlayers() }}>
               {loading ? '正在加载…' : '加载玩家'}
             </button>
           </div>

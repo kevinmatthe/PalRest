@@ -143,6 +143,22 @@ pub fn save_to_path(config_dir: &Path, config: &OverlayConfig) -> io::Result<()>
     result
 }
 
+/// Saves fields controlled by Settings without allowing a stale renderer copy to overwrite
+/// geometry most recently captured by the native window lifecycle.
+pub fn save_editable_to_path(config_dir: &Path, incoming: &OverlayConfig) -> io::Result<()> {
+    let merged = match load_from_path(config_dir)? {
+        Some(mut current) => {
+            current.base_url = incoming.base_url.clone();
+            current.game_id = incoming.game_id.clone();
+            current.user_id = incoming.user_id.clone();
+            current.scale = incoming.scale;
+            current
+        }
+        None => incoming.clone(),
+    };
+    save_to_path(config_dir, &merged)
+}
+
 #[cfg(unix)]
 fn sync_directory(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
@@ -155,7 +171,7 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{OverlayConfig, load_from_path, save_to_path};
+    use super::{OverlayConfig, load_from_path, save_editable_to_path, save_to_path};
     use std::fs;
 
     fn config() -> OverlayConfig {
@@ -250,5 +266,38 @@ mod tests {
             assert!(save_to_path(&dir, &invalid).is_err(), "accepted {base_url}");
             fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[test]
+    fn editable_save_preserves_newer_native_geometry() {
+        let dir = temp_dir("editable-merge");
+        let native = config();
+        save_to_path(&dir, &native).unwrap();
+        let mut incoming = native.clone();
+        incoming.base_url = "https://replacement.test".into();
+        incoming.user_id = "replacement".into();
+        incoming.scale = 1.25;
+        incoming.display_id = Some("stale-display".into());
+        incoming.x = Some(999.0);
+        incoming.y = Some(999.0);
+        incoming.locked = false;
+        save_editable_to_path(&dir, &incoming).unwrap();
+        let merged = load_from_path(&dir).unwrap().unwrap();
+        assert_eq!(merged.base_url, incoming.base_url);
+        assert_eq!(merged.user_id, incoming.user_id);
+        assert_eq!(merged.scale, 1.25);
+        assert_eq!(merged.display_id, native.display_id);
+        assert_eq!(merged.x, native.x);
+        assert_eq!(merged.y, native.y);
+        assert!(merged.locked);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn first_editable_save_accepts_initial_geometry() {
+        let dir = temp_dir("editable-first");
+        save_editable_to_path(&dir, &config()).unwrap();
+        assert_eq!(load_from_path(&dir).unwrap(), Some(config()));
+        fs::remove_dir_all(dir).unwrap();
     }
 }

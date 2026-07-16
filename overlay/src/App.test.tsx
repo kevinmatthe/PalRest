@@ -118,6 +118,55 @@ describe('App window routing', () => {
     expect(api.fetchSnapshot).toHaveBeenCalledTimes(1)
   })
 
+  it('reflects native adjustment events and unregisters the listener on unmount', async () => {
+    let notify!: (enabled: boolean) => void
+    const unlisten = vi.fn()
+    const api = bridge({
+      onAdjustmentModeChanged: vi.fn(async (handler) => { notify = handler; return unlisten }),
+      fetchSnapshot: vi.fn<DesktopBridge['fetchSnapshot']>(async () => ({ status: 200, body: {
+        schema: 'overlay.snapshot/v1', game_id: 'palworld', user_id: 'uid', observed_at: '2026-07-16T12:00:00Z',
+        fresh_until: '2099-07-16T12:00:00Z', source_status: 'online', capabilities: ['identity'], identity: { display_name: 'Lamball' },
+      } })),
+    })
+    const { unmount } = render(<App bridge={api} />)
+    await screen.findByText('Lamball')
+    notify(true)
+    expect(await screen.findByText('拖动调整位置')).toBeInTheDocument()
+    notify(false)
+    await waitFor(() => expect(screen.queryByText('拖动调整位置')).not.toBeInTheDocument())
+    unmount()
+    expect(unlisten).toHaveBeenCalledTimes(1)
+  })
+
+  it('unregisters a lifecycle listener that resolves after unmount', async () => {
+    let resolveListener!: (unlisten: () => void) => void
+    const unlisten = vi.fn()
+    const api = bridge({
+      onAdjustmentModeChanged: vi.fn(() => new Promise<() => void>((resolve) => { resolveListener = resolve })),
+    })
+    const { unmount } = render(<App bridge={api} />)
+    unmount()
+    resolveListener(unlisten)
+    await waitFor(() => expect(unlisten).toHaveBeenCalledTimes(1))
+  })
+
+  it('routes reselect events into settings and does not restore the saved UID', async () => {
+    let reselect!: () => void
+    const listPlayers = vi.fn(async () => [{ user_id: 'uid', name: 'Player', account_name: '' }])
+    const api = bridge({
+      currentWindowLabel: vi.fn(async () => 'settings' as const),
+      onReselectPlayer: vi.fn(async (handler) => { reselect = handler; return () => {} }),
+      listPlayers,
+    })
+    render(<App bridge={api} />)
+    await screen.findByRole('heading', { name: '悬浮条设置' })
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid'))
+    reselect()
+    await waitFor(() => expect(listPlayers).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue(''))
+  })
+
   it('stops and aborts an in-flight poll when the overlay unmounts', async () => {
     const api = bridge({ fetchSnapshot: vi.fn<DesktopBridge['fetchSnapshot']>(() => new Promise<FetchSnapshotResult>(() => {})) })
     const { unmount } = render(<App bridge={api} />)

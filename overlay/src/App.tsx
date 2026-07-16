@@ -24,7 +24,7 @@ function CompactState({ children }: { children: string }) {
   return <main className="overlay-state" role="status">{children}</main>
 }
 
-function LiveOverlay({ bridge, config }: { bridge: DesktopBridge; config: OverlayConfigV1 }) {
+function LiveOverlay({ bridge, config, adjustMode }: { bridge: DesktopBridge; config: OverlayConfigV1; adjustMode: boolean }) {
   const poller = useMemo(() => new SnapshotPoller({
     bridge,
     config: { baseUrl: config.baseUrl, gameId: config.gameId, userId: config.userId },
@@ -43,10 +43,10 @@ function LiveOverlay({ bridge, config }: { bridge: DesktopBridge; config: Overla
   }, [bridge, state.status])
 
   if (state.status === 'ready' || state.status === 'stale') {
-    return <OverlayBar snapshot={state.snapshot} status={state.status} mapBaseUrl={config.baseUrl} scale={config.scale} />
+    return <OverlayBar snapshot={state.snapshot} status={state.status} mapBaseUrl={config.baseUrl} scale={config.scale} adjustMode={adjustMode} />
   }
   if (state.status === 'disconnected' && state.snapshot) {
-    return <OverlayBar snapshot={state.snapshot} status="disconnected" mapBaseUrl={config.baseUrl} scale={config.scale} />
+    return <OverlayBar snapshot={state.snapshot} status="disconnected" mapBaseUrl={config.baseUrl} scale={config.scale} adjustMode={adjustMode} />
   }
   if (state.status === 'needs-player') return <CompactState>玩家已失效，请在设置中重新选择</CompactState>
   if (state.status === 'incompatible') return <CompactState>服务版本不兼容，请更新应用</CompactState>
@@ -56,6 +56,29 @@ function LiveOverlay({ bridge, config }: { bridge: DesktopBridge; config: Overla
 
 export default function App({ bridge }: AppProps) {
   const [bootstrap, setBootstrap] = useState<Bootstrap>({ status: 'loading' })
+  const [adjustMode, setAdjustMode] = useState(false)
+  const [reselectSignal, setReselectSignal] = useState(0)
+
+  useEffect(() => {
+    let active = true
+    const cleanups: Array<() => void> = []
+    const attach = (subscription: Promise<() => void>) => {
+      void subscription.then((unlisten) => {
+        if (active) cleanups.push(unlisten)
+        else unlisten()
+      }).catch(() => undefined)
+    }
+    if (bridge.onAdjustmentModeChanged) {
+      attach(bridge.onAdjustmentModeChanged((enabled) => { if (active) setAdjustMode(enabled) }))
+    }
+    if (bridge.onReselectPlayer) {
+      attach(bridge.onReselectPlayer(() => { if (active) setReselectSignal((value) => value + 1) }))
+    }
+    return () => {
+      active = false
+      cleanups.splice(0).forEach((unlisten) => unlisten())
+    }
+  }, [bridge])
 
   useEffect(() => {
     let active = true
@@ -111,9 +134,10 @@ export default function App({ bridge }: AppProps) {
       initialConfig={bootstrap.config}
       platform={bootstrap.platform}
       detectedUserId={bootstrap.detectedUserId}
+      reselectSignal={reselectSignal}
       onSaved={(config) => setBootstrap({ ...bootstrap, config })}
     />
   }
   if (!bootstrap.config) return <CompactState>需要先完成设置</CompactState>
-  return <LiveOverlay bridge={bridge} config={bootstrap.config} />
+  return <LiveOverlay bridge={bridge} config={bootstrap.config} adjustMode={adjustMode} />
 }

@@ -23,7 +23,8 @@ mod native {
 
     #[tauri::command]
     fn save_config(app: AppHandle, config: config::OverlayConfig) -> Result<(), String> {
-        config::save_to_path(&config_dir(&app)?, &config).map_err(|error| error.to_string())
+        config::save_editable_to_path(&config_dir(&app)?, &config)
+            .map_err(|error| error.to_string())
     }
 
     #[tauri::command]
@@ -89,7 +90,9 @@ mod native {
             .on_window_event(|window, event| {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
-                    let _ = window.hide();
+                    if lifecycle::close_action(window.label()) == lifecycle::CloseAction::Hide {
+                        let _ = window.hide();
+                    }
                 }
             })
             .invoke_handler(tauri::generate_handler![

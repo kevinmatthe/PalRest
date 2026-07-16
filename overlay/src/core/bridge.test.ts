@@ -4,8 +4,10 @@ const tauri = vi.hoisted(() => ({
   invoke: vi.fn(),
   isTauri: vi.fn(() => true),
 }))
+const events = vi.hoisted(() => ({ listen: vi.fn() }))
 
 vi.mock('@tauri-apps/api/core', () => tauri)
+vi.mock('@tauri-apps/api/event', () => events)
 
 import { createDesktopBridge } from './bridge'
 
@@ -25,6 +27,23 @@ describe('native HTTP invoke gate', () => {
   beforeEach(() => {
     tauri.invoke.mockReset()
     tauri.isTauri.mockReturnValue(true)
+    events.listen.mockReset()
+  })
+
+  it('subscribes to native lifecycle events and returns their cleanup handles', async () => {
+    const unlistenAdjustment = vi.fn()
+    const unlistenReselect = vi.fn()
+    events.listen.mockResolvedValueOnce(unlistenAdjustment).mockResolvedValueOnce(unlistenReselect)
+    const bridge = createDesktopBridge()
+    const adjustment = vi.fn()
+    const reselect = vi.fn()
+
+    await expect(bridge.onAdjustmentModeChanged!(adjustment)).resolves.toBe(unlistenAdjustment)
+    await expect(bridge.onReselectPlayer!(reselect)).resolves.toBe(unlistenReselect)
+    events.listen.mock.calls[0][1]({ payload: true })
+    events.listen.mock.calls[1][1]({ payload: null })
+    expect(adjustment).toHaveBeenCalledWith(true)
+    expect(reselect).toHaveBeenCalledTimes(1)
   })
 
   it('rejects an aborted caller promptly but waits for its native invoke before starting the next HTTP request', async () => {

@@ -53,34 +53,182 @@ pub fn reduce(mut state: LifecycleState, event: LifecycleEvent) -> LifecycleStat
     state
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleEffect {
+    PersistGeometry,
+    Show,
+    Hide,
+    SetClickThrough(bool),
+    SetFocusable(bool),
+    Focus,
+    EmitAdjustment(bool),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransitionPlan {
+    pub previous: LifecycleState,
+    pub next: LifecycleState,
+    pub effects: Vec<LifecycleEffect>,
+}
+
+#[must_use]
+pub fn plan_transition(
+    previous: LifecycleState,
+    event: LifecycleEvent,
+    platform: &str,
+) -> TransitionPlan {
+    let next = reduce(previous, event);
+    let mut effects = Vec::new();
+    if previous == next {
+        return TransitionPlan {
+            previous,
+            next,
+            effects,
+        };
+    }
+    match event {
+        LifecycleEvent::GameDetected(_) => {
+            if previous.overlay_visible != next.overlay_visible {
+                effects.push(if next.overlay_visible {
+                    LifecycleEffect::Show
+                } else {
+                    LifecycleEffect::Hide
+                });
+            }
+        }
+        LifecycleEvent::EnterAdjustment => {
+            if previous.overlay_visible != next.overlay_visible {
+                effects.push(LifecycleEffect::Show);
+            }
+            if previous.click_through != next.click_through {
+                effects.push(LifecycleEffect::SetClickThrough(next.click_through));
+            }
+            effects.extend([
+                LifecycleEffect::SetFocusable(true),
+                LifecycleEffect::Focus,
+                LifecycleEffect::EmitAdjustment(true),
+            ]);
+        }
+        LifecycleEvent::Lock => {
+            effects.push(LifecycleEffect::PersistGeometry);
+            if previous.click_through != next.click_through {
+                effects.push(LifecycleEffect::SetClickThrough(next.click_through));
+            }
+            if platform == "macos" && next.overlay_visible {
+                effects.extend([
+                    LifecycleEffect::Hide,
+                    LifecycleEffect::SetFocusable(false),
+                    LifecycleEffect::Show,
+                ]);
+            } else {
+                if previous.overlay_visible != next.overlay_visible {
+                    effects.push(if next.overlay_visible {
+                        LifecycleEffect::Show
+                    } else {
+                        LifecycleEffect::Hide
+                    });
+                }
+                effects.push(LifecycleEffect::SetFocusable(false));
+            }
+            effects.push(LifecycleEffect::EmitAdjustment(false));
+        }
+        LifecycleEvent::Quit => {}
+    }
+    TransitionPlan {
+        previous,
+        next,
+        effects,
+    }
+}
+
+pub trait LifecycleEffectExecutor {
+    fn apply(&mut self, effect: LifecycleEffect) -> Result<(), String>;
+    fn rollback(&mut self, effect: LifecycleEffect);
+}
+
+pub fn execute_effects(
+    executor: &mut impl LifecycleEffectExecutor,
+    effects: &[LifecycleEffect],
+) -> Result<(), String> {
+    let mut applied = Vec::with_capacity(effects.len());
+    for &effect in effects {
+        if let Err(error) = executor.apply(effect) {
+            for &completed in applied.iter().rev() {
+                executor.rollback(completed);
+            }
+            return Err(error);
+        }
+        applied.push(effect);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseAction {
+    Keep,
+    Hide,
+}
+
+#[must_use]
+pub fn close_action(label: &str) -> CloseAction {
+    if label == "overlay" {
+        CloseAction::Keep
+    } else {
+        CloseAction::Hide
+    }
+}
+
 #[cfg(feature = "native")]
 mod native {
-    use super::{LifecycleEvent, LifecycleState, SCAN_INTERVAL, reduce};
+    use super::{
+        LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState, SCAN_INTERVAL,
+        execute_effects, plan_transition,
+    };
     use crate::{config, process::ProcessMonitor};
     use std::sync::Mutex;
     use tauri::{AppHandle, Emitter, Manager};
 
     pub struct LifecycleController {
         state: Mutex<LifecycleState>,
+        operation: Mutex<()>,
     }
 
     impl Default for LifecycleController {
         fn default() -> Self {
             Self {
                 state: Mutex::new(LifecycleState::default()),
+                operation: Mutex::new(()),
             }
         }
     }
 
     impl LifecycleController {
         pub fn transition(&self, app: &AppHandle, event: LifecycleEvent) -> Result<(), String> {
+            let _operation = self
+                .operation
+                .lock()
+                .map_err(|_| "lifecycle transition is unavailable".to_string())?;
+            let previous = *self
+                .state
+                .lock()
+                .map_err(|_| "lifecycle state is unavailable".to_string())?;
+            let plan = plan_transition(previous, event, current_platform());
+            if plan.effects.is_empty() {
+                *self
+                    .state
+                    .lock()
+                    .map_err(|_| "lifecycle state is unavailable".to_string())? = plan.next;
+                return Ok(());
+            }
+            let overlay = app
+                .get_webview_window("overlay")
+                .ok_or_else(|| "overlay window is unavailable".to_string())?;
+            execute_effects(&mut NativeExecutor { app, overlay }, &plan.effects)?;
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| "lifecycle state is unavailable".to_string())?;
-            let previous = *state;
-            let next = reduce(previous, event);
-            apply_transition(app, previous, next, event)?;
+            let next = plan.next;
             *state = next;
             Ok(())
         }
@@ -90,51 +238,64 @@ mod native {
         }
     }
 
-    fn apply_transition(
-        app: &AppHandle,
-        previous: LifecycleState,
-        next: LifecycleState,
-        event: LifecycleEvent,
-    ) -> Result<(), String> {
-        let overlay = app
-            .get_webview_window("overlay")
-            .ok_or_else(|| "overlay window is unavailable".to_string())?;
+    struct NativeExecutor<'a> {
+        app: &'a AppHandle,
+        overlay: tauri::WebviewWindow,
+    }
 
-        if previous.overlay_visible != next.overlay_visible {
-            if next.overlay_visible {
-                overlay.show().map_err(|error| error.to_string())?;
-            } else {
-                overlay.hide().map_err(|error| error.to_string())?;
-            }
-        }
-        if previous.click_through != next.click_through {
-            overlay
-                .set_ignore_cursor_events(next.click_through)
-                .map_err(|error| error.to_string())?;
+    impl LifecycleEffectExecutor for NativeExecutor<'_> {
+        fn apply(&mut self, effect: LifecycleEffect) -> Result<(), String> {
+            let result = match effect {
+                LifecycleEffect::PersistGeometry => {
+                    return persist_geometry(self.app, &self.overlay);
+                }
+                LifecycleEffect::Show => self.overlay.show(),
+                LifecycleEffect::Hide => self.overlay.hide(),
+                LifecycleEffect::SetClickThrough(value) => {
+                    self.overlay.set_ignore_cursor_events(value)
+                }
+                LifecycleEffect::SetFocusable(value) => self.overlay.set_focusable(value),
+                LifecycleEffect::Focus => self.overlay.set_focus(),
+                LifecycleEffect::EmitAdjustment(value) => {
+                    self.overlay.emit("adjustment-mode-changed", value)
+                }
+            };
+            result.map_err(|error| error.to_string())
         }
 
-        match event {
-            LifecycleEvent::EnterAdjustment => {
-                overlay
-                    .set_focusable(true)
-                    .map_err(|error| error.to_string())?;
-                overlay.set_focus().map_err(|error| error.to_string())?;
-                overlay
-                    .emit("adjustment-mode-changed", true)
-                    .map_err(|error| error.to_string())?;
+        fn rollback(&mut self, effect: LifecycleEffect) {
+            match effect {
+                LifecycleEffect::PersistGeometry => {}
+                LifecycleEffect::Show => {
+                    let _ = self.overlay.hide();
+                }
+                LifecycleEffect::Hide => {
+                    let _ = self.overlay.show();
+                }
+                LifecycleEffect::SetClickThrough(value) => {
+                    let _ = self.overlay.set_ignore_cursor_events(!value);
+                }
+                LifecycleEffect::SetFocusable(value) => {
+                    let _ = self.overlay.set_focusable(!value);
+                }
+                LifecycleEffect::Focus => {
+                    let _ = self.overlay.set_focusable(false);
+                }
+                LifecycleEffect::EmitAdjustment(value) => {
+                    let _ = self.overlay.emit("adjustment-mode-changed", !value);
+                }
             }
-            LifecycleEvent::Lock => {
-                persist_geometry(app, &overlay)?;
-                overlay
-                    .set_focusable(false)
-                    .map_err(|error| error.to_string())?;
-                overlay
-                    .emit("adjustment-mode-changed", false)
-                    .map_err(|error| error.to_string())?;
-            }
-            LifecycleEvent::GameDetected(_) | LifecycleEvent::Quit => {}
         }
-        Ok(())
+    }
+
+    fn current_platform() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            std::env::consts::OS
+        }
     }
 
     fn persist_geometry(app: &AppHandle, overlay: &tauri::WebviewWindow) -> Result<(), String> {
@@ -175,13 +336,7 @@ mod native {
     pub fn start_monitor(app: AppHandle) {
         std::thread::spawn(move || {
             let mut processes = ProcessMonitor::default();
-            let platform = if cfg!(target_os = "windows") {
-                "windows"
-            } else if cfg!(target_os = "macos") {
-                "macos"
-            } else {
-                std::env::consts::OS
-            };
+            let platform = current_platform();
             loop {
                 let scan_started = std::time::Instant::now();
                 let lifecycle = app.state::<LifecycleController>();
@@ -201,7 +356,10 @@ pub use native::{LifecycleController, initialise, start_monitor};
 
 #[cfg(test)]
 mod tests {
-    use super::{LifecycleEvent, LifecycleState, SCAN_INTERVAL, reduce};
+    use super::{
+        CloseAction, LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState,
+        SCAN_INTERVAL, close_action, execute_effects, plan_transition, reduce,
+    };
     use std::time::Duration;
 
     #[test]
@@ -260,5 +418,120 @@ mod tests {
     fn quit_is_explicit_state() {
         let state = reduce(LifecycleState::default(), LifecycleEvent::Quit);
         assert!(state.quitting);
+    }
+
+    #[test]
+    fn repeated_commands_have_no_effects() {
+        let adjusted = reduce(LifecycleState::default(), LifecycleEvent::EnterAdjustment);
+        assert!(
+            plan_transition(adjusted, LifecycleEvent::EnterAdjustment, "windows")
+                .effects
+                .is_empty()
+        );
+        let locked = reduce(adjusted, LifecycleEvent::Lock);
+        assert!(
+            plan_transition(locked, LifecycleEvent::Lock, "windows")
+                .effects
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn mac_lock_persists_before_window_changes_and_reliably_clears_focus() {
+        let adjusted = LifecycleState {
+            game_running: true,
+            adjustment: true,
+            overlay_visible: true,
+            click_through: false,
+            quitting: false,
+        };
+        assert_eq!(
+            plan_transition(adjusted, LifecycleEvent::Lock, "macos").effects,
+            vec![
+                LifecycleEffect::PersistGeometry,
+                LifecycleEffect::SetClickThrough(true),
+                LifecycleEffect::Hide,
+                LifecycleEffect::SetFocusable(false),
+                LifecycleEffect::Show,
+                LifecycleEffect::EmitAdjustment(false),
+            ]
+        );
+    }
+
+    #[test]
+    fn overlay_close_is_kept_in_sync_while_settings_close_hides() {
+        assert_eq!(close_action("overlay"), CloseAction::Keep);
+        assert_eq!(close_action("settings"), CloseAction::Hide);
+    }
+
+    #[test]
+    fn geometry_failure_has_no_window_effects_and_the_same_plan_can_retry() {
+        struct Fixture {
+            fail_geometry_once: bool,
+            applied: Vec<LifecycleEffect>,
+        }
+        impl LifecycleEffectExecutor for Fixture {
+            fn apply(&mut self, effect: LifecycleEffect) -> Result<(), String> {
+                self.applied.push(effect);
+                if effect == LifecycleEffect::PersistGeometry && self.fail_geometry_once {
+                    self.fail_geometry_once = false;
+                    return Err("disk unavailable".into());
+                }
+                Ok(())
+            }
+            fn rollback(&mut self, _effect: LifecycleEffect) {}
+        }
+        let adjusted = LifecycleState {
+            game_running: true,
+            adjustment: true,
+            overlay_visible: true,
+            click_through: false,
+            quitting: false,
+        };
+        let plan = plan_transition(adjusted, LifecycleEvent::Lock, "windows");
+        let mut fixture = Fixture {
+            fail_geometry_once: true,
+            applied: vec![],
+        };
+        assert!(execute_effects(&mut fixture, &plan.effects).is_err());
+        assert_eq!(fixture.applied, vec![LifecycleEffect::PersistGeometry]);
+        fixture.applied.clear();
+        assert!(execute_effects(&mut fixture, &plan.effects).is_ok());
+        assert_eq!(fixture.applied, plan.effects);
+    }
+
+    #[test]
+    fn window_failure_rolls_back_completed_effects_in_reverse_order() {
+        struct Fixture {
+            rolled_back: Vec<LifecycleEffect>,
+        }
+        impl LifecycleEffectExecutor for Fixture {
+            fn apply(&mut self, effect: LifecycleEffect) -> Result<(), String> {
+                if effect == LifecycleEffect::Hide {
+                    Err("window unavailable".into())
+                } else {
+                    Ok(())
+                }
+            }
+            fn rollback(&mut self, effect: LifecycleEffect) {
+                self.rolled_back.push(effect);
+            }
+        }
+        let effects = [
+            LifecycleEffect::PersistGeometry,
+            LifecycleEffect::SetClickThrough(true),
+            LifecycleEffect::Hide,
+        ];
+        let mut fixture = Fixture {
+            rolled_back: vec![],
+        };
+        assert!(execute_effects(&mut fixture, &effects).is_err());
+        assert_eq!(
+            fixture.rolled_back,
+            vec![
+                LifecycleEffect::SetClickThrough(true),
+                LifecycleEffect::PersistGeometry,
+            ]
+        );
     }
 }

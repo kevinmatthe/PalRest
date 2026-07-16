@@ -1,5 +1,6 @@
 import type { OverlayConfigV1 } from './config'
 import { invoke, isTauri } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 
 export type FetchSnapshotRequest = {
   baseUrl: string
@@ -36,6 +37,8 @@ export interface DesktopBridge extends OverlayBridge {
   openSettings?(): Promise<void>
   currentPlatform?(): Promise<'windows' | 'macos' | string>
   detectedPalworldUserId?(): Promise<string | null>
+  onAdjustmentModeChanged?(handler: (enabled: boolean) => void): Promise<() => void>
+  onReselectPlayer?(handler: () => void): Promise<() => void>
 }
 
 export function createBrowserPlaceholderBridge(): DesktopBridge {
@@ -46,6 +49,8 @@ export function createBrowserPlaceholderBridge(): DesktopBridge {
     async listPlayers() { throw new Error('desktop bridge unavailable') },
     async setAdjustmentMode() { throw new Error('desktop bridge unavailable') },
     async fetchSnapshot() { throw new Error('desktop bridge unavailable') },
+    async onAdjustmentModeChanged() { return () => {} },
+    async onReselectPlayer() { return () => {} },
   }
 }
 
@@ -103,6 +108,10 @@ function createTauriBridge(): DesktopBridge {
     fetchSnapshot: (request, signal) => invokeHttp('fetch_snapshot', { request }, signal),
     currentPlatform: () => invoke('current_platform'),
     detectedPalworldUserId: () => invoke('detected_palworld_user_id'),
+    onAdjustmentModeChanged: (handler) => listen<unknown>('adjustment-mode-changed', (event) => {
+      if (typeof event.payload === 'boolean') handler(event.payload)
+    }),
+    onReselectPlayer: (handler) => listen('reselect-player', handler),
   }
 }
 
