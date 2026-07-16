@@ -43,8 +43,20 @@ type PalworldProvider struct {
 }
 
 func NewPalworldProvider(s SnapshotSource, d DailySource, status StatusSource, location *time.Location, maxGap time.Duration) *PalworldProvider {
+	if s == nil {
+		panic("overlay: nil snapshot source")
+	}
+	if d == nil {
+		panic("overlay: nil daily source")
+	}
+	if status == nil {
+		panic("overlay: nil status source")
+	}
+	if maxGap <= 0 {
+		panic("overlay: max gap must be positive")
+	}
 	if location == nil {
-		location = time.UTC
+		panic("overlay: nil location")
 	}
 	return &PalworldProvider{
 		snapshots: s,

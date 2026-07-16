@@ -50,7 +50,7 @@ func TestPalworldProviderBuildsOnlineSnapshot(t *testing.T) {
 			Ping: 38.5, LocationX: 187.25, LocationY: -64.5, Level: 42,
 		},
 		Policy: domain.ResolvedPolicy{
-			Enabled: true, Strategy: "fixed", WarningBefore: []time.Duration{45 * time.Minute, 5 * time.Minute},
+			Enabled: true, Strategy: "fixed_window", WarningBefore: []time.Duration{45 * time.Minute, 5 * time.Minute},
 		},
 		Used: 90 * time.Minute, Remaining: 30 * time.Minute, Online: true,
 	}}
@@ -100,17 +100,21 @@ func TestPalworldProviderBuildsOnlineSnapshot(t *testing.T) {
 }
 
 func TestPalworldProviderUsesMondayWeekBoundary(t *testing.T) {
-	now := time.Date(2026, 7, 15, 23, 30, 0, 0, time.FixedZone("UTC+8", 8*60*60))
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load America/New_York: %v", err)
+	}
+	now := time.Date(2026, 3, 11, 23, 30, 0, 0, location)
 	guard := &fakeSnapshotSource{snapshot: domain.PlayerSnapshot{Player: domain.Player{UserID: "u"}}}
 	daily := &fakeDailySource{}
-	p := NewPalworldProvider(guard, daily, fakeStatusSource{}, now.Location(), time.Minute)
+	p := NewPalworldProvider(guard, daily, fakeStatusSource{}, location, time.Minute)
 	p.now = func() time.Time { return now }
 
 	if _, err := p.Snapshot(t.Context(), "palworld", "u"); err != nil {
 		t.Fatalf("Snapshot() error = %v", err)
 	}
-	if daily.startDate != "2026-07-13" || daily.endDate != "2026-07-16" {
-		t.Errorf("date range = [%s,%s), want [2026-07-13,2026-07-16)", daily.startDate, daily.endDate)
+	if daily.startDate != "2026-03-09" || daily.endDate != "2026-03-12" {
+		t.Errorf("date range = [%s,%s), want [2026-03-09,2026-03-12)", daily.startDate, daily.endDate)
 	}
 }
 
@@ -138,11 +142,13 @@ func TestPalworldProviderMarksStalePollUnknown(t *testing.T) {
 func TestPalworldProviderOmitsUnknownLatencyAndMap(t *testing.T) {
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name       string
-		ping, x, y float64
+		name                 string
+		ping, x, y           float64
+		wantLatency, wantMap bool
+		wantCapabilities     []string
 	}{
-		{name: "NaN ping and coordinate", ping: math.NaN(), x: math.NaN(), y: 2},
-		{name: "negative ping and infinite coordinate", ping: -1, x: 1, y: math.Inf(1)},
+		{name: "invalid ping preserves valid map", ping: math.NaN(), x: -1, y: 2, wantMap: true, wantCapabilities: []string{"identity", "timers", "map"}},
+		{name: "valid zero ping preserves latency with invalid map", ping: 0, x: 1, y: math.Inf(1), wantLatency: true, wantCapabilities: []string{"identity", "latency", "timers"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -156,8 +162,11 @@ func TestPalworldProviderOmitsUnknownLatencyAndMap(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Snapshot() error = %v", err)
 			}
-			if got.Latency != nil || got.Map != nil {
-				t.Errorf("invalid numeric fields exposed: latency=%#v map=%#v", got.Latency, got.Map)
+			if (got.Latency != nil) != tt.wantLatency || (got.Map != nil) != tt.wantMap {
+				t.Errorf("live fields: latency=%#v map=%#v, want latency=%v map=%v", got.Latency, got.Map, tt.wantLatency, tt.wantMap)
+			}
+			if !equalStrings(got.Capabilities, tt.wantCapabilities) {
+				t.Errorf("Capabilities = %q, want %q", got.Capabilities, tt.wantCapabilities)
 			}
 		})
 	}
@@ -166,8 +175,8 @@ func TestPalworldProviderOmitsUnknownLatencyAndMap(t *testing.T) {
 func TestPalworldProviderOmitsPolicyTimersWhenDisabledOrExempt(t *testing.T) {
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	for _, policy := range []domain.ResolvedPolicy{
-		{Enabled: false, Strategy: "fixed"},
-		{Enabled: true, Exempt: true, Strategy: "fixed"},
+		{Enabled: false, Strategy: "fixed_window"},
+		{Enabled: true, Exempt: true, Strategy: "fixed_window"},
 	} {
 		guard := &fakeSnapshotSource{snapshot: domain.PlayerSnapshot{Player: domain.Player{UserID: "u"}, Policy: policy}}
 		daily := &fakeDailySource{rows: []store.DailyActivity{{Date: "2026-07-15", Observed: time.Hour}, {Date: "2026-07-16", Observed: 30 * time.Minute}}}
@@ -217,7 +226,7 @@ func TestPalworldProviderUsesStrategyTimerLabels(t *testing.T) {
 		wantLabel string
 		wantValue time.Duration
 	}{
-		{name: "fixed window", snapshot: domain.PlayerSnapshot{Policy: domain.ResolvedPolicy{Enabled: true, Strategy: "fixed"}, Used: 10 * time.Minute, Remaining: 20 * time.Minute}, wantLabel: "频控剩余", wantValue: 20 * time.Minute},
+		{name: "fixed window", snapshot: domain.PlayerSnapshot{Policy: domain.ResolvedPolicy{Enabled: true, Strategy: "fixed_window"}, Used: 10 * time.Minute, Remaining: 20 * time.Minute}, wantLabel: "频控剩余", wantValue: 20 * time.Minute},
 		{name: "credit", snapshot: domain.PlayerSnapshot{Policy: domain.ResolvedPolicy{Enabled: true, Strategy: "credit"}, Used: 10 * time.Minute, Remaining: 20 * time.Minute}, wantLabel: "可用额度", wantValue: 20 * time.Minute},
 		{name: "cooldown rest", snapshot: domain.PlayerSnapshot{Policy: domain.ResolvedPolicy{Enabled: true, Strategy: "cooldown"}, Period: domain.Period{End: now.Add(15 * time.Minute)}, Used: 30 * time.Minute, Remaining: 0}, wantLabel: "休息剩余", wantValue: 15 * time.Minute},
 	}
@@ -257,6 +266,70 @@ func TestPalworldProviderPolicyProgressOmitsOnlyZeroDenominator(t *testing.T) {
 	used, remaining = policyProgress(time.Minute, -time.Minute)
 	if used != nil || remaining != nil {
 		t.Errorf("zero denominator progress = (%v, %v), want nil values", used, remaining)
+	}
+}
+
+func TestNewPalworldProviderRejectsInvalidConfiguration(t *testing.T) {
+	snapshots := &fakeSnapshotSource{}
+	daily := &fakeDailySource{}
+	status := fakeStatusSource{}
+	tests := []struct {
+		name string
+		new  func()
+	}{
+		{name: "nil snapshot source", new: func() { NewPalworldProvider(nil, daily, status, time.UTC, time.Second) }},
+		{name: "nil daily source", new: func() { NewPalworldProvider(snapshots, nil, status, time.UTC, time.Second) }},
+		{name: "nil status source", new: func() { NewPalworldProvider(snapshots, daily, nil, time.UTC, time.Second) }},
+		{name: "nil location", new: func() { NewPalworldProvider(snapshots, daily, status, nil, time.Second) }},
+		{name: "zero max gap", new: func() { NewPalworldProvider(snapshots, daily, status, time.UTC, 0) }},
+		{name: "negative max gap", new: func() { NewPalworldProvider(snapshots, daily, status, time.UTC, -time.Second) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			didPanic := false
+			func() {
+				defer func() { didPanic = recover() != nil }()
+				tt.new()
+			}()
+			if !didPanic {
+				t.Fatal("NewPalworldProvider() did not panic")
+			}
+		})
+	}
+}
+
+func TestPalworldProviderTreatsFreshUntilAsInclusive(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 30, 0, time.UTC)
+	guard := &fakeSnapshotSource{snapshot: domain.PlayerSnapshot{
+		Player: domain.Player{UserID: "u", Ping: 0, LocationX: -1, LocationY: 2}, Online: true,
+	}}
+	p := NewPalworldProvider(guard, &fakeDailySource{}, fakeStatusSource{domain.PollStatus{LastSuccess: now.Add(-30 * time.Second)}}, time.UTC, 30*time.Second)
+	p.now = func() time.Time { return now }
+
+	got, err := p.Snapshot(t.Context(), "palworld", "u")
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if got.SourceStatus != "online" || got.Latency == nil || got.Map == nil {
+		t.Errorf("inclusive fresh boundary snapshot = status %q latency=%#v map=%#v", got.SourceStatus, got.Latency, got.Map)
+	}
+}
+
+func TestPalworldProviderMarksNeverSuccessfulPollUnknown(t *testing.T) {
+	guard := &fakeSnapshotSource{snapshot: domain.PlayerSnapshot{
+		Player: domain.Player{UserID: "u", Ping: 0, LocationX: -1, LocationY: 2}, Online: true,
+	}}
+	p := NewPalworldProvider(guard, &fakeDailySource{}, fakeStatusSource{}, time.UTC, 30*time.Second)
+
+	got, err := p.Snapshot(t.Context(), "palworld", "u")
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if got.SourceStatus != "unknown" || !got.ObservedAt.IsZero() || !got.FreshUntil.IsZero() {
+		t.Errorf("never-success freshness = observed %s fresh %s status %q", got.ObservedAt, got.FreshUntil, got.SourceStatus)
+	}
+	if got.Latency != nil || got.Map != nil {
+		t.Errorf("never-success source exposed live fields: latency=%#v map=%#v", got.Latency, got.Map)
 	}
 }
 
