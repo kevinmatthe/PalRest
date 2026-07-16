@@ -265,6 +265,125 @@ describe('SnapshotPoller', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('does not overlap when stopped and restarted before an abort-ignoring request settles', async () => {
+    const first = deferred<FetchSnapshotResult>()
+    let active = 0
+    let maxActive = 0
+    const bridge = bridgeWith(vi.fn()
+      .mockImplementationOnce(async () => {
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        try {
+          return await first.promise
+        } finally {
+          active -= 1
+        }
+      })
+      .mockImplementationOnce(async () => {
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        active -= 1
+        return { status: 200, body: snapshot('2026-07-16T12:02:00.000Z') }
+      }))
+    const poller = new SnapshotPoller({ bridge, config })
+    poller.start()
+    const oldSignal = bridge.fetchSnapshot.mock.calls[0][1]
+
+    poller.stop()
+    expect(oldSignal.aborted).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+    poller.start()
+    expect(poller.getState().status).toBe('loading')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(1)
+
+    first.resolve({ status: 200, body: snapshot() })
+    await settle()
+    expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(2)
+    expect(maxActive).toBe(1)
+    expect(poller.getState().status).toBe('ready')
+  })
+
+  it('does not overlap when a timeout listener stops and restarts before settlement', async () => {
+    const first = deferred<FetchSnapshotResult>()
+    let active = 0
+    let maxActive = 0
+    const bridge = bridgeWith(vi.fn()
+      .mockImplementationOnce(async () => {
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        try {
+          return await first.promise
+        } finally {
+          active -= 1
+        }
+      })
+      .mockImplementationOnce(async () => {
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        active -= 1
+        return { status: 200, body: snapshot() }
+      }))
+    const poller = new SnapshotPoller({ bridge, config })
+    let restarted = false
+    poller.subscribe(() => {
+      if (!restarted && poller.getState().status === 'disconnected') {
+        restarted = true
+        poller.stop()
+        poller.start()
+      }
+    })
+    poller.start()
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(1)
+    expect(poller.getState().status).toBe('loading')
+    first.resolve({ status: 200, body: snapshot() })
+    await settle()
+    expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(2)
+    expect(maxActive).toBe(1)
+  })
+
+  it('does not request after stop, start, stop while the old request settles', async () => {
+    const first = deferred<FetchSnapshotResult>()
+    const bridge = bridgeWith(vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockResolvedValueOnce({ status: 200, body: snapshot() }))
+    const poller = new SnapshotPoller({ bridge, config })
+    poller.start()
+    poller.stop()
+    poller.start()
+    poller.stop()
+
+    first.resolve({ status: 200, body: snapshot() })
+    await settle()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(1)
+    expect(poller.getState()).toEqual({ status: 'idle' })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not notify repeatedly when stop is already fully idle', async () => {
+    const first = deferred<FetchSnapshotResult>()
+    const bridge = bridgeWith(() => first.promise)
+    const poller = new SnapshotPoller({ bridge, config })
+    const listener = vi.fn()
+    poller.subscribe(listener)
+
+    poller.stop()
+    expect(listener).not.toHaveBeenCalled()
+    poller.start()
+    poller.stop()
+    const notifications = listener.mock.calls.length
+    poller.stop()
+    expect(listener).toHaveBeenCalledTimes(notifications)
+
+    first.resolve({ status: 200, body: snapshot() })
+    await settle()
+    expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(1)
+    expect(poller.getState()).toEqual({ status: 'idle' })
+  })
+
   it.each([
     ['user_id', { user_id: 'steam-attacker' }],
     ['game_id', { game_id: 'other-game' }],

@@ -46,6 +46,7 @@ export class SnapshotPoller {
   private freshnessTimer: Timer | undefined
   private requestTimer: Timer | undefined
   private controller: AbortController | undefined
+  private inFlight: symbol | undefined
 
   constructor({ bridge, config, now = () => Date.now() }: SnapshotPollerOptions) {
     this.bridge = bridge
@@ -71,6 +72,11 @@ export class SnapshotPoller {
   }
 
   stop(): void {
+    if (
+      !this.running && this.state.status === 'idle' &&
+      this.controller === undefined && this.pollTimer === undefined &&
+      this.freshnessTimer === undefined && this.requestTimer === undefined
+    ) return
     this.running = false
     this.generation += 1
     this.retryDueAt = undefined
@@ -92,15 +98,20 @@ export class SnapshotPoller {
   }
 
   private async request(generation: number): Promise<void> {
-    if (!this.isCurrent(generation) || this.controller) return
+    if (!this.isCurrent(generation) || this.inFlight) return
 
+    const token = Symbol('snapshot-request')
     const controller = new AbortController()
+    this.inFlight = token
     this.controller = controller
     let timedOut = false
     this.requestTimer = setTimeout(() => {
       timedOut = true
       this.requestTimer = undefined
-      if (!this.isCurrent(generation) || this.controller !== controller) return
+      if (
+        !this.isCurrent(generation) || this.inFlight !== token ||
+        this.controller !== controller
+      ) return
       controller.abort()
       this.handleTransientFailure(generation)
     }, REQUEST_TIMEOUT_MS)
@@ -110,20 +121,26 @@ export class SnapshotPoller {
 
     try {
       const result = await this.bridge.fetchSnapshot(request, controller.signal)
-      if (!this.isCurrent(generation) || this.controller !== controller) return
-      if (timedOut) {
-        this.finishTimedOutRequest(generation)
+      if (!this.releaseRequest(token)) return
+      if (!this.isCurrent(generation)) {
+        this.startCurrentRequest()
         return
       }
-      this.finishRequest()
+      if (timedOut) {
+        this.scheduleRetry(generation)
+        return
+      }
       this.handleResult(result, generation)
     } catch {
-      if (!this.isCurrent(generation) || this.controller !== controller) return
-      if (timedOut) {
-        this.finishTimedOutRequest(generation)
+      if (!this.releaseRequest(token)) return
+      if (!this.isCurrent(generation)) {
+        this.startCurrentRequest()
         return
       }
-      this.finishRequest()
+      if (timedOut) {
+        this.scheduleRetry(generation)
+        return
+      }
       this.handleTransientFailure(generation)
     }
   }
@@ -236,15 +253,17 @@ export class SnapshotPoller {
     this.publish(state)
   }
 
-  private finishRequest(): void {
+  private releaseRequest(token: symbol): boolean {
+    if (this.inFlight !== token) return false
     if (this.requestTimer !== undefined) clearTimeout(this.requestTimer)
     this.requestTimer = undefined
     this.controller = undefined
+    this.inFlight = undefined
+    return true
   }
 
-  private finishTimedOutRequest(generation: number): void {
-    this.finishRequest()
-    this.scheduleRetry(generation)
+  private startCurrentRequest(): void {
+    if (this.running) void this.request(this.generation)
   }
 
   private scheduleRetry(generation: number): void {
