@@ -12,12 +12,27 @@ export const PALWORLD_TILE_BOUNDS: LeafletSimpleBounds = [[0, 0], [-256, 256]]
 export const PALWORLD_PROJECTION_ID = 'palworld_world_v1'
 export const PALWORLD_TILE_SET_ID = 'palworld_default_v1'
 
+const RAW_SPACE_MIN_ABSOLUTE_COORDINATE = 1_000
+
+function isNormalizedRestCoordinate(worldX: number, worldY: number): boolean {
+  return worldX >= 0 && worldX <= 256 && worldY >= -256 && worldY <= 0
+}
+
+function isPlausibleRawCoordinate(worldX: number, worldY: number): boolean {
+  const [maxX, maxY, minX, minY] = PALWORLD_LANDSCAPE
+  const insideLandscape = worldX >= minX && worldX <= maxX &&
+    worldY >= minY && worldY <= maxY
+  const hasRawMagnitude = Math.max(Math.abs(worldX), Math.abs(worldY)) >=
+    RAW_SPACE_MIN_ABSOLUTE_COORDINATE
+  return insideLandscape && hasRawMagnitude
+}
+
 /**
  * Converts Palworld world coordinates to the established CRS.Simple tuple.
  *
- * Leaflet tuple order is [lat/y, lng/x]. The historical transform intentionally
- * maps world X to Leaflet latitude and world Y to longitude, matching the
- * existing private tile set and its [[0, 0], [-256, 256]] bounds.
+ * Leaflet tuple order is [lat/y, lng/x]. REST-normalized coordinates therefore
+ * swap their x/y fields. Large raw world coordinates use the established
+ * landscape formulas, whose outputs already match the private tile bounds.
  */
 export function projectPalworldWorldToLeaflet(
   worldX: number,
@@ -27,7 +42,10 @@ export function projectPalworldWorldToLeaflet(
     throw new TypeError('Palworld world coordinates must be finite numbers')
   }
 
-  if (worldX >= -256 && worldX <= 256) return [worldX, worldY]
+  if (isNormalizedRestCoordinate(worldX, worldY)) return [worldY, worldX]
+  if (!isPlausibleRawCoordinate(worldX, worldY)) {
+    throw new RangeError('Coordinates are outside every known Palworld map space')
+  }
 
   const [maxX, maxY, minX, minY] = PALWORLD_LANDSCAPE
   const latitude = -256 + (256 * (worldX - minX)) / (maxX - minX)

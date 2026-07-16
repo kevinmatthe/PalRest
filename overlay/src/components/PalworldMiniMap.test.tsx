@@ -87,7 +87,7 @@ describe('PalworldMiniMap', () => {
       },
     )
     expect(leaflet.tileLayerInstance.addTo).toHaveBeenCalledWith(leaflet.mapInstance)
-    expect(leaflet.circleMarker).toHaveBeenCalledWith([187.25, -64.5], {
+    expect(leaflet.circleMarker).toHaveBeenCalledWith([-64.5, 187.25], {
       interactive: false,
       radius: 3,
       color: '#eef8f7',
@@ -96,7 +96,7 @@ describe('PalworldMiniMap', () => {
       fillOpacity: 1,
     })
     expect(leaflet.markerInstance.addTo).toHaveBeenCalledWith(leaflet.mapInstance)
-    expect(leaflet.mapInstance.setView).toHaveBeenCalledWith([187.25, -64.5], 0, { animate: false })
+    expect(leaflet.mapInstance.setView).toHaveBeenCalledWith([-64.5, 187.25], 0, { animate: false })
     expect(screen.getByTestId('palworld-mini-map-canvas')).toHaveAttribute('aria-hidden', 'true')
     expect(screen.getByTestId('capability-map')).toHaveStyle({ pointerEvents: 'none' })
   })
@@ -112,7 +112,7 @@ describe('PalworldMiniMap', () => {
     expect(leaflet.mapInstance.setView).not.toHaveBeenCalled()
     expect(leaflet.markerInstance.setLatLng).not.toHaveBeenCalled()
 
-    rerender(<PalworldMiniMap map={position({ x: -256, y: 42 })} serviceBaseUrl={SERVICE_BASE} />)
+    rerender(<PalworldMiniMap map={position({ x: 42, y: -256 })} serviceBaseUrl={SERVICE_BASE} />)
     expect(leaflet.map).not.toHaveBeenCalled()
     expect(leaflet.tileLayer).not.toHaveBeenCalled()
     expect(leaflet.markerInstance.setLatLng).toHaveBeenCalledWith([-256, 42])
@@ -158,7 +158,14 @@ describe('PalworldMiniMap', () => {
     expect(tileErrorHandler).toBeTypeOf('function')
     act(() => tileErrorHandler?.())
 
-    expect(screen.getByRole('status')).toHaveTextContent('地图不可用')
+    const status = screen.getByRole('status')
+    expect(status).toHaveTextContent('地图不可用')
+    expect(status).toHaveStyle({
+      position: 'absolute',
+      inset: '0',
+      display: 'flex',
+      background: '#040c0f',
+    })
     expect(leaflet.mapInstance.remove).not.toHaveBeenCalled()
   })
 

@@ -14,10 +14,23 @@ describe('Palworld map projection', () => {
     expect(PALWORLD_TILE_BOUNDS).toEqual([[0, 0], [-256, 256]])
   })
 
-  it('preserves established shortcut coordinates in explicit Leaflet [lat, lng] order', () => {
+  it('converts normalized REST x/y coordinates to Leaflet [lat/y, lng/x] order', () => {
     expect(projectPalworldWorldToLeaflet(0, 0)).toEqual([0, 0])
-    expect(projectPalworldWorldToLeaflet(187.25, -64.5)).toEqual([187.25, -64.5])
-    expect(projectPalworldWorldToLeaflet(-256, 42)).toEqual([-256, 42])
+    expect(projectPalworldWorldToLeaflet(187.25, -64.5)).toEqual([-64.5, 187.25])
+  })
+
+  it.each([
+    [0, 0, [0, 0]],
+    [256, 0, [0, 256]],
+    [0, -256, [-256, 0]],
+    [256, -256, [-256, 256]],
+  ] as const)('maps normalized edge (%s, %s) inside the real tile bounds', (x, y, expected) => {
+    const coordinate = projectPalworldWorldToLeaflet(x, y)
+    expect(coordinate).toEqual(expected)
+    expect(coordinate[0]).toBeGreaterThanOrEqual(-256)
+    expect(coordinate[0]).toBeLessThanOrEqual(0)
+    expect(coordinate[1]).toBeGreaterThanOrEqual(0)
+    expect(coordinate[1]).toBeLessThanOrEqual(256)
   })
 
   it('projects known landscape edges exactly like the established webui transform', () => {
@@ -33,6 +46,15 @@ describe('Palworld map projection', () => {
     [Number.NEGATIVE_INFINITY, 0],
   ])('rejects non-finite world coordinates (%s, %s)', (x, y) => {
     expect(() => projectPalworldWorldToLeaflet(x, y)).toThrow('finite')
+  })
+
+  it.each([
+    [257, -64.5],
+    [-1, 2],
+    [-1099401, 0],
+    [349401, 724401],
+  ])('rejects coordinates outside both normalized and plausible raw spaces (%s, %s)', (x, y) => {
+    expect(() => projectPalworldWorldToLeaflet(x, y)).toThrow('known Palworld map space')
   })
 })
 

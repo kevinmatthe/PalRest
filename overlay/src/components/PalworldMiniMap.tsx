@@ -137,7 +137,17 @@ export function PalworldMiniMap({
       {unavailable ? (
         <span
           role="status"
-          style={{ position: 'relative', color: 'rgba(220, 233, 232, 0.52)', fontSize: '0.625rem' }}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'rgba(220, 233, 232, 0.58)',
+            background: '#040c0f',
+            fontSize: '0.625rem',
+          }}
         >
           地图不可用
         </span>
