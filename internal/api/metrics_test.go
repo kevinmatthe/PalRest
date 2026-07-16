@@ -114,6 +114,8 @@ func TestPrometheusMetricsExposesServerAndPerPlayerSeries(t *testing.T) {
 		`palrest_player_policy_exempt{name="Bo \"Lag\"",user_id="u2"} 1`,
 		`palrest_player_warning_active{name="Bo \"Lag\"",user_id="u2"} 1`,
 		`palrest_player_enforcement{name="Anu",status="ok",user_id="u1"} 1`,
+		`palrest_player_location_x{name="Anu",user_id="u1"} 3000`,
+		`palrest_player_location_y{name="Anu",user_id="u1"} 4000`,
 		`palrest_player_distance_from_origin{name="Anu",user_id="u1"} 5000`,
 		"palrest_save_player_count 1",
 		`palrest_save_player_level{name="Anu",save_uid="sp1",user_id="u1"} 63`,

@@ -193,7 +193,9 @@ func writePlayerLiveMetrics(b *strings.Builder, snapshots []domain.PlayerSnapsho
 	metricMeta(b, "palrest_player_warning_active", "gauge", "Count of warning thresholds currently active/pending")
 	metricMeta(b, "palrest_player_enforcement", "gauge", "1 when enforcement status matches label")
 	metricMeta(b, "palrest_player_last_online_timestamp_seconds", "gauge", "Last known online timestamp for player")
-	metricMeta(b, "palrest_player_distance_from_origin", "gauge", "sqrt(x^2+y^2) world distance (online only; not exact coords)")
+	metricMeta(b, "palrest_player_distance_from_origin", "gauge", "sqrt(x^2+y^2) world distance (online only)")
+	metricMeta(b, "palrest_player_location_x", "gauge", "World X coordinate from REST poll (online only; game units, not lat/lon)")
+	metricMeta(b, "palrest_player_location_y", "gauge", "World Y coordinate from REST poll (online only; game units, not lat/lon)")
 
 	var online, limited int
 	for _, snap := range snapshots {
@@ -211,8 +213,9 @@ func writePlayerLiveMetrics(b *strings.Builder, snapshots []domain.PlayerSnapsho
 				writePromSample(b, "palrest_player_level", labels, float64(snap.Player.Level))
 			}
 			if finiteWorldCoord(snap.Player.LocationX, snap.Player.LocationY) {
-				dist := math.Hypot(snap.Player.LocationX, snap.Player.LocationY)
-				writePromSample(b, "palrest_player_distance_from_origin", labels, dist)
+				writePromSample(b, "palrest_player_location_x", labels, snap.Player.LocationX)
+				writePromSample(b, "palrest_player_location_y", labels, snap.Player.LocationY)
+				writePromSample(b, "palrest_player_distance_from_origin", labels, math.Hypot(snap.Player.LocationX, snap.Player.LocationY))
 			}
 		}
 
