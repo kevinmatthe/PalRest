@@ -28,6 +28,7 @@ type Timer = ReturnType<typeof setTimeout>
 const POLL_DELAY_MS = 2_000
 const REQUEST_TIMEOUT_MS = 5_000
 const MAX_RETRY_DELAY_MS = 30_000
+const MAX_TIMER_DELAY_MS = 2_147_483_647
 
 export class SnapshotPoller {
   private state: SnapshotPollerState = { status: 'idle' }
@@ -38,6 +39,7 @@ export class SnapshotPoller {
   private running = false
   private generation = 0
   private failureCount = 0
+  private retryDueAt: number | undefined
   private etag: string | undefined
   private lastSnapshot: Snapshot | undefined
   private pollTimer: Timer | undefined
@@ -51,11 +53,9 @@ export class SnapshotPoller {
     this.now = now
   }
 
-  getState(): SnapshotPollerState {
-    return this.state
-  }
+  readonly getState = (): SnapshotPollerState => this.state
 
-  subscribe(listener: Listener): () => void {
+  readonly subscribe = (listener: Listener): (() => void) => {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
   }
@@ -65,6 +65,7 @@ export class SnapshotPoller {
     this.running = true
     this.generation += 1
     this.failureCount = 0
+    this.retryDueAt = undefined
     this.publish({ status: 'loading' })
     void this.request(this.generation)
   }
@@ -72,6 +73,7 @@ export class SnapshotPoller {
   stop(): void {
     this.running = false
     this.generation += 1
+    this.retryDueAt = undefined
     this.clearAllTimers()
     this.controller?.abort()
     this.controller = undefined
@@ -99,7 +101,6 @@ export class SnapshotPoller {
       timedOut = true
       this.requestTimer = undefined
       if (!this.isCurrent(generation) || this.controller !== controller) return
-      this.controller = undefined
       controller.abort()
       this.handleTransientFailure(generation)
     }, REQUEST_TIMEOUT_MS)
@@ -109,11 +110,19 @@ export class SnapshotPoller {
 
     try {
       const result = await this.bridge.fetchSnapshot(request, controller.signal)
-      if (!this.isCurrent(generation) || timedOut) return
+      if (!this.isCurrent(generation) || this.controller !== controller) return
+      if (timedOut) {
+        this.finishTimedOutRequest(generation)
+        return
+      }
       this.finishRequest()
       this.handleResult(result, generation)
     } catch {
-      if (!this.isCurrent(generation) || timedOut) return
+      if (!this.isCurrent(generation) || this.controller !== controller) return
+      if (timedOut) {
+        this.finishTimedOutRequest(generation)
+        return
+      }
       this.finishRequest()
       this.handleTransientFailure(generation)
     }
@@ -121,19 +130,37 @@ export class SnapshotPoller {
 
   private handleResult(result: FetchSnapshotResult, generation: number): void {
     if (result.status === 200) {
+      const schema = this.explicitSchema(result.body)
+      if (schema !== undefined && schema !== 'overlay.snapshot/v1') {
+        this.enterTerminal({ status: 'incompatible', reason: 'unsupported snapshot schema' })
+        return
+      }
+
       let parsed: Snapshot
       try {
         parsed = parseSnapshot(result.body)
-      } catch (error) {
+      } catch {
+        this.handleTransientFailure(generation)
+        return
+      }
+      if (parsed.game_id !== this.config.gameId) {
         this.enterTerminal({
           status: 'incompatible',
-          reason: error instanceof Error ? error.message : 'unsupported snapshot',
+          reason: 'game_id does not match request',
+        })
+        return
+      }
+      if (parsed.user_id !== this.config.userId) {
+        this.enterTerminal({
+          status: 'incompatible',
+          reason: 'user_id does not match request',
         })
         return
       }
       this.etag = result.etag
       this.lastSnapshot = parsed
       this.failureCount = 0
+      this.retryDueAt = undefined
       this.publishFreshness(parsed)
       this.schedulePoll(POLL_DELAY_MS, generation)
       return
@@ -145,6 +172,7 @@ export class SnapshotPoller {
         return
       }
       this.failureCount = 0
+      this.retryDueAt = undefined
       this.publishFreshness(this.lastSnapshot)
       this.schedulePoll(POLL_DELAY_MS, generation)
       return
@@ -164,30 +192,30 @@ export class SnapshotPoller {
   }
 
   private handleTransientFailure(generation: number): void {
+    if (!this.isCurrent(generation)) return
+    const delay = Math.min(POLL_DELAY_MS * (2 ** this.failureCount), MAX_RETRY_DELAY_MS)
+    if (delay < MAX_RETRY_DELAY_MS) this.failureCount += 1
+    this.retryDueAt = this.now() + delay
     this.publish(this.lastSnapshot
       ? { status: 'disconnected', snapshot: this.lastSnapshot }
       : { status: 'disconnected' })
-    const delay = Math.min(POLL_DELAY_MS * (2 ** this.failureCount), MAX_RETRY_DELAY_MS)
-    this.failureCount += 1
-    this.schedulePoll(delay, generation)
+    if (!this.isCurrent(generation) || this.controller) return
+    this.scheduleRetry(generation)
   }
 
   private publishFreshness(snapshot: Snapshot): void {
     this.clearFreshnessTimer()
     const expiresAt = Date.parse(snapshot.fresh_until)
-    const remaining = expiresAt - this.now()
-    if (remaining < 0) {
-      this.publish({ status: 'stale', snapshot })
-      return
-    }
-
-    this.publish({ status: 'ready', snapshot })
-    this.freshnessTimer = setTimeout(() => {
-      this.freshnessTimer = undefined
-      if (this.running && this.lastSnapshot === snapshot) {
+    if (expiresAt < this.now()) {
+      if (this.state.status !== 'stale' || this.state.snapshot !== snapshot) {
         this.publish({ status: 'stale', snapshot })
       }
-    }, remaining + 1)
+      return
+    }
+    if (this.state.status !== 'ready' || this.state.snapshot !== snapshot) {
+      this.publish({ status: 'ready', snapshot })
+    }
+    this.scheduleFreshnessDeadline(snapshot, expiresAt)
   }
 
   private schedulePoll(delay: number, generation: number): void {
@@ -201,6 +229,7 @@ export class SnapshotPoller {
 
   private enterTerminal(state: SnapshotPollerState): void {
     this.running = false
+    this.retryDueAt = undefined
     this.clearAllTimers()
     this.controller?.abort()
     this.controller = undefined
@@ -211,6 +240,38 @@ export class SnapshotPoller {
     if (this.requestTimer !== undefined) clearTimeout(this.requestTimer)
     this.requestTimer = undefined
     this.controller = undefined
+  }
+
+  private finishTimedOutRequest(generation: number): void {
+    this.finishRequest()
+    this.scheduleRetry(generation)
+  }
+
+  private scheduleRetry(generation: number): void {
+    if (!this.isCurrent(generation) || this.retryDueAt === undefined || this.controller) return
+    this.schedulePoll(Math.max(0, this.retryDueAt - this.now()), generation)
+  }
+
+  private scheduleFreshnessDeadline(snapshot: Snapshot, expiresAt: number): void {
+    if (!this.running || this.lastSnapshot !== snapshot) return
+    const remaining = expiresAt - this.now()
+    if (remaining < 0) {
+      if (this.state.status !== 'stale' || this.state.snapshot !== snapshot) {
+        this.publish({ status: 'stale', snapshot })
+      }
+      return
+    }
+
+    this.freshnessTimer = setTimeout(() => {
+      this.freshnessTimer = undefined
+      this.scheduleFreshnessDeadline(snapshot, expiresAt)
+    }, Math.min(remaining + 1, MAX_TIMER_DELAY_MS))
+  }
+
+  private explicitSchema(body: unknown): string | undefined {
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return undefined
+    const schema = (body as Record<string, unknown>).schema
+    return typeof schema === 'string' ? schema : undefined
   }
 
   private clearFreshnessTimer(): void {

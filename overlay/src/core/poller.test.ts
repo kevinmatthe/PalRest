@@ -205,12 +205,30 @@ describe('SnapshotPoller', () => {
     expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(1)
   })
 
-  it('never overlaps requests and treats a five-second timeout as a transient failure', async () => {
+  it('keeps ownership until an abort-ignoring request settles and publishes timeout failure once', async () => {
     const first = deferred<FetchSnapshotResult>()
-    const bridge = bridgeWith(vi.fn()
-      .mockImplementationOnce((_request: FetchSnapshotRequest, _signal: AbortSignal) => first.promise)
-      .mockResolvedValueOnce({ status: 200, body: snapshot() }))
+    let active = 0
+    let maxActive = 0
+    const bridge = bridgeWith(vi.fn().mockImplementationOnce(async (
+      _request: FetchSnapshotRequest,
+      _signal: AbortSignal,
+    ) => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      try {
+        return await first.promise
+      } finally {
+        active -= 1
+      }
+    }).mockImplementationOnce(async () => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      active -= 1
+      return { status: 200, body: snapshot('2026-07-16T12:02:00.000Z') }
+    }))
     const poller = new SnapshotPoller({ bridge, config })
+    const states: string[] = []
+    poller.subscribe(() => states.push(poller.getState().status))
     poller.start()
 
     await vi.advanceTimersByTimeAsync(4_999)
@@ -218,14 +236,163 @@ describe('SnapshotPoller', () => {
     await vi.advanceTimersByTimeAsync(1)
     expect(bridge.fetchSnapshot.mock.calls[0][1].aborted).toBe(true)
     expect(poller.getState().status).toBe('disconnected')
-    await vi.advanceTimersByTimeAsync(1_999)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(1)
-    await vi.advanceTimersByTimeAsync(1)
-    expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(2)
+    expect(active).toBe(1)
 
     first.resolve({ status: 200, body: snapshot() })
     await settle()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(2)
+    expect(maxActive).toBe(1)
     expect(poller.getState().status).toBe('ready')
+    expect(states.filter((status) => status === 'disconnected')).toHaveLength(1)
+  })
+
+  it('stays stopped when a timed-out request settles late and clears every timer', async () => {
+    const first = deferred<FetchSnapshotResult>()
+    const bridge = bridgeWith(() => first.promise)
+    const poller = new SnapshotPoller({ bridge, config })
+    poller.start()
+    await vi.advanceTimersByTimeAsync(5_000)
+    poller.stop()
+
+    first.resolve({ status: 200, body: snapshot() })
+    await settle()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(poller.getState()).toEqual({ status: 'idle' })
+    expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each([
+    ['user_id', { user_id: 'steam-attacker' }],
+    ['game_id', { game_id: 'other-game' }],
+  ])('rejects a parsed snapshot whose %s differs from the request identity', async (field, change) => {
+    const bridge = bridgeWith(vi.fn()
+      .mockResolvedValueOnce({ status: 200, etag: 'trusted', body: snapshot() })
+      .mockResolvedValueOnce({
+        status: 200,
+        etag: 'untrusted',
+        body: { ...snapshot(), ...change },
+      })
+      .mockResolvedValueOnce({ status: 304 }))
+    const poller = new SnapshotPoller({ bridge, config })
+    poller.start()
+    await settle()
+    const trusted = poller.getState()
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(poller.getState()).toEqual({
+      status: 'incompatible',
+      reason: `${field} does not match request`,
+    })
+    poller.start()
+    await settle()
+    expect(bridge.fetchSnapshot.mock.calls[2][0].etag).toBe('trusted')
+    expect(poller.getState()).toEqual(trusted)
+  })
+
+  it('treats malformed current-schema bodies as transient and recovers with the last snapshot retained', async () => {
+    const bridge = bridgeWith(vi.fn()
+      .mockResolvedValueOnce({ status: 200, body: snapshot() })
+      .mockResolvedValueOnce({ status: 200, body: { schema: 'overlay.snapshot/v1' } })
+      .mockResolvedValueOnce({ status: 200, body: snapshot() }))
+    const poller = new SnapshotPoller({ bridge, config })
+    poller.start()
+    await settle()
+    const ready = poller.getState()
+    const valid = ready.status === 'ready' ? ready.snapshot : undefined
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(poller.getState()).toEqual({ status: 'disconnected', snapshot: valid })
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(poller.getState().status).toBe('ready')
+  })
+
+  it.each([null, {}, { schema: 42 }])(
+    'treats a body without an unsupported schema string as transient: %s',
+    async (body) => {
+      const bridge = bridgeWith(async () => ({ status: 200, body }))
+      const poller = new SnapshotPoller({ bridge, config })
+      poller.start()
+      await settle()
+      expect(poller.getState().status).toBe('disconnected')
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(2)
+    },
+  )
+
+  it('chunks very distant freshness deadlines without marking the snapshot stale early', async () => {
+    const maxTimerDelay = 2_147_483_647
+    const expiresAt = Date.now() + maxTimerDelay + 1_000
+    const hung = deferred<FetchSnapshotResult>()
+    const bridge = bridgeWith(vi.fn()
+      .mockResolvedValueOnce({ status: 200, body: snapshot(new Date(expiresAt).toISOString()) })
+      .mockImplementationOnce(() => hung.promise))
+    const poller = new SnapshotPoller({ bridge, config })
+    poller.start()
+    await settle()
+
+    await vi.advanceTimersByTimeAsync(maxTimerDelay)
+    expect(poller.getState().status).toBe('disconnected')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(poller.getState().status).toBe('disconnected')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(poller.getState().status).toBe('stale')
+  })
+
+  it('publishes an already expired snapshot as stale without an intermediate ready state', async () => {
+    const bridge = bridgeWith(async () => ({
+      status: 200,
+      body: snapshot('2026-07-16T11:59:59.000Z'),
+    }))
+    const poller = new SnapshotPoller({ bridge, config })
+    const states: string[] = []
+    poller.subscribe(() => states.push(poller.getState().status))
+    poller.start()
+    await settle()
+
+    expect(states).toEqual(['loading', 'stale'])
+  })
+
+  it('exposes bound getState and subscribe callbacks for React external stores', async () => {
+    const bridge = bridgeWith(async () => ({ status: 200, body: snapshot() }))
+    const poller = new SnapshotPoller({ bridge, config })
+    const getState = poller.getState
+    const subscribe = poller.subscribe
+    const listener = vi.fn()
+    const unsubscribe = subscribe(listener)
+
+    expect(getState()).toEqual({ status: 'idle' })
+    poller.start()
+    await settle()
+    expect(listener).toHaveBeenCalled()
+    expect(getState().status).toBe('ready')
+    unsubscribe()
+  })
+
+  it('does not let a reentrant old generation increase the new generation retry delay', async () => {
+    const bridge = bridgeWith(vi.fn()
+      .mockRejectedValueOnce(new Error('old failure'))
+      .mockRejectedValueOnce(new Error('new failure'))
+      .mockResolvedValueOnce({ status: 200, body: snapshot() }))
+    const poller = new SnapshotPoller({ bridge, config })
+    let restarted = false
+    poller.subscribe(() => {
+      if (!restarted && poller.getState().status === 'disconnected') {
+        restarted = true
+        poller.stop()
+        poller.start()
+      }
+    })
+    poller.start()
+    await settle()
+
+    await vi.advanceTimersByTimeAsync(1_999)
+    expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(bridge.fetchSnapshot).toHaveBeenCalledTimes(3)
   })
 
   it('sends and updates ETags, clearing one when a successful 200 omits it', async () => {
