@@ -90,6 +90,7 @@ type Server struct {
 	observations    ObservationQueries
 	worldPOIs       WorldPOIQueries
 	saveImporter    SaveImporter
+	overlayProvider OverlayProvider
 	auth            *adminAuth
 	config          func() config.Config
 	handler         http.Handler
@@ -103,6 +104,7 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 	}
 	policyUpdater := PolicyUpdater(directPolicyUpdater{analytics: analyticsOnline})
 	var saveImporter SaveImporter
+	var overlayProvider OverlayProvider
 	observations, _ := adminStore.(ObservationQueries)
 	worldPOIs, _ := adminStore.(WorldPOIQueries)
 	for _, option := range options {
@@ -113,9 +115,11 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 			saveImporter = value
 		case WorldPOIQueries:
 			worldPOIs = value
+		case overlayOption:
+			overlayProvider = value.provider
 		}
 	}
-	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, observations: observations, worldPOIs: worldPOIs, saveImporter: saveImporter, auth: auth, config: configFn, now: time.Now}
+	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, observations: observations, worldPOIs: worldPOIs, saveImporter: saveImporter, overlayProvider: overlayProvider, auth: auth, config: configFn, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.healthz)
 	mux.HandleFunc("GET /readyz", server.readyz)
@@ -135,6 +139,7 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 	mux.HandleFunc("GET /api/v1/players/{userID}/world-pois", server.getPlayerWorldPOIs)
 	mux.HandleFunc("GET /api/v1/guild-bases", server.getGuildBases)
 	mux.HandleFunc("GET /api/v1/live/positions", server.getLivePositions)
+	mux.HandleFunc("GET /api/v1/overlay/snapshot", server.getOverlaySnapshot)
 	mux.HandleFunc("GET /api/v1/analytics/summary", server.getAnalyticsSummary)
 	mux.HandleFunc("GET /api/v1/analytics/activity", server.getAnalyticsActivity)
 	mux.HandleFunc("GET /api/v1/analytics/behavior", server.getAnalyticsBehavior)

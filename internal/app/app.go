@@ -19,6 +19,7 @@ import (
 	"github.com/kevinmatt/palworld-playtime-guard/internal/config"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/guard"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/observation"
+	"github.com/kevinmatt/palworld-playtime-guard/internal/overlay"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/palworld"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/policy"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/poller"
@@ -137,7 +138,8 @@ func New(configPath string) (*App, error) {
 		pollerDone: make(chan struct{}), watcherDone: make(chan struct{}), auxDone: make(chan struct{}),
 	}
 	adminUser, adminPass := cfg.AdminCredentials()
-	apiOptions := []any{poll, worldPOIs}
+	overlayProvider := overlay.NewPalworldProvider(guardService, repo, poll, location, cfg.Server.MaxObservationGap.Duration)
+	apiOptions := []any{poll, worldPOIs, api.WithOverlayProvider(overlayProvider)}
 	if saveImporter != nil {
 		apiOptions = append(apiOptions, saveImporter)
 	}
