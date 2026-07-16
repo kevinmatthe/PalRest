@@ -31,6 +31,13 @@ describe('parseSnapshot', () => {
     expect(parseSnapshot(fixture).schema).toBe('overlay.snapshot/v1')
   })
 
+  it('accepts and preserves the muted timer tone', () => {
+    const value = snapshot()
+    ;(value.timers as Record<string, unknown>[])[0].tone = 'muted'
+
+    expect(parseSnapshot(value).timers?.[0].tone).toBe('muted')
+  })
+
   it('rejects a newer schema', () => {
     expect(() =>
       parseSnapshot({ ...snapshot(), schema: 'overlay.snapshot/v2' }),

@@ -1,7 +1,7 @@
 export type SourceStatus = 'online' | 'offline' | 'unknown'
 export type Capability = 'identity' | 'latency' | 'timers' | 'map'
 export type TimerSemantic = 'duration'
-export type TimerTone = 'normal' | 'warning' | 'danger'
+export type TimerTone = 'normal' | 'warning' | 'danger' | 'muted'
 
 export interface Snapshot {
   schema: 'overlay.snapshot/v1'
@@ -52,7 +52,7 @@ const CAPABILITIES = new Set<Capability>([
   'map',
 ])
 const TIMER_SEMANTICS = new Set<TimerSemantic>(['duration'])
-const TIMER_TONES = new Set<TimerTone>(['normal', 'warning', 'danger'])
+const TIMER_TONES = new Set<TimerTone>(['normal', 'warning', 'danger', 'muted'])
 const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
