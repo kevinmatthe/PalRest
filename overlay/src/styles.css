@@ -514,6 +514,7 @@ body.settings-window {
 }
 
 .overlay--muted,
+.overlay--offline,
 .overlay--stale,
 .overlay--disconnected {
   --overlay-accent: var(--overlay-muted);

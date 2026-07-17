@@ -90,6 +90,7 @@ export function OverlayBar({
     'overlay--compact',
     `overlay--${tone}`,
     `overlay--${status}`,
+    snapshot.source_status === 'offline' ? 'overlay--offline' : '',
     hasMap ? '' : 'overlay--without-map',
     adjustMode ? 'overlay--adjusting' : '',
   ].filter(Boolean).join(' ')
@@ -169,7 +170,7 @@ export function OverlayBar({
 
       {railTimer?.progress !== undefined ? (
         <div
-          className={`overlay__progress overlay__progress--${railTimer.tone}`}
+          className={`overlay__progress overlay__progress--${tone}`}
           role="progressbar"
           aria-label={`${railTimer.label}进度`}
           aria-valuemin={0}

@@ -111,6 +111,9 @@ describe('OverlayBar', () => {
   ] as const)('shows identity, %s status, ping, and freshness', (status, copy) => {
     render(<OverlayBar snapshot={canonicalSnapshot(status)} />)
 
+    const overlay = screen.getByLabelText('幻兽帕鲁玩家状态悬浮条')
+    if (status === 'offline') expect(overlay).toHaveClass('overlay--offline')
+    else expect(overlay).not.toHaveClass('overlay--offline')
     expect(screen.getByText('Lamball Keeper · Lv.42')).toBeInTheDocument()
     expect(screen.getByText(copy)).toBeInTheDocument()
     expect(screen.getByText('39 ms')).toBeInTheDocument()
@@ -133,6 +136,7 @@ describe('OverlayBar', () => {
     rerender(<OverlayBar snapshot={canonicalSnapshot('online', ['normal', 'danger', 'warning', 'normal'])} />)
     expect(overlay).toHaveClass('overlay--danger')
     expect(overlay).not.toHaveClass('overlay--warning')
+    expect(screen.getByRole('progressbar')).toHaveClass('overlay__progress--danger')
   })
 
   it.each([
