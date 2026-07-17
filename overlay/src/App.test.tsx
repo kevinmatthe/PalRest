@@ -204,7 +204,7 @@ describe('App window routing', () => {
     await waitFor(() => expect(api.fetchSnapshot).toHaveBeenCalled())
     notify(true)
     const loading = await screen.findByText('正在读取玩家状态…')
-    expect(loading.closest('main')).toHaveAttribute('data-tauri-drag-region')
+    expect(loading.closest('main')).toHaveAttribute('data-tauri-drag-region', 'deep')
     expect(screen.getByText('拖动调整位置')).toBeInTheDocument()
   })
 

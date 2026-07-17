@@ -21,9 +21,10 @@ type Bootstrap =
     }
 
 function CompactState({ children, adjustMode = false }: { children: string; adjustMode?: boolean }) {
-  return <main className={`overlay-state${adjustMode ? ' overlay-state--adjusting' : ''}`} role="status" data-tauri-drag-region={adjustMode || undefined}>
-    <span data-tauri-drag-region={adjustMode || undefined}>{children}</span>
-    {adjustMode ? <span className="overlay__drag-hint" data-tauri-drag-region>拖动调整位置</span> : null}
+  const dragProps = adjustMode ? { 'data-tauri-drag-region': 'deep' } : {}
+  return <main className={`overlay-state${adjustMode ? ' overlay-state--adjusting' : ''}`} role="status" {...dragProps}>
+    <span>{children}</span>
+    {adjustMode ? <span className="overlay__drag-hint">拖动调整位置</span> : null}
   </main>
 }
 

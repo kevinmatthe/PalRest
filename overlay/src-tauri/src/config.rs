@@ -344,12 +344,16 @@ mod tests {
     }
 
     #[test]
-    fn capability_allows_only_required_event_listen_operations() {
+    fn capability_allows_only_required_event_and_drag_operations() {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
         assert_eq!(
             capability["permissions"],
-            serde_json::json!(["core:event:allow-listen", "core:event:allow-unlisten"])
+            serde_json::json!([
+                "core:event:allow-listen",
+                "core:event:allow-unlisten",
+                "core:window:allow-start-dragging"
+            ])
         );
     }
 

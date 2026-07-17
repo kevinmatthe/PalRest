@@ -94,7 +94,7 @@ export function OverlayBar({
     adjustMode ? 'overlay--adjusting' : '',
   ].filter(Boolean).join(' ')
   const style: OverlayStyle = { '--overlay-scale': String(safeScale(scale)) }
-  const dragProps = adjustMode ? { 'data-tauri-drag-region': true } : {}
+  const dragProps = adjustMode ? { 'data-tauri-drag-region': 'deep' } : {}
 
   return (
     <section
@@ -181,7 +181,7 @@ export function OverlayBar({
       ) : null}
 
       {adjustMode ? (
-        <div className="overlay__drag-hint" data-tauri-drag-region>
+        <div className="overlay__drag-hint">
           <span aria-hidden="true">⠿</span>
           拖动调整位置
         </div>
