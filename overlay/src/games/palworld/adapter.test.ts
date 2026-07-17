@@ -1,5 +1,6 @@
 import type { Snapshot, Timer, TimerTone } from '../../contracts/snapshot'
 import { describe, expect, it } from 'vitest'
+import { PALWORLD_DEFAULT_LAYOUT } from '../../core/layout'
 import { palworldAdapter } from './adapter'
 
 function timer(tone: TimerTone): Timer {
@@ -35,6 +36,7 @@ describe('palworldAdapter', () => {
         windows: ['Palworld-Win64-Shipping.exe'],
         macos: ['Palworld.app'],
       },
+      defaultLayout: PALWORLD_DEFAULT_LAYOUT,
     })
   })
 

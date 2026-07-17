@@ -1,4 +1,5 @@
 import type { TimerTone } from '../../contracts/snapshot'
+import { PALWORLD_DEFAULT_LAYOUT } from '../../core/layout'
 import type { GameAdapter } from '../types'
 
 const TONE_STRENGTH: Record<TimerTone, number> = {
@@ -20,6 +21,7 @@ export const palworldAdapter: GameAdapter = {
     windows: ['Palworld-Win64-Shipping.exe'],
     macos: ['Palworld.app'],
   },
+  defaultLayout: PALWORLD_DEFAULT_LAYOUT,
   formatDuration(ms) {
     if (!Number.isFinite(ms)) return '0分钟'
 
