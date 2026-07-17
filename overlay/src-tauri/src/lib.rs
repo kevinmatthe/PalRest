@@ -80,7 +80,13 @@ mod native {
         let saved = config::save_editable_and_load_from_path(&directory, &config)
             .map_err(|_| SaveConfigError::persistence())?;
         app.emit_to("overlay", "overlay-config-changed", &saved)
-            .map_err(|_| SaveConfigError::sync())
+            .map_err(|_| SaveConfigError::sync())?;
+        if let Some(event) = lifecycle::visibility_event(current_platform(), true, None) {
+            app.state::<lifecycle::LifecycleController>()
+                .transition(&app, event)
+                .map_err(|_| SaveConfigError::sync())?;
+        }
+        Ok(())
     }
 
     #[tauri::command]

@@ -106,9 +106,10 @@ pub fn initial_window_effects(
     x: Option<f64>,
     y: Option<f64>,
     locked: bool,
+    overlay_visible: bool,
     monitors: &[MonitorBounds],
 ) -> Vec<LifecycleEffect> {
-    let mut effects = Vec::with_capacity(3);
+    let mut effects = Vec::with_capacity(4);
     if let (Some(x), Some(y)) = (x, y) {
         let x = x.round() as i32;
         let y = y.round() as i32;
@@ -116,17 +117,38 @@ pub fn initial_window_effects(
             effects.push(LifecycleEffect::RestorePosition(x, y));
         }
     }
+    if overlay_visible {
+        effects.push(LifecycleEffect::Show);
+    }
     effects.push(LifecycleEffect::SetFocusable(!locked));
     effects.push(LifecycleEffect::SetClickThrough(locked));
     effects
 }
 
 #[must_use]
-pub fn initial_lifecycle_state(locked: bool) -> LifecycleState {
-    LifecycleState {
+pub fn initial_lifecycle_state(
+    locked: bool,
+    has_valid_config: bool,
+    platform: &str,
+) -> LifecycleState {
+    let state = LifecycleState {
         adjustment: !locked,
         click_through: locked,
         ..LifecycleState::default()
+    };
+    visibility_event(platform, has_valid_config, None).map_or(state, |event| reduce(state, event))
+}
+
+#[must_use]
+pub fn visibility_event(
+    platform: &str,
+    has_valid_config: bool,
+    detected: Option<bool>,
+) -> Option<LifecycleEvent> {
+    if platform == "macos" {
+        has_valid_config.then_some(LifecycleEvent::GameDetected(true))
+    } else {
+        detected.map(LifecycleEvent::GameDetected)
     }
 }
 
@@ -266,7 +288,7 @@ mod native {
     use super::{
         LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState, MonitorBounds,
         SCAN_INTERVAL, execute_effects, focus_rollback_effects, initial_lifecycle_state,
-        initial_window_effects, plan_transition,
+        initial_window_effects, plan_transition, visibility_event,
     };
     use crate::{config, process::ProcessMonitor};
     use std::sync::Mutex;
@@ -328,12 +350,11 @@ mod native {
             self.state.lock().map_or(true, |state| state.quitting)
         }
 
-        fn set_initial_locked(&self, locked: bool) -> Result<(), String> {
+        fn set_initial_state(&self, state: LifecycleState) -> Result<(), String> {
             *self
                 .state
                 .lock()
-                .map_err(|_| "lifecycle state is unavailable".to_string())? =
-                initial_lifecycle_state(locked);
+                .map_err(|_| "lifecycle state is unavailable".to_string())? = state;
             Ok(())
         }
     }
@@ -457,6 +478,7 @@ mod native {
         let (x, y, locked) = saved.as_ref().map_or((None, None, true), |config| {
             (config.x, config.y, config.locked)
         });
+        let initial_state = initial_lifecycle_state(locked, saved.is_some(), current_platform());
         let monitors = overlay
             .available_monitors()
             .unwrap_or_default()
@@ -473,10 +495,10 @@ mod native {
                 overlay,
                 geometry_backup: None,
             },
-            &initial_window_effects(x, y, locked, &monitors),
+            &initial_window_effects(x, y, locked, initial_state.overlay_visible, &monitors),
         )?;
         app.state::<LifecycleController>()
-            .set_initial_locked(locked)
+            .set_initial_state(initial_state)
     }
 
     pub fn start_monitor(app: AppHandle) {
@@ -489,8 +511,18 @@ mod native {
                 if lifecycle.quitting() {
                     break;
                 }
-                let detected = processes.palworld_is_running(platform);
-                let _ = lifecycle.transition(&app, LifecycleEvent::GameDetected(detected));
+                let has_valid_config = platform == "macos"
+                    && app
+                        .path()
+                        .app_config_dir()
+                        .ok()
+                        .and_then(|dir| config::load_from_path(&dir).ok().flatten())
+                        .is_some();
+                let detected =
+                    (platform != "macos").then(|| processes.palworld_is_running(platform));
+                if let Some(event) = visibility_event(platform, has_valid_config, detected) {
+                    let _ = lifecycle.transition(&app, event);
+                }
                 std::thread::sleep(SCAN_INTERVAL.saturating_sub(scan_started.elapsed()));
             }
         });
@@ -505,7 +537,7 @@ mod tests {
     use super::{
         CloseAction, LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState,
         MonitorBounds, SCAN_INTERVAL, close_action, execute_effects, focus_rollback_effects,
-        initial_lifecycle_state, initial_window_effects, plan_transition, reduce,
+        initial_lifecycle_state, initial_window_effects, plan_transition, reduce, visibility_event,
     };
     use std::time::Duration;
 
@@ -700,7 +732,7 @@ mod tests {
     fn initial_window_restores_position_before_applying_unlocked_input_state() {
         let monitors = [MonitorBounds::new(0, 0, 1920, 1080)];
         assert_eq!(
-            initial_window_effects(Some(12.0), Some(34.0), false, &monitors),
+            initial_window_effects(Some(12.0), Some(34.0), false, false, &monitors),
             vec![
                 LifecycleEffect::RestorePosition(12, 34),
                 LifecycleEffect::SetFocusable(true),
@@ -712,7 +744,7 @@ mod tests {
     #[test]
     fn initial_window_without_geometry_uses_locked_safe_defaults() {
         assert_eq!(
-            initial_window_effects(None, None, true, &[]),
+            initial_window_effects(None, None, true, false, &[]),
             vec![
                 LifecycleEffect::SetFocusable(false),
                 LifecycleEffect::SetClickThrough(true),
@@ -721,17 +753,81 @@ mod tests {
     }
 
     #[test]
-    fn unlocked_config_preloads_full_adjustment_state_without_window_show_or_focus() {
-        let state = initial_lifecycle_state(false);
+    fn configured_macos_preloads_visible_lifecycle_state() {
+        let locked = initial_lifecycle_state(true, true, "macos");
+        assert!(locked.game_running);
+        assert!(locked.overlay_visible);
+        assert!(!locked.adjustment);
+        assert!(locked.click_through);
+
+        let unlocked = initial_lifecycle_state(false, true, "macos");
+        assert!(unlocked.game_running);
+        assert!(unlocked.overlay_visible);
+        assert!(unlocked.adjustment);
+        assert!(!unlocked.click_through);
+    }
+
+    #[test]
+    fn windows_and_unconfigured_macos_start_hidden_until_their_visibility_signal() {
+        for state in [
+            initial_lifecycle_state(true, true, "windows"),
+            initial_lifecycle_state(true, false, "macos"),
+        ] {
+            assert!(!state.game_running);
+            assert!(!state.overlay_visible);
+            assert!(state.click_through);
+        }
+    }
+
+    #[test]
+    fn configured_macos_initial_effects_show_without_focus_and_preserve_locking() {
+        let effects = initial_window_effects(None, None, true, true, &[]);
+        assert_eq!(
+            effects,
+            vec![
+                LifecycleEffect::Show,
+                LifecycleEffect::SetFocusable(false),
+                LifecycleEffect::SetClickThrough(true),
+            ]
+        );
+        assert!(!effects.contains(&LifecycleEffect::Focus));
+    }
+
+    #[test]
+    fn unlocked_config_preloads_full_adjustment_state_without_focus() {
+        let state = initial_lifecycle_state(false, true, "windows");
         assert!(state.adjustment);
         assert!(!state.click_through);
         assert!(!state.overlay_visible);
         assert!(
-            !initial_window_effects(None, None, false, &[])
+            !initial_window_effects(None, None, false, false, &[])
                 .iter()
                 .any(|effect| { matches!(effect, LifecycleEffect::Show | LifecycleEffect::Focus) })
         );
         assert!(reduce(state, LifecycleEvent::GameDetected(false)).overlay_visible);
+    }
+
+    #[test]
+    fn visibility_policy_uses_config_on_macos_and_detection_on_windows() {
+        assert_eq!(
+            visibility_event("macos", true, Some(false)),
+            Some(LifecycleEvent::GameDetected(true))
+        );
+        assert_eq!(visibility_event("macos", false, Some(true)), None);
+        assert_eq!(
+            visibility_event("windows", true, Some(false)),
+            Some(LifecycleEvent::GameDetected(false))
+        );
+        assert_eq!(visibility_event("windows", true, None), None);
+    }
+
+    #[test]
+    fn successful_save_only_synthesizes_macos_visibility() {
+        assert_eq!(
+            visibility_event("macos", true, None),
+            Some(LifecycleEvent::GameDetected(true))
+        );
+        assert_eq!(visibility_event("windows", true, None), None);
     }
 
     #[test]
