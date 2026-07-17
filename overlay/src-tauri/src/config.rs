@@ -31,6 +31,10 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+fn unsupported(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, message.into())
+}
+
 pub(crate) fn parse_base_url(raw: &str) -> Result<Url, &'static str> {
     if !raw
         .get(..raw.find("://").unwrap_or(0))
@@ -71,7 +75,7 @@ pub(crate) fn parse_base_url(raw: &str) -> Result<Url, &'static str> {
 
 fn validate(config: OverlayConfig) -> io::Result<OverlayConfig> {
     if config.schema != 1 {
-        return Err(invalid_data(format!(
+        return Err(unsupported(format!(
             "unsupported config schema {}",
             config.schema
         )));
@@ -108,7 +112,7 @@ fn decode(bytes: &[u8]) -> io::Result<OverlayConfig> {
             object.insert("schema".into(), Value::from(1));
         }
         Some(Value::Number(number)) if number.as_u64() == Some(1) => {}
-        Some(_) => return Err(invalid_data("unsupported config schema")),
+        Some(_) => return Err(unsupported("unsupported config schema")),
     }
     let parsed = serde_json::from_value(value).map_err(|error| invalid_data(error.to_string()))?;
     validate(parsed)
@@ -146,8 +150,8 @@ pub fn save_to_path(config_dir: &Path, config: &OverlayConfig) -> io::Result<()>
 /// Saves fields controlled by Settings without allowing a stale renderer copy to overwrite
 /// geometry most recently captured by the native window lifecycle.
 pub fn save_editable_to_path(config_dir: &Path, incoming: &OverlayConfig) -> io::Result<()> {
-    let merged = match load_from_path(config_dir)? {
-        Some(mut current) => {
+    let merged = match load_from_path(config_dir) {
+        Ok(Some(mut current)) => {
             current.base_url = incoming.base_url.clone();
             current.game_id = incoming.game_id.clone();
             current.user_id = incoming.user_id.clone();
@@ -155,7 +159,9 @@ pub fn save_editable_to_path(config_dir: &Path, incoming: &OverlayConfig) -> io:
             current.locked = incoming.locked;
             current
         }
-        None => incoming.clone(),
+        Ok(None) => incoming.clone(),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => incoming.clone(),
+        Err(error) => return Err(error),
     };
     save_to_path(config_dir, &merged)
 }
@@ -352,6 +358,29 @@ mod tests {
         let dir = temp_dir("editable-first");
         save_editable_to_path(&dir, &config()).unwrap();
         assert_eq!(load_from_path(&dir).unwrap(), Some(config()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn editable_save_replaces_a_malformed_config() {
+        let dir = temp_dir("editable-repair");
+        fs::write(dir.join("config.json"), b"{broken json").unwrap();
+
+        save_editable_to_path(&dir, &config()).unwrap();
+
+        assert_eq!(load_from_path(&dir).unwrap(), Some(config()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn editable_save_never_overwrites_a_future_schema() {
+        let dir = temp_dir("editable-future");
+        let future = br#"{"schema":2,"future":"value"}"#;
+        fs::write(dir.join("config.json"), future).unwrap();
+
+        assert!(save_editable_to_path(&dir, &config()).is_err());
+
+        assert_eq!(fs::read(dir.join("config.json")).unwrap(), future);
         fs::remove_dir_all(dir).unwrap();
     }
 }

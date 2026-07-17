@@ -210,56 +210,58 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
       </header>
 
       <form className="settings-form" onSubmit={save}>
-        <section className="settings-group" aria-labelledby="connection-title">
-          <div className="settings-group__title">
-            <span>01</span><h2 id="connection-title">服务连接</h2>
-          </div>
-          <div className="settings-inline">
-            <label className="settings-field settings-field--grow">
-              <span>服务地址</span>
-              <input value={baseUrl} onChange={(event) => changeBaseUrl(event.target.value)} placeholder="https://palbox.tailnet.ts.net:9443" autoComplete="url" />
-            </label>
-            <button className="settings-button settings-button--secondary" type="button" aria-label="加载玩家" onClick={() => { void loadPlayers() }}>
-              {loading ? '正在加载…' : '加载玩家'}
-            </button>
-          </div>
-          <label className="settings-field">
-            <span>游戏</span>
-            <input value="幻兽帕鲁 / Palworld" disabled />
-          </label>
-        </section>
-
-        <section className="settings-group" aria-labelledby="player-title">
-          <div className="settings-group__title">
-            <span>02</span><h2 id="player-title">显示对象</h2>
-          </div>
-          <label className="settings-field">
-            <span>玩家</span>
-            <select value={userId} onChange={(event) => {
-              const nextUserId = event.target.value
-              if (nextUserId) {
-                suppressKnownIdentity.current = false
-                explicitlySelectedUserId.current = nextUserId
-              } else {
-                suppressKnownIdentity.current = true
-                explicitlySelectedUserId.current = null
-              }
-              setUserId(nextUserId)
-            }}>
-              <option value="">请选择精确玩家 UID</option>
-              {players.map((player) => <option key={player.user_id} value={player.user_id}>{playerLabel(player)}</option>)}
-            </select>
-          </label>
-          <div className="settings-options">
+        <div className="settings-form__content">
+          <section className="settings-group" aria-labelledby="connection-title">
+            <div className="settings-group__title">
+              <span>01</span><h2 id="connection-title">服务连接</h2>
+            </div>
+            <div className="settings-inline">
+              <label className="settings-field settings-field--grow">
+                <span>服务地址</span>
+                <input value={baseUrl} onChange={(event) => changeBaseUrl(event.target.value)} placeholder="https://palbox.tailnet.ts.net:9443" autoComplete="url" />
+              </label>
+              <button className="settings-button settings-button--secondary" type="button" aria-label="加载玩家" onClick={() => { void loadPlayers() }}>
+                {loading ? '正在加载…' : '加载玩家'}
+              </button>
+            </div>
             <label className="settings-field">
-              <span>缩放</span>
-              <select value={scale} onChange={(event) => setScale(event.target.value)}>
-                <option value="0.8">80%</option><option value="1">100%</option><option value="1.25">125%</option>
+              <span>游戏</span>
+              <input value="幻兽帕鲁 / Palworld" disabled />
+            </label>
+          </section>
+
+          <section className="settings-group" aria-labelledby="player-title">
+            <div className="settings-group__title">
+              <span>02</span><h2 id="player-title">显示对象</h2>
+            </div>
+            <label className="settings-field">
+              <span>玩家</span>
+              <select value={userId} onChange={(event) => {
+                const nextUserId = event.target.value
+                if (nextUserId) {
+                  suppressKnownIdentity.current = false
+                  explicitlySelectedUserId.current = nextUserId
+                } else {
+                  suppressKnownIdentity.current = true
+                  explicitlySelectedUserId.current = null
+                }
+                setUserId(nextUserId)
+              }}>
+                <option value="">请选择精确玩家 UID</option>
+                {players.map((player) => <option key={player.user_id} value={player.user_id}>{playerLabel(player)}</option>)}
               </select>
             </label>
-            <label className="settings-check"><input type="checkbox" checked={locked} onChange={(event) => setLocked(event.target.checked)} /><span>锁定并保持鼠标穿透</span></label>
-          </div>
-        </section>
+            <div className="settings-options">
+              <label className="settings-field">
+                <span>缩放</span>
+                <select value={scale} onChange={(event) => setScale(event.target.value)}>
+                  <option value="0.8">80%</option><option value="1">100%</option><option value="1.25">125%</option>
+                </select>
+              </label>
+              <label className="settings-check"><input type="checkbox" checked={locked} onChange={(event) => setLocked(event.target.checked)} /><span>锁定并保持鼠标穿透</span></label>
+            </div>
+          </section>
+        </div>
 
         <footer className="settings-actions">
           {message ? <p role={message.tone === 'error' ? 'alert' : 'status'} className={`settings-message settings-message--${message.tone}`}>{message.text}</p> : <span />}

@@ -40,6 +40,16 @@ const MENU_ITEMS: [MenuItemSpec; 6] = [
     },
 ];
 
+#[cfg(any(feature = "native", test))]
+pub(crate) fn should_show_settings_on_launch(has_valid_config: bool) -> bool {
+    !has_valid_config
+}
+
+#[cfg(any(feature = "native", test))]
+pub(crate) fn tray_icon_is_template(platform: &str) -> bool {
+    platform == "macos"
+}
+
 #[cfg(feature = "native")]
 mod native {
     use super::MENU_ITEMS;
@@ -50,7 +60,7 @@ mod native {
         tray::TrayIconBuilder,
     };
 
-    pub fn setup(app: &mut App) -> tauri::Result<()> {
+    pub fn setup(app: &mut App, show_settings_on_launch: bool) -> tauri::Result<()> {
         let [
             status_spec,
             adjust_spec,
@@ -73,6 +83,8 @@ mod native {
                     .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))?
                     .clone(),
             )
+            .icon_as_template(super::tray_icon_is_template(std::env::consts::OS))
+            .tooltip("PalREST Game Overlay")
             .menu(&menu)
             .show_menu_on_left_click(true)
             .on_menu_event(|app, event| match event.id().as_ref() {
@@ -100,6 +112,9 @@ mod native {
                 _ => {}
             })
             .build(app)?;
+        if show_settings_on_launch {
+            show_settings(app.handle());
+        }
         Ok(())
     }
 
@@ -120,7 +135,7 @@ pub use native::setup;
 
 #[cfg(test)]
 mod tests {
-    use super::MENU_ITEMS;
+    use super::{MENU_ITEMS, should_show_settings_on_launch, tray_icon_is_template};
 
     #[test]
     fn tray_contract_contains_only_the_six_requested_items() {
@@ -136,5 +151,17 @@ mod tests {
                 .iter()
                 .all(|item| !matches!(item.id, "autostart" | "hotkey"))
         );
+    }
+
+    #[test]
+    fn first_launch_opens_settings_but_configured_launch_stays_in_background() {
+        assert!(should_show_settings_on_launch(false));
+        assert!(!should_show_settings_on_launch(true));
+    }
+
+    #[test]
+    fn macos_uses_a_template_menu_bar_icon() {
+        assert!(tray_icon_is_template("macos"));
+        assert!(!tray_icon_is_template("windows"));
     }
 }

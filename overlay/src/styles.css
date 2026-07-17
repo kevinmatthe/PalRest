@@ -15,7 +15,7 @@ body,
 
 html.settings-window,
 body.settings-window {
-  overflow: auto;
+  overflow: hidden;
   background: #071014;
 }
 
@@ -30,9 +30,12 @@ body.settings-window {
   --settings-cyan: #73e8ea;
   --settings-ink: #e2eceb;
   --settings-muted: #8ca09f;
+  display: grid;
   width: 100%;
-  min-height: 100%;
-  overflow: auto;
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
   padding: 1rem;
   color: var(--settings-ink);
   background:
@@ -71,7 +74,19 @@ body.settings-window {
 
 .settings-form {
   display: grid;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 0.7rem;
+}
+
+.settings-form__content {
+  display: grid;
+  min-height: 0;
+  align-content: start;
+  gap: 0.7rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .settings-group {
@@ -192,15 +207,14 @@ body.settings-window {
 .settings-button--ghost { border-color: rgba(159, 189, 187, 0.24); background: transparent; }
 
 .settings-actions {
-  position: sticky;
-  bottom: 0;
+  position: relative;
   z-index: 2;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0.55rem;
-  padding: 0.55rem 0 0.15rem;
+  padding: 0.55rem 0 max(0.35rem, env(safe-area-inset-bottom));
   background: linear-gradient(180deg, transparent, #071014 30%);
 }
 

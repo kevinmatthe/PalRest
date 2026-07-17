@@ -23,10 +23,18 @@ const saved: OverlayConfigV1 = {
 describe('SettingsView', () => {
   it('keeps essential controls readable and save actions reachable in the settings client area', () => {
     const css = readFileSync('src/styles.css', 'utf8')
-    expect(css).toMatch(/\.settings-actions\s*\{[^}]*position:\s*sticky[^}]*bottom:\s*0/s)
+    expect(css).toMatch(/html\.settings-window,\s*body\.settings-window\s*\{[^}]*overflow:\s*hidden/s)
+    expect(css).toMatch(/\.settings-shell\s*\{[^}]*height:\s*100%[^}]*grid-template-rows:\s*auto minmax\(0,\s*1fr\)[^}]*overflow:\s*hidden/s)
+    expect(css).toMatch(/\.settings-form\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\) auto/s)
+    expect(css).toMatch(/\.settings-form__content\s*\{[^}]*overflow-y:\s*auto/s)
+    expect(css).toMatch(/\.settings-actions\s*\{[^}]*position:\s*relative/s)
     expect(css).toMatch(/\.settings-field\s*>\s*span\s*\{[^}]*font-size:\s*0\.875rem/s)
     expect(css).toMatch(/\.settings-button\s*\{[^}]*min-height:\s*2\.75rem[^}]*font-size:\s*0\.875rem/s)
     expect(css).toMatch(/\.settings-message\s*\{[^}]*font-size:\s*0\.875rem/s)
+
+    const { container } = render(<SettingsView bridge={bridge()} initialConfig={null} />)
+    expect(container.querySelector('.settings-form__content')).toContainElement(screen.getByText('服务连接').closest('section'))
+    expect(container.querySelector('.settings-form__content')).not.toContainElement(screen.getByRole('button', { name: '保存设置' }))
   })
 
   it('loads, deduplicates, and selects players only by exact UID', async () => {

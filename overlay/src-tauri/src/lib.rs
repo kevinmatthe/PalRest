@@ -5,6 +5,23 @@ mod platform;
 pub mod process;
 pub mod tray;
 
+#[cfg(any(feature = "native", test))]
+fn config_error_is_recoverable(window_label: &str) -> bool {
+    window_label == "settings"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::config_error_is_recoverable;
+
+    #[test]
+    fn only_settings_can_recover_from_a_corrupt_config() {
+        assert!(config_error_is_recoverable("settings"));
+        assert!(!config_error_is_recoverable("overlay"));
+        assert!(!config_error_is_recoverable("unknown"));
+    }
+}
+
 #[cfg(feature = "native")]
 mod native {
     use super::{config, http, lifecycle, platform, tray};
@@ -17,8 +34,15 @@ mod native {
     }
 
     #[tauri::command]
-    fn load_config(app: AppHandle) -> Result<Option<config::OverlayConfig>, String> {
-        config::load_from_path(&config_dir(&app)?).map_err(|error| error.to_string())
+    fn load_config(
+        app: AppHandle,
+        window: Window,
+    ) -> Result<Option<config::OverlayConfig>, String> {
+        match config::load_from_path(&config_dir(&app)?) {
+            Ok(config) => Ok(config),
+            Err(_) if super::config_error_is_recoverable(window.label()) => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     #[tauri::command]
@@ -81,8 +105,15 @@ mod native {
             .manage(bridge)
             .manage(lifecycle::LifecycleController::default())
             .setup(|app| {
+                let has_valid_config = app
+                    .path()
+                    .app_config_dir()
+                    .ok()
+                    .and_then(|path| config::load_from_path(&path).ok())
+                    .flatten()
+                    .is_some();
                 lifecycle::initialise(app.handle()).map_err(std::io::Error::other)?;
-                tray::setup(app)?;
+                tray::setup(app, tray::should_show_settings_on_launch(has_valid_config))?;
                 lifecycle::start_monitor(app.handle().clone());
                 Ok(())
             })
