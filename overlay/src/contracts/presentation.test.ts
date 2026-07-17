@@ -115,6 +115,23 @@ describe('parsePresentation', () => {
     expect(input).toEqual(original)
   })
 
+  it('accepts every finite duration and latency number allowed by the protocol', () => {
+    const parsed = parsePresentation(presentation([
+      field({ id: 'activity.today', kind: 'duration_ms', value: 1.5 }),
+      field({
+        id: 'activity.week',
+        kind: 'duration_ms',
+        value: Number.MAX_SAFE_INTEGER + 1,
+      }),
+      field({ id: 'network.latency', kind: 'latency_ms', value: -0.5 }),
+    ]))
+
+    expect(parsed.fields.map((displayField) => {
+      if (!displayField.available) throw new Error('expected available field')
+      return displayField.value
+    })).toEqual([1.5, Number.MAX_SAFE_INTEGER + 1, -0.5])
+  })
+
   it.each([
     ['a duplicate ID', [field(), field()]],
     ['an uppercase ID', [field({ id: 'Network.Latency' })]],
@@ -139,10 +156,8 @@ describe('parsePresentation', () => {
   it.each([
     ['integer fraction', 'integer', 1.5],
     ['unsafe integer', 'integer', Number.MAX_SAFE_INTEGER + 1],
-    ['unsafe duration', 'duration_ms', Number.MAX_SAFE_INTEGER + 1],
     ['NaN duration', 'duration_ms', Number.NaN],
     ['infinite latency', 'latency_ms', Number.POSITIVE_INFINITY],
-    ['negative latency', 'latency_ms', -1],
     ['infinite coordinate', 'coordinates', { x: Number.NEGATIVE_INFINITY, y: 0 }],
   ])('rejects %s', (_name, kind, value) => {
     expect(() => parsePresentation(presentation([

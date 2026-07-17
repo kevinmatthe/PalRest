@@ -257,14 +257,10 @@ function parseField(value: unknown, index: number): DisplayField {
     case 'integer':
       return { ...common, kind, value: safeInteger(raw.value, `${path}.value`), ...withProgress }
     case 'duration_ms':
-      return { ...common, kind, value: safeInteger(raw.value, `${path}.value`), ...withProgress }
+    case 'latency_ms':
+      return { ...common, kind, value: finiteNumber(raw.value, `${path}.value`), ...withProgress }
     case 'timestamp':
       return { ...common, kind, value: rfc3339(raw.value, `${path}.value`), ...withProgress }
-    case 'latency_ms': {
-      const latency = finiteNumber(raw.value, `${path}.value`)
-      if (latency < 0) throw new Error(`${path}.value must not be negative`)
-      return { ...common, kind, value: latency, ...withProgress }
-    }
     case 'coordinates':
       return {
         ...common,
