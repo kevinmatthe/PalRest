@@ -27,9 +27,28 @@ fn config_error_is_recoverable(window_label: &str) -> bool {
     window_label == "settings"
 }
 
+#[cfg(any(feature = "native", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaveConfigSyncAction {
+    EmitCanonicalConfig,
+    ApplyVisibility(lifecycle::LifecycleEvent),
+}
+
+#[cfg(any(feature = "native", test))]
+fn save_config_sync_actions(platform: &str) -> Vec<SaveConfigSyncAction> {
+    let mut actions = vec![SaveConfigSyncAction::EmitCanonicalConfig];
+    if let Some(event) = lifecycle::configured_visibility_event(platform, true) {
+        actions.push(SaveConfigSyncAction::ApplyVisibility(event));
+    }
+    actions
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{SaveConfigError, config_error_is_recoverable};
+    use super::{
+        SaveConfigError, SaveConfigSyncAction, config_error_is_recoverable,
+        save_config_sync_actions,
+    };
 
     #[test]
     fn only_settings_can_recover_from_a_corrupt_config() {
@@ -49,11 +68,31 @@ mod tests {
             serde_json::json!({ "persisted": true })
         );
     }
+
+    #[test]
+    fn macos_save_emits_before_applying_visibility_while_windows_only_emits() {
+        assert_eq!(
+            save_config_sync_actions("macos"),
+            vec![
+                SaveConfigSyncAction::EmitCanonicalConfig,
+                SaveConfigSyncAction::ApplyVisibility(
+                    crate::lifecycle::LifecycleEvent::GameDetected(true)
+                ),
+            ]
+        );
+        assert_eq!(
+            save_config_sync_actions("windows"),
+            vec![SaveConfigSyncAction::EmitCanonicalConfig]
+        );
+    }
 }
 
 #[cfg(feature = "native")]
 mod native {
-    use super::{SaveConfigError, config, http, lifecycle, platform, tray};
+    use super::{
+        SaveConfigError, SaveConfigSyncAction, config, http, lifecycle, platform,
+        save_config_sync_actions, tray,
+    };
     use tauri::{AppHandle, Emitter, Manager, State, Window, WindowEvent};
 
     fn config_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -79,12 +118,16 @@ mod native {
         let directory = config_dir(&app).map_err(|_| SaveConfigError::persistence())?;
         let saved = config::save_editable_and_load_from_path(&directory, &config)
             .map_err(|_| SaveConfigError::persistence())?;
-        app.emit_to("overlay", "overlay-config-changed", &saved)
-            .map_err(|_| SaveConfigError::sync())?;
-        if let Some(event) = lifecycle::visibility_event(current_platform(), true, None) {
-            app.state::<lifecycle::LifecycleController>()
-                .transition(&app, event)
-                .map_err(|_| SaveConfigError::sync())?;
+        for action in save_config_sync_actions(current_platform()) {
+            match action {
+                SaveConfigSyncAction::EmitCanonicalConfig => app
+                    .emit_to("overlay", "overlay-config-changed", &saved)
+                    .map_err(|_| SaveConfigError::sync())?,
+                SaveConfigSyncAction::ApplyVisibility(event) => app
+                    .state::<lifecycle::LifecycleController>()
+                    .transition(&app, event)
+                    .map_err(|_| SaveConfigError::sync())?,
+            }
         }
         Ok(())
     }

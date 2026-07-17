@@ -136,20 +136,25 @@ pub fn initial_lifecycle_state(
         click_through: locked,
         ..LifecycleState::default()
     };
-    visibility_event(platform, has_valid_config, None).map_or(state, |event| reduce(state, event))
+    configured_visibility_event(platform, has_valid_config)
+        .map_or(state, |event| reduce(state, event))
 }
 
 #[must_use]
-pub fn visibility_event(
+pub fn configured_visibility_event(
     platform: &str,
     has_valid_config: bool,
-    detected: Option<bool>,
 ) -> Option<LifecycleEvent> {
     if platform == "macos" {
         has_valid_config.then_some(LifecycleEvent::GameDetected(true))
     } else {
-        detected.map(LifecycleEvent::GameDetected)
+        None
     }
+}
+
+#[must_use]
+pub fn monitor_visibility_event(platform: &str, detected: bool) -> Option<LifecycleEvent> {
+    (platform != "macos").then_some(LifecycleEvent::GameDetected(detected))
 }
 
 #[must_use]
@@ -288,7 +293,7 @@ mod native {
     use super::{
         LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState, MonitorBounds,
         SCAN_INTERVAL, execute_effects, focus_rollback_effects, initial_lifecycle_state,
-        initial_window_effects, plan_transition, visibility_event,
+        initial_window_effects, monitor_visibility_event, plan_transition,
     };
     use crate::{config, process::ProcessMonitor};
     use std::sync::Mutex;
@@ -511,17 +516,11 @@ mod native {
                 if lifecycle.quitting() {
                     break;
                 }
-                let has_valid_config = platform == "macos"
-                    && app
-                        .path()
-                        .app_config_dir()
-                        .ok()
-                        .and_then(|dir| config::load_from_path(&dir).ok().flatten())
-                        .is_some();
-                let detected =
-                    (platform != "macos").then(|| processes.palworld_is_running(platform));
-                if let Some(event) = visibility_event(platform, has_valid_config, detected) {
-                    let _ = lifecycle.transition(&app, event);
+                if platform != "macos" {
+                    let detected = processes.palworld_is_running(platform);
+                    if let Some(event) = monitor_visibility_event(platform, detected) {
+                        let _ = lifecycle.transition(&app, event);
+                    }
                 }
                 std::thread::sleep(SCAN_INTERVAL.saturating_sub(scan_started.elapsed()));
             }
@@ -536,8 +535,9 @@ pub use native::{LifecycleController, initialise, start_monitor};
 mod tests {
     use super::{
         CloseAction, LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState,
-        MonitorBounds, SCAN_INTERVAL, close_action, execute_effects, focus_rollback_effects,
-        initial_lifecycle_state, initial_window_effects, plan_transition, reduce, visibility_event,
+        MonitorBounds, SCAN_INTERVAL, close_action, configured_visibility_event, execute_effects,
+        focus_rollback_effects, initial_lifecycle_state, initial_window_effects,
+        monitor_visibility_event, plan_transition, reduce,
     };
     use std::time::Duration;
 
@@ -808,26 +808,31 @@ mod tests {
     }
 
     #[test]
-    fn visibility_policy_uses_config_on_macos_and_detection_on_windows() {
+    fn configured_visibility_is_only_a_macos_signal() {
         assert_eq!(
-            visibility_event("macos", true, Some(false)),
+            configured_visibility_event("macos", true),
             Some(LifecycleEvent::GameDetected(true))
         );
-        assert_eq!(visibility_event("macos", false, Some(true)), None);
-        assert_eq!(
-            visibility_event("windows", true, Some(false)),
-            Some(LifecycleEvent::GameDetected(false))
-        );
-        assert_eq!(visibility_event("windows", true, None), None);
+        assert_eq!(configured_visibility_event("macos", false), None);
+        assert_eq!(configured_visibility_event("windows", true), None);
     }
 
     #[test]
-    fn successful_save_only_synthesizes_macos_visibility() {
+    fn background_monitor_never_drives_macos_visibility() {
+        assert_eq!(monitor_visibility_event("macos", false), None);
+        assert_eq!(monitor_visibility_event("macos", true), None);
+    }
+
+    #[test]
+    fn background_monitor_forwards_windows_process_detection() {
         assert_eq!(
-            visibility_event("macos", true, None),
+            monitor_visibility_event("windows", false),
+            Some(LifecycleEvent::GameDetected(false))
+        );
+        assert_eq!(
+            monitor_visibility_event("windows", true),
             Some(LifecycleEvent::GameDetected(true))
         );
-        assert_eq!(visibility_event("windows", true, None), None);
     }
 
     #[test]
