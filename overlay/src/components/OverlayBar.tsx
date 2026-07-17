@@ -2,20 +2,26 @@
 
 import type { CSSProperties } from 'react'
 
-import type { Snapshot, SourceStatus, Timer } from '../contracts/snapshot'
-import type { GameAdapter } from '../games/types'
-import { palworldAdapter } from '../games/palworld/adapter'
+import type { DisplayTone, Presentation, SourceStatus } from '../contracts/presentation'
+import { resolveProgress, resolveSlots, type LayoutProfile } from '../core/layout'
+import {
+  PALWORLD_PROJECTION_ID,
+  PALWORLD_TILE_SET_ID,
+  projectPalworldWorldToLeaflet,
+  resolvePrivateTileUrl,
+} from '../games/palworld/map'
 import { PalworldMiniMap } from './PalworldMiniMap'
+import { PlayerBadge } from './PlayerBadge'
 import '../styles.css'
 
 export type OverlayConnectionStatus = 'ready' | 'stale' | 'disconnected'
 
 export interface OverlayBarProps {
-  snapshot: Snapshot
-  status?: OverlayConnectionStatus
-  adapter?: GameAdapter
-  adjustMode?: boolean
-  scale?: number
+  presentation: Presentation
+  layout: LayoutProfile
+  status: OverlayConnectionStatus
+  adjustMode: boolean
+  scale: number
   mapBaseUrl?: string
 }
 
@@ -26,6 +32,15 @@ const SOURCE_STATUS_COPY: Record<SourceStatus, string> = {
   offline: '离线',
   unknown: '状态未知',
 }
+
+const TONE_STRENGTH: Record<DisplayTone, number> = {
+  muted: 0,
+  normal: 1,
+  warning: 2,
+  danger: 3,
+}
+
+const STRENGTH_TONE = ['muted', 'normal', 'warning', 'danger'] as const
 
 function formatObservedAt(value: string): string {
   const date = new Date(value)
@@ -45,53 +60,52 @@ function dataStatusCopy(status: OverlayConnectionStatus, observedAt: string): st
   return `连接已断开 · 最后更新 ${observedAt}`
 }
 
-function identityCopy(snapshot: Snapshot): string {
-  const level = snapshot.identity.level
-  return level === undefined
-    ? snapshot.identity.display_name
-    : `${snapshot.identity.display_name} · Lv.${level}`
-}
-
-function progressTimer(timers: Timer[] | undefined): Timer | undefined {
-  if (!timers) return undefined
-  let fallback: Timer | undefined
-  for (const timer of timers) {
-    if (timer.progress === undefined) continue
-    if (timer.id === 'policy_cycle_used') return timer
-    fallback ??= timer
-  }
-  return fallback
-}
-
 function safeScale(scale: number): number {
   if (!Number.isFinite(scale)) return 1
   return Math.min(1.25, Math.max(0.8, scale))
 }
 
+function overallTone(presentation: Presentation): DisplayTone {
+  let strength = 0
+  for (const field of presentation.fields) {
+    if (field.available) strength = Math.max(strength, TONE_STRENGTH[field.tone])
+  }
+  return STRENGTH_TONE[strength]
+}
+
+function usableMap(presentation: Presentation, mapBaseUrl: string | undefined): boolean {
+  const map = presentation.map
+  if (presentation.game_id !== 'palworld' || map === undefined || mapBaseUrl === undefined) return false
+  if (map.projection !== PALWORLD_PROJECTION_ID || map.tile_set !== PALWORLD_TILE_SET_ID) return false
+  if (resolvePrivateTileUrl(map.tile_url, mapBaseUrl) === null) return false
+  try {
+    projectPalworldWorldToLeaflet(map.x, map.y)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function OverlayBar({
-  snapshot,
-  status = 'ready',
-  adapter = palworldAdapter,
-  adjustMode = false,
-  scale = 1,
+  presentation,
+  layout,
+  status,
+  adjustMode,
+  scale,
   mapBaseUrl,
 }: OverlayBarProps) {
-  const tone = adapter.overallTone(snapshot)
-  const observedAt = formatObservedAt(snapshot.observed_at)
-  const sourceStatus = SOURCE_STATUS_COPY[snapshot.source_status]
-  const hasLatency = snapshot.capabilities.includes('latency') && snapshot.latency !== undefined
-  const hasTimers = snapshot.capabilities.includes('timers') && snapshot.timers !== undefined
-  const hasMap = snapshot.capabilities.includes('map') && snapshot.map !== undefined
-  const hasPalworldMap = snapshot.game_id === palworldAdapter.id &&
-    adapter.id === palworldAdapter.id
-  const railTimer = progressTimer(hasTimers ? snapshot.timers : undefined)
+  const tone = overallTone(presentation)
+  const fields = new Map(presentation.fields.map((field) => [field.id, field]))
+  const slots = resolveSlots(fields, layout.slots)
+  const progress = resolveProgress(presentation.fields, layout.progress)
+  const showMap = layout.left.primary === 'map' && usableMap(presentation, mapBaseUrl)
+  const observedAt = formatObservedAt(presentation.observed_at)
   const rootClasses = [
     'overlay',
     'overlay--compact',
     `overlay--${tone}`,
     `overlay--${status}`,
-    snapshot.source_status === 'offline' ? 'overlay--offline' : '',
-    hasMap ? '' : 'overlay--without-map',
+    presentation.source_status === 'offline' ? 'overlay--offline' : '',
     adjustMode ? 'overlay--adjusting' : '',
   ].filter(Boolean).join(' ')
   const style: OverlayStyle = { '--overlay-scale': String(safeScale(scale)) }
@@ -101,85 +115,60 @@ export function OverlayBar({
     <section
       className={rootClasses}
       style={style}
-      aria-label={`${adapter.title}玩家状态悬浮条`}
+      aria-label="幻兽帕鲁玩家状态悬浮条"
       {...dragProps}
     >
       <div className="overlay__frame">
-        {hasMap ? (
-          hasPalworldMap && mapBaseUrl ? (
-            <PalworldMiniMap map={snapshot.map!} serviceBaseUrl={mapBaseUrl} />
-          ) : (
-            <div
-              className="overlay__locator"
-              data-testid="capability-map"
-              data-capability="map"
-              style={{ pointerEvents: 'none' }}
-            >
-              <span role="status" className="overlay__locator-label">地图不可用</span>
-            </div>
-          )
-        ) : null}
+        {showMap ? (
+          <PalworldMiniMap map={presentation.map!} serviceBaseUrl={mapBaseUrl!} />
+        ) : (
+          <PlayerBadge presentation={presentation} />
+        )}
 
         <div className="overlay__content">
-          <div className="overlay__telemetry">
-            <div
-              className="overlay__identity"
-              data-testid="capability-identity"
-              data-capability="identity"
-            >
-              <span className="overlay__name">{identityCopy(snapshot)}</span>
-              <span className="overlay__source-status">{sourceStatus}</span>
-            </div>
-
-            <div className="overlay__meta" role="status" aria-label="数据状态">
-              <span className="overlay__connection">
-                {dataStatusCopy(status, observedAt)}
+          <header className="overlay__telemetry" data-testid="identity-header">
+            <div className="overlay__identity">
+              <span className="overlay__name">{presentation.identity.display_name}</span>
+              {presentation.identity.level === undefined ? null : (
+                <span className="overlay__level">Lv.{presentation.identity.level}</span>
+              )}
+              <span className="overlay__source-status">
+                {SOURCE_STATUS_COPY[presentation.source_status]}
               </span>
-              {hasLatency ? (
-                <span
-                  className="overlay__latency"
-                  data-testid="capability-latency"
-                  data-capability="latency"
-                  aria-label={`延迟 ${Math.round(snapshot.latency!.milliseconds)} 毫秒`}
-                >
-                  {Math.round(snapshot.latency!.milliseconds)} ms
-                </span>
-              ) : null}
             </div>
-          </div>
+            <div className="overlay__meta" role="status" aria-label="数据状态">
+              <span className="overlay__connection">{dataStatusCopy(status, observedAt)}</span>
+            </div>
+          </header>
 
-          {hasTimers ? (
-            <dl
-              className="overlay__timers"
-              data-testid="capability-timers"
-              data-capability="timers"
-              aria-label="玩家计时"
-            >
-              {snapshot.timers!.map((timer) => (
-                <div className={`overlay__timer overlay__timer--${timer.tone}`} key={timer.id}>
-                  <dt>{timer.label}</dt>
-                  <dd>{adapter.formatDuration(timer.value_ms)}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : (
-            <div className="overlay__empty-rail" aria-hidden="true" />
-          )}
+          <dl className="overlay__fields" role="list" aria-label="玩家状态字段">
+            {slots.map((slot, index) => (
+              <div
+                className={`overlay__field overlay__field--${slot.tone}`}
+                role="listitem"
+                aria-label={`${slot.label} ${slot.value}`}
+                key={index}
+              >
+                <dt>{slot.label}</dt>
+                <dd>{slot.value}</dd>
+              </div>
+            ))}
+          </dl>
         </div>
       </div>
 
-      {railTimer?.progress !== undefined ? (
+      {progress === undefined ? null : (
         <div
-          className={`overlay__progress overlay__progress--${tone}`}
+          className={`overlay__progress overlay__progress--${progress.tone}`}
           role="progressbar"
-          aria-label={`${railTimer.label}进度`}
+          aria-label={`${progress.field.label}进度`}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={Math.round(railTimer.progress * 100)}
+          aria-valuenow={Math.round(progress.progress * 100)}
         >
-          <span style={{ width: `${Math.min(100, Math.max(0, railTimer.progress * 100))}%` }} />
+          <span style={{ width: `${progress.progress * 100}%` }} />
         </div>
-      ) : null}
+      )}
 
       {adjustMode ? (
         <div className="overlay__drag-hint">

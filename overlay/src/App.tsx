@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import { OverlayBar } from './components/OverlayBar'
 import type { DesktopBridge } from './core/bridge'
 import { parseOverlayConfig, type OverlayConfigV1 } from './core/config'
-import { SnapshotPoller } from './core/poller'
+import { PresentationPoller } from './core/presentationPoller'
+import { palworldAdapter } from './games/palworld/adapter'
 import { SettingsView } from './settings/SettingsView'
 import './styles.css'
 
@@ -29,11 +30,15 @@ function CompactState({ children, adjustMode = false }: { children: string; adju
 }
 
 function LiveOverlay({ bridge, config, adjustMode }: { bridge: DesktopBridge; config: OverlayConfigV1; adjustMode: boolean }) {
-  const poller = useMemo(() => new SnapshotPoller({
+  const poller = useMemo(() => new PresentationPoller({
     bridge,
     config: { baseUrl: config.baseUrl, gameId: config.gameId, userId: config.userId },
-  }), [bridge, config])
+  }), [bridge])
   const state = useSyncExternalStore(poller.subscribe, poller.getState, poller.getState)
+
+  useEffect(() => {
+    poller.updateConfig({ baseUrl: config.baseUrl, gameId: config.gameId, userId: config.userId })
+  }, [config.baseUrl, config.gameId, config.userId, poller])
 
   useEffect(() => {
     poller.start()
@@ -46,11 +51,15 @@ function LiveOverlay({ bridge, config, adjustMode }: { bridge: DesktopBridge; co
     }
   }, [bridge, state.status])
 
+  const layout = 'layouts' in config
+    ? (config.layouts[config.gameId] ?? palworldAdapter.defaultLayout)
+    : palworldAdapter.defaultLayout
+
   if (state.status === 'ready' || state.status === 'stale') {
-    return <OverlayBar snapshot={state.snapshot} status={state.status} mapBaseUrl={config.baseUrl} scale={config.scale} adjustMode={adjustMode} />
+    return <OverlayBar presentation={state.presentation} layout={layout} status={state.status} mapBaseUrl={config.baseUrl} scale={config.scale} adjustMode={adjustMode} />
   }
-  if (state.status === 'disconnected' && state.snapshot) {
-    return <OverlayBar snapshot={state.snapshot} status="disconnected" mapBaseUrl={config.baseUrl} scale={config.scale} adjustMode={adjustMode} />
+  if (state.status === 'disconnected' && state.presentation) {
+    return <OverlayBar presentation={state.presentation} layout={layout} status="disconnected" mapBaseUrl={config.baseUrl} scale={config.scale} adjustMode={adjustMode} />
   }
   if (state.status === 'needs-player') return <CompactState adjustMode={adjustMode}>玩家已失效，请在设置中重新选择</CompactState>
   if (state.status === 'incompatible') return <CompactState adjustMode={adjustMode}>服务版本不兼容，请更新应用</CompactState>

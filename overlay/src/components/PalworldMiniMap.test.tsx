@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { MapPosition } from '../contracts/snapshot'
+import type { PresentationMap } from '../contracts/presentation'
 import { PALWORLD_TILE_BOUNDS } from '../games/palworld/map'
 import { PalworldMiniMap } from './PalworldMiniMap'
 
@@ -41,7 +41,7 @@ vi.mock('leaflet', () => ({
 
 const SERVICE_BASE = 'https://palbox.tailnet.ts.net:9443/private/'
 
-function position(overrides: Partial<MapPosition> = {}): MapPosition {
+function position(overrides: Partial<PresentationMap> = {}): PresentationMap {
   return {
     x: 187.25,
     y: -64.5,

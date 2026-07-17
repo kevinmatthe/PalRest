@@ -2,20 +2,12 @@ import type { OverlayConfigV1 } from './config'
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
-export type FetchSnapshotRequest = {
+export type FetchPresentationRequest = {
   baseUrl: string
   gameId: string
   userId: string
   etag?: string
 }
-
-export type FetchSnapshotResult =
-  | { status: 200; etag?: string; body: unknown }
-  | { status: 304 }
-  | { status: 404; code: 'player_not_found' | 'game_not_supported' }
-  | { status: 503; code: 'snapshot_unavailable' }
-
-export type FetchPresentationRequest = FetchSnapshotRequest
 
 export type FetchPresentationResult =
   | { status: 200; etag?: string; body: unknown }
@@ -24,11 +16,7 @@ export type FetchPresentationResult =
   | { status: 503; code: 'presentation_unavailable' }
 
 export interface OverlayBridge {
-  fetchSnapshot(
-    request: FetchSnapshotRequest,
-    signal: AbortSignal,
-  ): Promise<FetchSnapshotResult>
-  fetchPresentation?(
+  fetchPresentation(
     request: FetchPresentationRequest,
     signal: AbortSignal,
   ): Promise<FetchPresentationResult>
@@ -76,7 +64,6 @@ export function createBrowserPlaceholderBridge(): PresentationDesktopBridge {
     async saveConfig() { throw new Error('desktop bridge unavailable') },
     async listPlayers() { throw new Error('desktop bridge unavailable') },
     async setAdjustmentMode() { throw new Error('desktop bridge unavailable') },
-    async fetchSnapshot() { throw new Error('desktop bridge unavailable') },
     async fetchPresentation() { throw new Error('desktop bridge unavailable') },
     async onAdjustmentModeChanged() { return () => {} },
     async onReselectPlayer() { return () => {} },
@@ -143,7 +130,6 @@ function createTauriBridge(): PresentationDesktopBridge {
     },
     listPlayers: (baseUrl, signal) => invokeHttp('list_players', { baseUrl }, signal),
     setAdjustmentMode: (enabled) => invoke('set_adjustment_mode', { enabled }),
-    fetchSnapshot: (request, signal) => invokeHttp('fetch_snapshot', { request }, signal),
     fetchPresentation: (request, signal) => invokeHttp('fetch_presentation', { request }, signal),
     currentPlatform: () => invoke('current_platform'),
     detectedPalworldUserId: () => invoke('detected_palworld_user_id'),

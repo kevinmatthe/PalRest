@@ -1,4 +1,3 @@
-import type { Snapshot } from '../contracts/snapshot'
 import type { LayoutProfile } from '../core/layout'
 
 export interface GameAdapter {
@@ -9,6 +8,4 @@ export interface GameAdapter {
     macos: string[]
   }
   readonly defaultLayout: LayoutProfile
-  formatDuration(ms: number): string
-  overallTone(snapshot: Snapshot): 'normal' | 'warning' | 'danger' | 'muted'
 }

@@ -21,8 +21,7 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-const snapshotRequest = { baseUrl: 'https://palbox.test', gameId: 'palworld', userId: 'uid' }
-const presentationRequest = { ...snapshotRequest, etag: '"presentation-v1"' }
+const presentationRequest = { baseUrl: 'https://palbox.test', gameId: 'palworld', userId: 'uid', etag: '"presentation-v1"' }
 
 describe('native HTTP invoke gate', () => {
   beforeEach(() => {
@@ -64,7 +63,7 @@ describe('native HTTP invoke gate', () => {
     const firstController = new AbortController()
     const secondController = new AbortController()
 
-    const first = bridge.fetchSnapshot(snapshotRequest, firstController.signal)
+    const first = bridge.fetchPresentation(presentationRequest, firstController.signal)
     await vi.waitFor(() => expect(tauri.invoke).toHaveBeenCalledTimes(1))
     firstController.abort()
     await expect(first).rejects.toMatchObject({ name: 'AbortError' })
@@ -84,7 +83,7 @@ describe('native HTTP invoke gate', () => {
     const bridge = createDesktopBridge()
     const queuedController = new AbortController()
 
-    const first = bridge.fetchSnapshot(snapshotRequest, new AbortController().signal)
+    const first = bridge.fetchPresentation(presentationRequest, new AbortController().signal)
     await vi.waitFor(() => expect(tauri.invoke).toHaveBeenCalledTimes(1))
     const queued = bridge.listPlayers('https://palbox.test', queuedController.signal)
     queuedController.abort()
@@ -100,7 +99,7 @@ describe('native HTTP invoke gate', () => {
     const native = deferred<unknown>()
     tauri.invoke.mockImplementationOnce(() => native.promise).mockResolvedValueOnce('settings')
     const bridge = createDesktopBridge()
-    void bridge.fetchSnapshot(snapshotRequest, new AbortController().signal)
+    void bridge.fetchPresentation(presentationRequest, new AbortController().signal)
     await vi.waitFor(() => expect(tauri.invoke).toHaveBeenCalledTimes(1))
 
     await expect(bridge.currentWindowLabel()).resolves.toBe('settings')

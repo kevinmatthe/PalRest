@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 
-import type { MapPosition } from '../contracts/snapshot'
+import type { PresentationMap } from '../contracts/presentation'
 import {
   PALWORLD_PROJECTION_ID,
   PALWORLD_TILE_BOUNDS,
@@ -15,12 +15,12 @@ import {
 const FIXED_ZOOM = 0
 
 export interface PalworldMiniMapProps {
-  map: MapPosition
+  map: PresentationMap
   serviceBaseUrl: string
   className?: string
 }
 
-function coordinateFor(map: MapPosition): LeafletSimpleCoordinate | null {
+function coordinateFor(map: PresentationMap): LeafletSimpleCoordinate | null {
   try {
     return projectPalworldWorldToLeaflet(map.x, map.y)
   } catch {

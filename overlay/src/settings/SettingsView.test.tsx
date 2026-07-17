@@ -11,7 +11,7 @@ afterEach(cleanup)
 
 function bridge(overrides: Partial<DesktopBridge> = {}): DesktopBridge {
   return {
-    fetchSnapshot: vi.fn(), loadConfig: vi.fn(), saveConfig: vi.fn(),
+    fetchPresentation: vi.fn(), loadConfig: vi.fn(), saveConfig: vi.fn(),
     listPlayers: vi.fn(async () => []), currentWindowLabel: vi.fn(async () => 'settings' as const),
     setAdjustmentMode: vi.fn(), ...overrides,
   }
