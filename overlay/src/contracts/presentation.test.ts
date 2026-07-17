@@ -132,6 +132,19 @@ describe('parsePresentation', () => {
     })).toEqual([1.5, Number.MAX_SAFE_INTEGER + 1, -0.5])
   })
 
+  it('accepts a finite mathematical integer outside the safe-integer range', () => {
+    const value = Number.MAX_SAFE_INTEGER + 1
+    const parsed = parsePresentation(presentation([
+      field({ id: 'identity.level', kind: 'integer', value }),
+    ]))
+
+    const parsedField = parsed.fields[0]
+    if (!parsedField.available || parsedField.kind !== 'integer') {
+      throw new Error('expected available integer field')
+    }
+    expect(parsedField.value).toBe(value)
+  })
+
   it.each([
     ['a duplicate ID', [field(), field()]],
     ['an uppercase ID', [field({ id: 'Network.Latency' })]],
@@ -155,7 +168,8 @@ describe('parsePresentation', () => {
 
   it.each([
     ['integer fraction', 'integer', 1.5],
-    ['unsafe integer', 'integer', Number.MAX_SAFE_INTEGER + 1],
+    ['NaN integer', 'integer', Number.NaN],
+    ['infinite integer', 'integer', Number.POSITIVE_INFINITY],
     ['NaN duration', 'duration_ms', Number.NaN],
     ['infinite latency', 'latency_ms', Number.POSITIVE_INFINITY],
     ['infinite coordinate', 'coordinates', { x: Number.NEGATIVE_INFINITY, y: 0 }],

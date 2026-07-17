@@ -117,9 +117,9 @@ function finiteNumber(value: unknown, path: string): number {
   return value
 }
 
-function safeInteger(value: unknown, path: string): number {
+function integerNumber(value: unknown, path: string): number {
   const parsed = finiteNumber(value, path)
-  if (!Number.isSafeInteger(parsed)) throw new Error(`${path} must be a safe integer`)
+  if (!Number.isInteger(parsed)) throw new Error(`${path} must be an integer`)
   return parsed
 }
 
@@ -198,7 +198,7 @@ function parseIdentity(value: unknown): PresentationIdentity {
   if (Object.hasOwn(raw, 'account_name')) {
     identity.account_name = nonEmptyString(raw.account_name, 'identity.account_name')
   }
-  if (Object.hasOwn(raw, 'level')) identity.level = safeInteger(raw.level, 'identity.level')
+  if (Object.hasOwn(raw, 'level')) identity.level = integerNumber(raw.level, 'identity.level')
   return identity
 }
 
@@ -255,7 +255,7 @@ function parseField(value: unknown, index: number): DisplayField {
       return { ...common, kind, value: raw.value, ...withProgress }
     }
     case 'integer':
-      return { ...common, kind, value: safeInteger(raw.value, `${path}.value`), ...withProgress }
+      return { ...common, kind, value: integerNumber(raw.value, `${path}.value`), ...withProgress }
     case 'duration_ms':
     case 'latency_ms':
       return { ...common, kind, value: finiteNumber(raw.value, `${path}.value`), ...withProgress }
