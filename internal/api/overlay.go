@@ -149,13 +149,68 @@ func (s *Server) getOverlayPresentation(w http.ResponseWriter, r *http.Request) 
 	etag := `"` + hex.EncodeToString(digest[:]) + `"`
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "no-cache")
-	if r.Header.Get("If-None-Match") == etag {
+	if presentationETagMatches(r.Header.Values("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(append(payload, '\n'))
+}
+
+func presentationETagMatches(headerValues []string, currentETag string) bool {
+	currentOpaqueTag, ok := weakETagOpaqueTag(currentETag)
+	if !ok {
+		return false
+	}
+	for _, headerValue := range headerValues {
+		for _, candidate := range splitETagList(headerValue) {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "*" {
+				return true
+			}
+			candidateOpaqueTag, ok := weakETagOpaqueTag(candidate)
+			if ok && candidateOpaqueTag == currentOpaqueTag {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func splitETagList(value string) []string {
+	var members []string
+	start := 0
+	inQuotes := false
+	for index := 0; index < len(value); index++ {
+		switch value[index] {
+		case '"':
+			inQuotes = !inQuotes
+		case ',':
+			if !inQuotes {
+				members = append(members, value[start:index])
+				start = index + 1
+			}
+		}
+	}
+	return append(members, value[start:])
+}
+
+func weakETagOpaqueTag(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "W/") {
+		value = value[2:]
+	}
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return "", false
+	}
+	for index := 1; index < len(value)-1; index++ {
+		character := value[index]
+		if character == '"' || character < 0x21 || character == 0x7f {
+			return "", false
+		}
+	}
+	return value[1 : len(value)-1], true
 }
 
 func overlayQueryValue(query url.Values, name string, maxBytes int) (string, bool) {

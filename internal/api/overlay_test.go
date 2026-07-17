@@ -258,10 +258,50 @@ func TestOverlayPresentationReturnsETagAndSupportsConditionalGET(t *testing.T) {
 	if provider.presentationCalls != 2 {
 		t.Fatalf("presentation calls=%d want=2", provider.presentationCalls)
 	}
+}
 
-	nonExact := overlayRequest(t, server, "/api/v1/overlay/presentation?game_id=palworld&user_id=steam_1", map[string]string{"If-None-Match": wantETag + ", " + wantETag})
-	if nonExact.Code != http.StatusOK {
-		t.Fatalf("non-exact If-None-Match code=%d want=200", nonExact.Code)
+func TestOverlayPresentationConditionalGETUsesWeakComparison(t *testing.T) {
+	presentation := overlayTestPresentation()
+	payload, err := json.Marshal(presentation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	etag := `"` + hex.EncodeToString(digest[:]) + `"`
+	target := "/api/v1/overlay/presentation?game_id=palworld&user_id=steam_1"
+
+	tests := []struct {
+		name   string
+		values []string
+	}{
+		{name: "etag in comma separated list", values: []string{`"other", ` + etag + `, W/"third"`}},
+		{name: "weak etag", values: []string{"W/" + etag}},
+		{name: "wildcard", values: []string{"*"}},
+		{name: "multiple header values", values: []string{`"other"`, "W/" + etag}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &overlayProviderFake{presentation: presentation}
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			for _, value := range tt.values {
+				req.Header.Add("If-None-Match", value)
+			}
+			res := httptest.NewRecorder()
+			newOverlayTestServer(provider).Handler().ServeHTTP(res, req)
+
+			if res.Code != http.StatusNotModified {
+				t.Fatalf("code=%d want=%d body=%s", res.Code, http.StatusNotModified, res.Body.String())
+			}
+			if res.Body.Len() != 0 {
+				t.Fatalf("304 body=%q want empty", res.Body.String())
+			}
+			if got := res.Header().Get("ETag"); got != etag {
+				t.Fatalf("304 ETag=%q want=%q", got, etag)
+			}
+			if got := res.Header().Get("Cache-Control"); got != "no-cache" {
+				t.Fatalf("304 Cache-Control=%q want=no-cache", got)
+			}
+		})
 	}
 }
 
