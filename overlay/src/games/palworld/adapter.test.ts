@@ -1,7 +1,21 @@
 import type { Snapshot, Timer, TimerTone } from '../../contracts/snapshot'
 import { describe, expect, it } from 'vitest'
 import { PALWORLD_DEFAULT_LAYOUT } from '../../core/layout'
+import type { GameAdapter } from '../types'
 import { palworldAdapter } from './adapter'
+
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2)
+    ? true
+    : false
+type Expect<Value extends true> = Value
+type DefaultLayoutIsReadonly = Equal<
+  Pick<GameAdapter, 'defaultLayout'>,
+  { -readonly [Key in 'defaultLayout']: GameAdapter[Key] }
+> extends true ? false : true
+
+const defaultLayoutIsReadonly: Expect<DefaultLayoutIsReadonly> = true
 
 function timer(tone: TimerTone): Timer {
   return {
@@ -28,6 +42,10 @@ function snapshot(tones: TimerTone[]): Snapshot {
 }
 
 describe('palworldAdapter', () => {
+  it('exposes the adapter default property as readonly', () => {
+    expect(defaultLayoutIsReadonly).toBe(true)
+  })
+
   it('describes Palworld and its platform process hints', () => {
     expect(palworldAdapter).toMatchObject({
       id: 'palworld',

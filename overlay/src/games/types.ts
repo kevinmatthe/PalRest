@@ -8,7 +8,7 @@ export interface GameAdapter {
     windows: string[]
     macos: string[]
   }
-  defaultLayout: LayoutProfile
+  readonly defaultLayout: LayoutProfile
   formatDuration(ms: number): string
   overallTone(snapshot: Snapshot): 'normal' | 'warning' | 'danger' | 'muted'
 }
