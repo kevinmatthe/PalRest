@@ -455,7 +455,7 @@ fn decode_strict_value(bytes: &[u8]) -> io::Result<Value> {
         .deserialize(&mut deserializer)
         .map_err(|error| {
             let message = error.to_string();
-            if message.contains("duplicate JSON key schema") {
+            if message.contains("duplicate JSON key ") {
                 unsupported(message)
             } else {
                 invalid_data(message)
@@ -1169,6 +1169,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_json_keys_at_every_depth_and_preserves_future_bytes() {
         let valid = serde_json::to_string(&config()).unwrap();
+        let future = valid.replacen(r#""schema":2"#, r#""schema":3"#, 1);
         let cases = [
             valid.replacen(r#""schema":2"#, r#""schema":3,"schema":2"#, 1),
             valid.replacen(r#""schema":2"#, r#""schema":2,"schema":3"#, 1),
@@ -1182,6 +1183,12 @@ mod tests {
                 r#""palworld":{"left":{"primary":"map","fallback":"player_badge"},"left""#,
                 1,
             ),
+            future.replacen(r#""locked":true"#, r#""locked":false,"locked":true"#, 1),
+            future.replacen(
+                r#""primary":"network.latency""#,
+                r#""primary":"duplicate.first","primary":"network.latency""#,
+                1,
+            ),
         ];
         for (index, bytes) in cases.into_iter().enumerate() {
             let dir = temp_dir(&format!("duplicate-json-{index}"));
@@ -1190,10 +1197,8 @@ mod tests {
                 load_from_path(&dir).is_err(),
                 "accepted duplicate case {index}"
             );
-            if index < 2 {
-                assert!(save_editable_to_path(&dir, &config()).is_err());
-                assert_eq!(fs::read_to_string(dir.join("config.json")).unwrap(), bytes);
-            }
+            assert!(save_editable_to_path(&dir, &config()).is_err());
+            assert_eq!(fs::read_to_string(dir.join("config.json")).unwrap(), bytes);
             fs::remove_dir_all(dir).unwrap();
         }
     }
