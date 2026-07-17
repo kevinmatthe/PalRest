@@ -207,6 +207,32 @@ describe('App window routing', () => {
     expect(oldSignal.aborted).toBe(true)
   })
 
+  it('uses the latest valid config event when stale bootstrap loading finishes', async () => {
+    let publishConfig!: (value: unknown) => void
+    const label = deferred<'overlay'>()
+    const loadedConfig = deferred<OverlayConfigV1 | null>()
+    const fetchSnapshot = vi.fn<DesktopBridge['fetchSnapshot']>(() => new Promise(() => {}))
+    const api = bridge({
+      currentWindowLabel: vi.fn(() => label.promise),
+      loadConfig: vi.fn(() => loadedConfig.promise),
+      fetchSnapshot,
+      onConfigChanged: vi.fn(async (handler) => { publishConfig = handler; return () => {} }),
+    })
+    render(<App bridge={api} />)
+    await waitFor(() => expect(api.onConfigChanged).toHaveBeenCalledTimes(1))
+
+    act(() => publishConfig({ ...config, baseUrl: 'https://replacement.test', userId: 'uid-2' }))
+    label.resolve('overlay')
+    loadedConfig.resolve(config)
+
+    await waitFor(() => expect(fetchSnapshot).toHaveBeenCalledWith(
+      { baseUrl: 'https://replacement.test', gameId: config.gameId, userId: 'uid-2' }, expect.any(AbortSignal),
+    ))
+    expect(fetchSnapshot).not.toHaveBeenCalledWith(
+      { baseUrl: config.baseUrl, gameId: config.gameId, userId: config.userId }, expect.any(AbortSignal),
+    )
+  })
+
   it('ignores invalid native config payloads', async () => {
     let publishConfig!: (value: unknown) => void
     const fetchSnapshot = vi.fn<DesktopBridge['fetchSnapshot']>(() => new Promise(() => {}))

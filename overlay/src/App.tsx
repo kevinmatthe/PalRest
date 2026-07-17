@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 import { OverlayBar } from './components/OverlayBar'
 import type { DesktopBridge } from './core/bridge'
@@ -62,6 +62,7 @@ export default function App({ bridge }: AppProps) {
   const [bootstrap, setBootstrap] = useState<Bootstrap>({ status: 'loading' })
   const [adjustMode, setAdjustMode] = useState(false)
   const [reselectSignal, setReselectSignal] = useState(0)
+  const latestConfig = useRef<OverlayConfigV1 | null>(null)
 
   useEffect(() => {
     let active = true
@@ -83,6 +84,7 @@ export default function App({ bridge }: AppProps) {
         if (!active) return
         const config = parseOverlayConfig(rawConfig)
         if (!config) return
+        latestConfig.current = config
         setBootstrap((current) => current.status === 'ready' && current.label === 'overlay'
           ? { ...current, config }
           : current)
@@ -104,8 +106,11 @@ export default function App({ bridge }: AppProps) {
         setBootstrap({ status: 'error' })
         return
       }
-      const config = rawConfig === null ? null : parseOverlayConfig(rawConfig)
-      if (rawConfig !== null && !config) {
+      const loadedConfig = rawConfig === null ? null : parseOverlayConfig(rawConfig)
+      const config = label === 'overlay' && latestConfig.current
+        ? latestConfig.current
+        : loadedConfig
+      if (rawConfig !== null && !loadedConfig && !config) {
         setBootstrap({ status: 'error' })
         return
       }

@@ -6,13 +6,30 @@ pub mod process;
 pub mod tray;
 
 #[cfg(any(feature = "native", test))]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+struct SaveConfigError {
+    persisted: bool,
+}
+
+#[cfg(any(feature = "native", test))]
+impl SaveConfigError {
+    fn persistence() -> Self {
+        Self { persisted: false }
+    }
+
+    fn sync() -> Self {
+        Self { persisted: true }
+    }
+}
+
+#[cfg(any(feature = "native", test))]
 fn config_error_is_recoverable(window_label: &str) -> bool {
     window_label == "settings"
 }
 
 #[cfg(test)]
 mod tests {
-    use super::config_error_is_recoverable;
+    use super::{SaveConfigError, config_error_is_recoverable};
 
     #[test]
     fn only_settings_can_recover_from_a_corrupt_config() {
@@ -20,11 +37,23 @@ mod tests {
         assert!(!config_error_is_recoverable("overlay"));
         assert!(!config_error_is_recoverable("unknown"));
     }
+
+    #[test]
+    fn save_errors_serialize_only_the_persistence_boundary() {
+        assert_eq!(
+            serde_json::to_value(SaveConfigError::persistence()).unwrap(),
+            serde_json::json!({ "persisted": false })
+        );
+        assert_eq!(
+            serde_json::to_value(SaveConfigError::sync()).unwrap(),
+            serde_json::json!({ "persisted": true })
+        );
+    }
 }
 
 #[cfg(feature = "native")]
 mod native {
-    use super::{config, http, lifecycle, platform, tray};
+    use super::{SaveConfigError, config, http, lifecycle, platform, tray};
     use tauri::{AppHandle, Emitter, Manager, State, Window, WindowEvent};
 
     fn config_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -46,11 +75,12 @@ mod native {
     }
 
     #[tauri::command]
-    fn save_config(app: AppHandle, config: config::OverlayConfig) -> Result<(), String> {
-        let saved = config::save_editable_and_load_from_path(&config_dir(&app)?, &config)
-            .map_err(|error| error.to_string())?;
+    fn save_config(app: AppHandle, config: config::OverlayConfig) -> Result<(), SaveConfigError> {
+        let directory = config_dir(&app).map_err(|_| SaveConfigError::persistence())?;
+        let saved = config::save_editable_and_load_from_path(&directory, &config)
+            .map_err(|_| SaveConfigError::persistence())?;
         app.emit_to("overlay", "overlay-config-changed", &saved)
-            .map_err(|error| error.to_string())
+            .map_err(|_| SaveConfigError::sync())
     }
 
     #[tauri::command]

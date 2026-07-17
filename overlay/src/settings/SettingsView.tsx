@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 
-import type { DesktopBridge, PlayerListItem } from '../core/bridge'
+import { configSaveWasPersisted, type DesktopBridge, type PlayerListItem } from '../core/bridge'
 import { buildOverlayConfig, normalizeBaseUrl, type OverlayConfigV1 } from '../core/config'
 import '../styles.css'
 
@@ -178,7 +178,8 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
       if (!mounted.current || generation !== saveGeneration.current) return
       setMessage({ tone: 'status', text: '设置已保存' })
       onSaved?.(config)
-    } catch {
+    } catch (error) {
+      if (configSaveWasPersisted(error)) persisted = true
       if (mounted.current && generation === saveGeneration.current) {
         setMessage({
           tone: 'error',

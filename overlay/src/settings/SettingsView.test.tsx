@@ -159,6 +159,23 @@ describe('SettingsView', () => {
     expect(onSaved).not.toHaveBeenCalled()
   })
 
+  it('reports native event sync failure as persisted without leaking details', async () => {
+    const api = bridge({
+      listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Player', account_name: '' }]),
+      saveConfig: vi.fn(async () => { throw { persisted: true, secret: 'native details' } }),
+    })
+    render(<SettingsView bridge={api} initialConfig={saved} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('设置已保存，但悬浮条状态同步失败')
+    expect(alert).not.toHaveTextContent(/native details|secret/)
+    expect(api.setAdjustmentMode).not.toHaveBeenCalled()
+  })
+
   it('invalidates a loaded player when the service changes and saves only after reloading', async () => {
     const api = bridge({
       listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Lamball', account_name: 'steam' }]),

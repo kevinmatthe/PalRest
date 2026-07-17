@@ -106,6 +106,24 @@ describe('native HTTP invoke gate', () => {
     expect(tauri.invoke).toHaveBeenCalledTimes(2)
     native.resolve({ status: 304 })
   })
+
+  it('maps a persisted native save rejection without leaking its raw value', async () => {
+    const nativeFailure = { persisted: true, secret: 'native details' }
+    tauri.invoke.mockRejectedValueOnce(nativeFailure)
+    const bridge = createDesktopBridge()
+    let caught: unknown
+
+    try {
+      await bridge.saveConfig({
+        schema: 1, baseUrl: 'https://palbox.test', gameId: 'palworld', userId: 'uid', scale: 1, locked: true,
+      })
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toMatchObject({ name: 'ConfigSaveError', persisted: true })
+    expect(caught).not.toBe(nativeFailure)
+    expect(String(caught)).not.toContain('native details')
+  })
 })
 
 describe('browser placeholder bridge', () => {

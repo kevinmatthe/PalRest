@@ -28,6 +28,21 @@ export type PlayerListItem = {
   account_name: string
 }
 
+export class ConfigSaveError extends Error {
+  readonly persisted: boolean
+
+  constructor(persisted: boolean) {
+    super(persisted ? 'configuration synchronization failed' : 'configuration save failed')
+    this.name = 'ConfigSaveError'
+    this.persisted = persisted
+  }
+}
+
+export function configSaveWasPersisted(error: unknown): boolean {
+  return typeof error === 'object' && error !== null &&
+    'persisted' in error && error.persisted === true
+}
+
 export interface DesktopBridge extends OverlayBridge {
   loadConfig(): Promise<OverlayConfigV1 | null>
   saveConfig(config: OverlayConfigV1): Promise<void>
@@ -104,7 +119,13 @@ function createTauriBridge(): DesktopBridge {
   return {
     currentWindowLabel: () => invoke('current_window_label'),
     loadConfig: () => invoke('load_config'),
-    saveConfig: (config) => invoke('save_config', { config }),
+    saveConfig: async (config) => {
+      try {
+        await invoke('save_config', { config })
+      } catch (error) {
+        throw new ConfigSaveError(configSaveWasPersisted(error))
+      }
+    },
     listPlayers: (baseUrl, signal) => invokeHttp('list_players', { baseUrl }, signal),
     setAdjustmentMode: (enabled) => invoke('set_adjustment_mode', { enabled }),
     fetchSnapshot: (request, signal) => invokeHttp('fetch_snapshot', { request }, signal),
