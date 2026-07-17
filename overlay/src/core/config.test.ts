@@ -73,6 +73,17 @@ describe('overlay config', () => {
     })
   })
 
+  it('preserves other game profiles while replacing the edited current-game profile', () => {
+    const otherLayout = cloneLayoutProfile(PALWORLD_DEFAULT_LAYOUT)
+    const edited = structuredClone(customLayout)
+    edited.slots[0].primary = 'edited.current'
+    expect(buildOverlayConfig({
+      baseUrl: 'https://palbox.test', userId: 'uid', scale: 1,
+      gameId: 'custom-game', layout: edited,
+      layouts: { palworld: otherLayout, 'custom-game': customLayout },
+    })?.layouts).toEqual({ palworld: otherLayout, 'custom-game': edited })
+  })
+
   it('uses the Palworld default when building without an edited profile', () => {
     expect(buildOverlayConfig({ baseUrl: 'https://palbox.test', userId: 'uid', scale: 1 }))
       .toMatchObject({ schema: 2, gameId: 'palworld', layouts: { palworld: PALWORLD_DEFAULT_LAYOUT } })
@@ -84,6 +95,30 @@ describe('overlay config', () => {
       primary: 'future.field-9_name', fallback: 'another.safe-field',
     }
     expect(parseOverlayConfig(input)?.layouts['custom-game'].slots[0]).toEqual(input.layouts['custom-game'].slots[0])
+  })
+
+  it('accepts 96-byte ASCII IDs and rejects 97-byte or Unicode IDs', () => {
+    const accepted = structuredClone(validV2)
+    accepted.layouts['custom-game'].slots[0].primary = `a${'b'.repeat(95)}`
+    expect(parseOverlayConfig(accepted)).not.toBeNull()
+
+    for (const id of [`a${'b'.repeat(96)}`, '字段.safe']) {
+      const rejected = structuredClone(validV2)
+      rejected.layouts['custom-game'].slots[0].primary = id
+      expect(parseOverlayConfig(rejected)).toBeNull()
+    }
+  })
+
+  it('rejects inherited and accessor-backed config data but accepts null-prototype own data', () => {
+    const inherited = Object.create(validV2) as unknown
+    expect(parseOverlayConfig(inherited)).toBeNull()
+
+    const accessor = { ...validV2 }
+    Object.defineProperty(accessor, 'userId', { enumerable: true, get: () => 'uid' })
+    expect(parseOverlayConfig(accessor)).toBeNull()
+
+    const ownData = Object.assign(Object.create(null) as Record<string, unknown>, validV2)
+    expect(parseOverlayConfig(ownData)).toEqual(validV2)
   })
 
   it.each([

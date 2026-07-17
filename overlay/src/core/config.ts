@@ -40,6 +40,7 @@ export type OverlayConfigDraft = {
   scale: string | number
   gameId?: string
   layout?: LayoutProfile
+  layouts?: Record<string, LayoutProfile>
   locked?: boolean
   displayId?: string
   x?: number
@@ -85,9 +86,16 @@ export function normalizeBaseUrl(input: unknown): string {
 }
 
 function record(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  try {
+    const prototype = Object.getPrototypeOf(value) as unknown
+    if (prototype !== Object.prototype && prototype !== null) return null
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    if (Object.values(descriptors).some((descriptor) => !Object.hasOwn(descriptor, 'value'))) return null
+    return value as Record<string, unknown>
+  } catch {
+    return null
+  }
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
@@ -180,7 +188,8 @@ function parseCommon(value: Record<string, unknown>): Omit<OverlayConfigV2, 'sch
 
 export function parseOverlayConfig(input: unknown): OverlayConfigV2 | null {
   const value = record(input)
-  if (!value) return null
+  if (!value || !['schema', 'baseUrl', 'gameId', 'userId', 'scale', 'locked']
+    .every((key) => Object.hasOwn(value, key))) return null
   const common = parseCommon(value)
   if (!common) return null
   if (value.schema === 1) {
@@ -192,7 +201,7 @@ export function parseOverlayConfig(input: unknown): OverlayConfigV2 | null {
       layouts: { palworld: cloneLayoutProfile(PALWORLD_DEFAULT_LAYOUT) },
     }
   }
-  if (value.schema !== 2 || !safeId(value.gameId)) return null
+  if (value.schema !== 2 || !safeId(value.gameId) || !Object.hasOwn(value, 'layouts')) return null
   const layouts = parseLayouts(value.layouts, value.gameId)
   if (!layouts) return null
   return { schema: 2, ...common, gameId: value.gameId, layouts }
@@ -201,8 +210,10 @@ export function parseOverlayConfig(input: unknown): OverlayConfigV2 | null {
 export function buildOverlayConfig(draft: OverlayConfigDraft): OverlayConfigV2 | null {
   const scale = typeof draft.scale === 'string' ? Number(draft.scale) : draft.scale
   const gameId = draft.gameId ?? 'palworld'
-  const layout = draft.layout ?? (gameId === 'palworld' ? cloneLayoutProfile(PALWORLD_DEFAULT_LAYOUT) : null)
+  const layout = draft.layout ?? draft.layouts?.[gameId] ??
+    (gameId === 'palworld' ? cloneLayoutProfile(PALWORLD_DEFAULT_LAYOUT) : null)
   if (!layout) return null
+  const layouts = { ...draft.layouts, [gameId]: layout }
   return parseOverlayConfig({
     schema: 2,
     baseUrl: draft.baseUrl,
@@ -213,6 +224,6 @@ export function buildOverlayConfig(draft: OverlayConfigDraft): OverlayConfigV2 |
     displayId: draft.displayId,
     x: draft.x,
     y: draft.y,
-    layouts: { [gameId]: layout },
+    layouts,
   })
 }

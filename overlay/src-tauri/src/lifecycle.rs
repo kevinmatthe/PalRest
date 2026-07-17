@@ -372,7 +372,7 @@ mod native {
     struct NativeExecutor<'a> {
         app: &'a AppHandle,
         overlay: tauri::WebviewWindow,
-        geometry_backup: Option<(std::path::PathBuf, Option<config::OverlayConfig>)>,
+        geometry_backup: Option<(std::path::PathBuf, Option<config::GeometryRollbackToken>)>,
     }
 
     impl LifecycleEffectExecutor for NativeExecutor<'_> {
