@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopBridge } from '../core/bridge'
 import type { OverlayConfigV1 } from '../core/config'
+import { cloneLayoutProfile, PALWORLD_DEFAULT_LAYOUT } from '../core/layout'
 import { SettingsView } from './SettingsView'
 
 afterEach(cleanup)
@@ -17,7 +18,8 @@ function bridge(overrides: Partial<DesktopBridge> = {}): DesktopBridge {
 }
 
 const saved: OverlayConfigV1 = {
-  schema: 1, baseUrl: 'https://palbox.test', gameId: 'palworld', userId: 'uid-2', scale: 1, locked: true,
+  schema: 2, baseUrl: 'https://palbox.test', gameId: 'palworld', userId: 'uid-2', scale: 1, locked: true,
+  layouts: { palworld: cloneLayoutProfile(PALWORLD_DEFAULT_LAYOUT) },
 }
 
 describe('SettingsView', () => {

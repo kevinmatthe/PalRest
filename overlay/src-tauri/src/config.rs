@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     io::{self, Write},
     path::Path,
@@ -9,6 +10,36 @@ use url::Url;
 
 const CONFIG_FILE: &str = "config.json";
 const TEMP_FILE: &str = "config.json.tmp";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SlotSelection {
+    pub primary: String,
+    pub fallback: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LeftSelection {
+    pub primary: String,
+    pub fallback: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProgressSelection {
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LayoutProfile {
+    pub left: LeftSelection,
+    pub slots: [SlotSelection; 4],
+    pub progress: ProgressSelection,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +56,38 @@ pub struct OverlayConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub y: Option<f64>,
     pub locked: bool,
+    pub layouts: BTreeMap<String, LayoutProfile>,
+}
+
+pub(crate) fn palworld_default_layout() -> LayoutProfile {
+    LayoutProfile {
+        left: LeftSelection {
+            primary: "map".into(),
+            fallback: "player_badge".into(),
+        },
+        slots: [
+            SlotSelection {
+                primary: "network.latency".into(),
+                fallback: "presence.last_online".into(),
+            },
+            SlotSelection {
+                primary: "activity.today".into(),
+                fallback: "activity.week".into(),
+            },
+            SlotSelection {
+                primary: "policy.strategy".into(),
+                fallback: "policy.enforcement".into(),
+            },
+            SlotSelection {
+                primary: "policy.period_end".into(),
+                fallback: "policy.remaining".into(),
+            },
+        ],
+        progress: ProgressSelection {
+            mode: "auto".into(),
+            field: Some("policy.cycle_used".into()),
+        },
+    }
 }
 
 fn invalid_data(message: impl Into<String>) -> io::Error {
@@ -33,6 +96,16 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
 
 fn unsupported(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::Unsupported, message.into())
+}
+
+fn is_safe_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 96
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes[1..].iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
 }
 
 pub(crate) fn parse_base_url(raw: &str) -> Result<Url, &'static str> {
@@ -74,13 +147,16 @@ pub(crate) fn parse_base_url(raw: &str) -> Result<Url, &'static str> {
 }
 
 fn validate(config: OverlayConfig) -> io::Result<OverlayConfig> {
-    if config.schema != 1 {
+    if config.schema != 2 {
         return Err(unsupported(format!(
             "unsupported config schema {}",
             config.schema
         )));
     }
-    if config.game_id != "palworld" || config.user_id.trim().is_empty() {
+    if !is_safe_id(&config.game_id)
+        || config.user_id.trim().is_empty()
+        || !config.layouts.contains_key(&config.game_id)
+    {
         return Err(invalid_data("invalid game or user ID"));
     }
     if !matches!(config.scale, 0.8 | 1.0 | 1.25)
@@ -98,6 +174,32 @@ fn validate(config: OverlayConfig) -> io::Result<OverlayConfig> {
         return Err(invalid_data("invalid display ID"));
     }
     parse_base_url(&config.base_url).map_err(invalid_data)?;
+    for (game_id, layout) in &config.layouts {
+        if !is_safe_id(game_id)
+            || !matches!(layout.left.primary.as_str(), "map" | "player_badge")
+            || !matches!(layout.left.fallback.as_str(), "map" | "player_badge")
+            || layout.left.primary == layout.left.fallback
+        {
+            return Err(invalid_data("invalid layout identity selection"));
+        }
+        for slot in &layout.slots {
+            if !is_safe_id(&slot.primary)
+                || !is_safe_id(&slot.fallback)
+                || slot.primary == slot.fallback
+            {
+                return Err(invalid_data("invalid layout slot"));
+            }
+        }
+        let progress_valid = match layout.progress.mode.as_str() {
+            "auto" => layout.progress.field.as_deref().is_none_or(is_safe_id),
+            "field" => layout.progress.field.as_deref().is_some_and(is_safe_id),
+            "hidden" => layout.progress.field.is_none(),
+            _ => false,
+        };
+        if !progress_valid {
+            return Err(invalid_data("invalid progress selection"));
+        }
+    }
     Ok(config)
 }
 
@@ -109,9 +211,20 @@ fn decode(bytes: &[u8]) -> io::Result<OverlayConfig> {
         .ok_or_else(|| invalid_data("config must be an object"))?;
     match object.get("schema") {
         None => {
-            object.insert("schema".into(), Value::from(1));
+            object.insert("schema".into(), Value::from(2));
+            object.insert(
+                "layouts".into(),
+                serde_json::json!({ "palworld": palworld_default_layout() }),
+            );
         }
-        Some(Value::Number(number)) if number.as_u64() == Some(1) => {}
+        Some(Value::Number(number)) if number.as_u64() == Some(1) => {
+            object.insert("schema".into(), Value::from(2));
+            object.insert(
+                "layouts".into(),
+                serde_json::json!({ "palworld": palworld_default_layout() }),
+            );
+        }
+        Some(Value::Number(number)) if number.as_u64() == Some(2) => {}
         Some(_) => return Err(unsupported("unsupported config schema")),
     }
     let parsed = serde_json::from_value(value).map_err(|error| invalid_data(error.to_string()))?;
@@ -157,6 +270,7 @@ pub fn save_editable_to_path(config_dir: &Path, incoming: &OverlayConfig) -> io:
             current.user_id = incoming.user_id.clone();
             current.scale = incoming.scale;
             current.locked = incoming.locked;
+            current.layouts = incoming.layouts.clone();
             current
         }
         Ok(None) => incoming.clone(),
@@ -216,14 +330,77 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        OverlayConfig, load_from_path, restore_geometry_to_path, save_editable_and_load_from_path,
+        LayoutProfile, LeftSelection, OverlayConfig, ProgressSelection, SlotSelection,
+        load_from_path, restore_geometry_to_path, save_editable_and_load_from_path,
         save_editable_to_path, save_geometry_to_path, save_to_path,
     };
-    use std::fs;
+    use std::{collections::BTreeMap, fs};
+
+    fn default_layout() -> LayoutProfile {
+        LayoutProfile {
+            left: LeftSelection {
+                primary: "map".into(),
+                fallback: "player_badge".into(),
+            },
+            slots: [
+                SlotSelection {
+                    primary: "network.latency".into(),
+                    fallback: "presence.last_online".into(),
+                },
+                SlotSelection {
+                    primary: "activity.today".into(),
+                    fallback: "activity.week".into(),
+                },
+                SlotSelection {
+                    primary: "policy.strategy".into(),
+                    fallback: "policy.enforcement".into(),
+                },
+                SlotSelection {
+                    primary: "policy.period_end".into(),
+                    fallback: "policy.remaining".into(),
+                },
+            ],
+            progress: ProgressSelection {
+                mode: "auto".into(),
+                field: Some("policy.cycle_used".into()),
+            },
+        }
+    }
+
+    fn custom_layout() -> LayoutProfile {
+        LayoutProfile {
+            left: LeftSelection {
+                primary: "player_badge".into(),
+                fallback: "map".into(),
+            },
+            slots: [
+                SlotSelection {
+                    primary: "custom.alpha".into(),
+                    fallback: "custom.beta".into(),
+                },
+                SlotSelection {
+                    primary: "network.latency".into(),
+                    fallback: "presence.last_online".into(),
+                },
+                SlotSelection {
+                    primary: "activity.week".into(),
+                    fallback: "activity.today".into(),
+                },
+                SlotSelection {
+                    primary: "policy.remaining".into(),
+                    fallback: "policy.period_end".into(),
+                },
+            ],
+            progress: ProgressSelection {
+                mode: "field".into(),
+                field: Some("custom.progress".into()),
+            },
+        }
+    }
 
     fn config() -> OverlayConfig {
         OverlayConfig {
-            schema: 1,
+            schema: 2,
             base_url: "https://palbox.test:8212".into(),
             game_id: "palworld".into(),
             user_id: "steam_42".into(),
@@ -232,6 +409,7 @@ mod tests {
             x: Some(12.5),
             y: Some(34.5),
             locked: true,
+            layouts: BTreeMap::from([("palworld".into(), default_layout())]),
         }
     }
 
@@ -249,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_schema_one_config() {
+    fn round_trips_schema_two_config() {
         let dir = temp_dir("round-trip");
         save_to_path(&dir, &config()).unwrap();
         assert_eq!(load_from_path(&dir).unwrap(), Some(config()));
@@ -265,15 +443,38 @@ mod tests {
         )
         .unwrap();
         let loaded = load_from_path(&dir).unwrap().unwrap();
-        assert_eq!(loaded.schema, 1);
+        assert_eq!(loaded.schema, 2);
         assert_eq!(loaded.user_id, "uid");
+        assert_eq!(
+            loaded.layouts,
+            BTreeMap::from([("palworld".into(), default_layout())])
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn migrates_schema_one_and_preserves_connection_uid_scale_lock_and_geometry() {
+        let dir = temp_dir("schema-one-migration");
+        fs::write(
+            dir.join("config.json"),
+            r#"{"schema":1,"baseUrl":"https://palbox.test:9443","gameId":"palworld","userId":" uid ","scale":1.25,"displayId":"screen-1","x":-12.5,"y":8.0,"locked":false}"#,
+        ).unwrap();
+        let loaded = load_from_path(&dir).unwrap().unwrap();
+        assert_eq!(loaded.schema, 2);
+        assert_eq!(loaded.base_url, "https://palbox.test:9443");
+        assert_eq!(loaded.user_id, " uid ");
+        assert_eq!(loaded.scale, 1.25);
+        assert_eq!(loaded.display_id.as_deref(), Some("screen-1"));
+        assert_eq!((loaded.x, loaded.y), (Some(-12.5), Some(8.0)));
+        assert!(!loaded.locked);
+        assert_eq!(loaded.layouts["palworld"], default_layout());
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn rejects_unknown_future_schema() {
         let dir = temp_dir("future");
-        fs::write(dir.join("config.json"), r#"{"schema":2}"#).unwrap();
+        fs::write(dir.join("config.json"), r#"{"schema":3}"#).unwrap();
         assert!(
             load_from_path(&dir)
                 .unwrap_err()
@@ -328,6 +529,7 @@ mod tests {
         incoming.x = Some(999.0);
         incoming.y = Some(999.0);
         incoming.locked = false;
+        incoming.layouts.insert("palworld".into(), custom_layout());
         save_editable_to_path(&dir, &incoming).unwrap();
         let merged = load_from_path(&dir).unwrap().unwrap();
         assert_eq!(merged.base_url, incoming.base_url);
@@ -336,6 +538,7 @@ mod tests {
         assert_eq!(merged.display_id, native.display_id);
         assert_eq!(merged.x, native.x);
         assert_eq!(merged.y, native.y);
+        assert_eq!(merged.layouts, incoming.layouts);
         assert!(!merged.locked);
         fs::remove_dir_all(dir).unwrap();
     }
@@ -390,6 +593,47 @@ mod tests {
     }
 
     #[test]
+    fn geometry_only_save_preserves_layouts() {
+        let dir = temp_dir("geometry-layout");
+        let mut original = config();
+        original.layouts.insert("palworld".into(), custom_layout());
+        save_to_path(&dir, &original).unwrap();
+        save_geometry_to_path(&dir, Some("new-display".into()), 80.0, 90.0).unwrap();
+        assert_eq!(
+            load_from_path(&dir).unwrap().unwrap().layouts,
+            original.layouts
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn schema_two_round_trip_preserves_unknown_safe_ids() {
+        let dir = temp_dir("schema-two-custom");
+        let mut value = config();
+        value.game_id = "custom-game".into();
+        value.layouts = BTreeMap::from([("custom-game".into(), custom_layout())]);
+        save_to_path(&dir, &value).unwrap();
+        assert_eq!(load_from_path(&dir).unwrap(), Some(value));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_layout_shapes_and_ids() {
+        let cases = [
+            r#"{"schema":2,"baseUrl":"https://palbox.test","gameId":"Bad Game","userId":"uid","scale":1,"locked":true,"layouts":{}}"#,
+            r#"{"schema":2,"baseUrl":"https://palbox.test","gameId":"palworld","userId":"uid","scale":1,"locked":true,"layouts":{"Bad Game":{"left":{"primary":"map","fallback":"player_badge"},"slots":[],"progress":{"mode":"hidden"}}}}"#,
+            r#"{"schema":2,"baseUrl":"https://palbox.test","gameId":"palworld","userId":"uid","scale":1,"locked":true,"layouts":{"palworld":{"left":{"primary":"map","fallback":"map"},"slots":[{"primary":"a","fallback":"b"},{"primary":"c","fallback":"d"},{"primary":"e","fallback":"f"},{"primary":"g","fallback":"h"}],"progress":{"mode":"hidden"}}}}"#,
+            r#"{"schema":2,"baseUrl":"https://palbox.test","gameId":"palworld","userId":"uid","scale":1,"locked":true,"layouts":{"palworld":{"left":{"primary":"map","fallback":"player_badge"},"slots":[{"primary":"same","fallback":"same"},{"primary":"c","fallback":"d"},{"primary":"e","fallback":"f"},{"primary":"g","fallback":"h"}],"progress":{"mode":"field"}}}}"#,
+        ];
+        for (index, bytes) in cases.iter().enumerate() {
+            let dir = temp_dir(&format!("invalid-layout-{index}"));
+            fs::write(dir.join("config.json"), bytes).unwrap();
+            assert!(load_from_path(&dir).is_err(), "accepted case {index}");
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
     fn capability_allows_only_required_event_and_drag_operations() {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
@@ -425,7 +669,7 @@ mod tests {
     #[test]
     fn editable_save_never_overwrites_a_future_schema() {
         let dir = temp_dir("editable-future");
-        let future = br#"{"schema":2,"future":"value"}"#;
+        let future = br#"{"schema":3,"future":"value"}"#;
         fs::write(dir.join("config.json"), future).unwrap();
 
         assert!(save_editable_to_path(&dir, &config()).is_err());

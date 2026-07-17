@@ -8,10 +8,10 @@ pub(super) fn detected_palworld_user_id() -> Option<String> {
 mod tests {
     use super::detected_palworld_user_id;
     use crate::{
-        config::{OverlayConfig, load_from_path, save_to_path},
+        config::{OverlayConfig, load_from_path, palworld_default_layout, save_to_path},
         platform::matches_palworld_process,
     };
-    use std::fs;
+    use std::{collections::BTreeMap, fs};
 
     #[test]
     fn automatic_identity_discovery_is_never_attempted() {
@@ -43,7 +43,7 @@ mod tests {
                 .as_nanos()
         ));
         let config = OverlayConfig {
-            schema: 1,
+            schema: 2,
             base_url: "https://palbox.test".into(),
             game_id: "palworld".into(),
             user_id: "steam_manual_42".into(),
@@ -52,6 +52,7 @@ mod tests {
             x: Some(10.0),
             y: Some(20.0),
             locked: true,
+            layouts: BTreeMap::from([("palworld".into(), palworld_default_layout())]),
         };
 
         save_to_path(&dir, &config).unwrap();
