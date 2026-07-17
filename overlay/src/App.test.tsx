@@ -233,6 +233,28 @@ describe('App window routing', () => {
     )
   })
 
+  it('waits for config listener registration before loading bootstrap config', async () => {
+    const registration = deferred<() => void>()
+    const api = bridge({
+      onConfigChanged: vi.fn(() => registration.promise),
+      loadConfig: vi.fn(async () => config),
+      fetchSnapshot: vi.fn<DesktopBridge['fetchSnapshot']>(() => new Promise(() => {})),
+    })
+    render(<App bridge={api} />)
+    await waitFor(() => expect(api.onConfigChanged).toHaveBeenCalledTimes(1))
+
+    expect(api.loadConfig).not.toHaveBeenCalled()
+    expect(api.currentWindowLabel).not.toHaveBeenCalled()
+
+    registration.resolve(() => {})
+
+    await waitFor(() => expect(api.loadConfig).toHaveBeenCalledTimes(1))
+    expect(api.currentWindowLabel).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(api.fetchSnapshot).toHaveBeenCalledWith(
+      { baseUrl: config.baseUrl, gameId: config.gameId, userId: config.userId }, expect.any(AbortSignal),
+    ))
+  })
+
   it('ignores invalid native config payloads', async () => {
     let publishConfig!: (value: unknown) => void
     const fetchSnapshot = vi.fn<DesktopBridge['fetchSnapshot']>(() => new Promise(() => {}))

@@ -63,9 +63,11 @@ export default function App({ bridge }: AppProps) {
   const [adjustMode, setAdjustMode] = useState(false)
   const [reselectSignal, setReselectSignal] = useState(0)
   const latestConfig = useRef<OverlayConfigV1 | null>(null)
+  const configListenerReady = useRef<Promise<void> | null>(null)
 
   useEffect(() => {
     let active = true
+    let markConfigListenerReady = () => {}
     const cleanups: Array<() => void> = []
     const attach = (subscription: Promise<() => void>) => {
       void subscription.then((unlisten) => {
@@ -80,7 +82,9 @@ export default function App({ bridge }: AppProps) {
       attach(bridge.onReselectPlayer(() => { if (active) setReselectSignal((value) => value + 1) }))
     }
     if (bridge.onConfigChanged) {
-      attach(bridge.onConfigChanged((rawConfig) => {
+      latestConfig.current = null
+      configListenerReady.current = new Promise((resolve) => { markConfigListenerReady = resolve })
+      const registration = bridge.onConfigChanged((rawConfig) => {
         if (!active) return
         const config = parseOverlayConfig(rawConfig)
         if (!config) return
@@ -88,56 +92,69 @@ export default function App({ bridge }: AppProps) {
         setBootstrap((current) => current.status === 'ready' && current.label === 'overlay'
           ? { ...current, config }
           : current)
-      }))
+      })
+      attach(registration)
+      void registration.then(markConfigListenerReady, markConfigListenerReady)
+    } else {
+      configListenerReady.current = null
     }
     return () => {
       active = false
+      markConfigListenerReady()
       cleanups.splice(0).forEach((unlisten) => unlisten())
     }
   }, [bridge])
 
   useEffect(() => {
     let active = true
-    const labelPromise = bridge.currentWindowLabel()
-    const configPromise = bridge.loadConfig()
-    void Promise.all([labelPromise, configPromise]).then(async ([label, rawConfig]) => {
-      if (!active) return
-      if (label !== 'overlay' && label !== 'settings') {
-        setBootstrap({ status: 'error' })
-        return
-      }
-      const loadedConfig = rawConfig === null ? null : parseOverlayConfig(rawConfig)
-      const config = label === 'overlay' && latestConfig.current
-        ? latestConfig.current
-        : loadedConfig
-      if (rawConfig !== null && !loadedConfig && !config) {
-        setBootstrap({ status: 'error' })
-        return
-      }
-      setAdjustMode(config ? !config.locked : false)
-      let platform: string | undefined
-      let detectedUserId: string | null | undefined
-      const currentPlatform = bridge.currentPlatform
-      const detectedPalworldUserId = bridge.detectedPalworldUserId
-      if (label === 'settings' && currentPlatform) {
-        try {
-          platform = await currentPlatform()
-          if (!active) return
-          if (platform === 'windows' && detectedPalworldUserId) {
-            try {
-              detectedUserId = await detectedPalworldUserId()
-            } catch {
-              detectedUserId = null
-            }
-          }
-        } catch {
-          platform = undefined
+    const initialise = async () => {
+      try {
+        const registration = configListenerReady.current
+        if (registration) await registration
+        if (!active) return
+        const [label, rawConfig] = await Promise.all([
+          bridge.currentWindowLabel(),
+          bridge.loadConfig(),
+        ])
+        if (!active) return
+        if (label !== 'overlay' && label !== 'settings') {
+          setBootstrap({ status: 'error' })
+          return
         }
+        const loadedConfig = rawConfig === null ? null : parseOverlayConfig(rawConfig)
+        const config = label === 'overlay' && latestConfig.current
+          ? latestConfig.current
+          : loadedConfig
+        if (rawConfig !== null && !loadedConfig && !config) {
+          setBootstrap({ status: 'error' })
+          return
+        }
+        setAdjustMode(config ? !config.locked : false)
+        let platform: string | undefined
+        let detectedUserId: string | null | undefined
+        const currentPlatform = bridge.currentPlatform
+        const detectedPalworldUserId = bridge.detectedPalworldUserId
+        if (label === 'settings' && currentPlatform) {
+          try {
+            platform = await currentPlatform()
+            if (!active) return
+            if (platform === 'windows' && detectedPalworldUserId) {
+              try {
+                detectedUserId = await detectedPalworldUserId()
+              } catch {
+                detectedUserId = null
+              }
+            }
+          } catch {
+            platform = undefined
+          }
+        }
+        if (active) setBootstrap({ status: 'ready', label, config, platform, detectedUserId })
+      } catch {
+        if (active) setBootstrap({ status: 'error' })
       }
-      if (active) setBootstrap({ status: 'ready', label, config, platform, detectedUserId })
-    }).catch(() => {
-      if (active) setBootstrap({ status: 'error' })
-    })
+    }
+    void initialise()
     return () => { active = false }
   }, [bridge])
 
