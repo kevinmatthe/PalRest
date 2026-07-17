@@ -117,11 +117,11 @@ pub fn initial_window_effects(
             effects.push(LifecycleEffect::RestorePosition(x, y));
         }
     }
+    effects.push(LifecycleEffect::SetFocusable(!locked));
+    effects.push(LifecycleEffect::SetClickThrough(locked));
     if overlay_visible {
         effects.push(LifecycleEffect::Show);
     }
-    effects.push(LifecycleEffect::SetFocusable(!locked));
-    effects.push(LifecycleEffect::SetClickThrough(locked));
     effects
 }
 
@@ -154,7 +154,12 @@ pub fn configured_visibility_event(
 
 #[must_use]
 pub fn monitor_visibility_event(platform: &str, detected: bool) -> Option<LifecycleEvent> {
-    (platform != "macos").then_some(LifecycleEvent::GameDetected(detected))
+    (platform == "windows").then_some(LifecycleEvent::GameDetected(detected))
+}
+
+#[must_use]
+pub fn process_monitor_enabled(platform: &str) -> bool {
+    platform == "windows"
 }
 
 #[must_use]
@@ -293,7 +298,7 @@ mod native {
     use super::{
         LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState, MonitorBounds,
         SCAN_INTERVAL, execute_effects, focus_rollback_effects, initial_lifecycle_state,
-        initial_window_effects, monitor_visibility_event, plan_transition,
+        initial_window_effects, monitor_visibility_event, plan_transition, process_monitor_enabled,
     };
     use crate::{config, process::ProcessMonitor};
     use std::sync::Mutex;
@@ -507,20 +512,21 @@ mod native {
     }
 
     pub fn start_monitor(app: AppHandle) {
+        let platform = current_platform();
+        if !process_monitor_enabled(platform) {
+            return;
+        }
         std::thread::spawn(move || {
             let mut processes = ProcessMonitor::default();
-            let platform = current_platform();
             loop {
                 let scan_started = std::time::Instant::now();
                 let lifecycle = app.state::<LifecycleController>();
                 if lifecycle.quitting() {
                     break;
                 }
-                if platform != "macos" {
-                    let detected = processes.palworld_is_running(platform);
-                    if let Some(event) = monitor_visibility_event(platform, detected) {
-                        let _ = lifecycle.transition(&app, event);
-                    }
+                let detected = processes.palworld_is_running(platform);
+                if let Some(event) = monitor_visibility_event(platform, detected) {
+                    let _ = lifecycle.transition(&app, event);
                 }
                 std::thread::sleep(SCAN_INTERVAL.saturating_sub(scan_started.elapsed()));
             }
@@ -537,7 +543,7 @@ mod tests {
         CloseAction, LifecycleEffect, LifecycleEffectExecutor, LifecycleEvent, LifecycleState,
         MonitorBounds, SCAN_INTERVAL, close_action, configured_visibility_event, execute_effects,
         focus_rollback_effects, initial_lifecycle_state, initial_window_effects,
-        monitor_visibility_event, plan_transition, reduce,
+        monitor_visibility_event, plan_transition, process_monitor_enabled, reduce,
     };
     use std::time::Duration;
 
@@ -781,13 +787,15 @@ mod tests {
 
     #[test]
     fn configured_macos_initial_effects_show_without_focus_and_preserve_locking() {
-        let effects = initial_window_effects(None, None, true, true, &[]);
+        let monitors = [MonitorBounds::new(0, 0, 1920, 1080)];
+        let effects = initial_window_effects(Some(12.0), Some(34.0), true, true, &monitors);
         assert_eq!(
             effects,
             vec![
-                LifecycleEffect::Show,
+                LifecycleEffect::RestorePosition(12, 34),
                 LifecycleEffect::SetFocusable(false),
                 LifecycleEffect::SetClickThrough(true),
+                LifecycleEffect::Show,
             ]
         );
         assert!(!effects.contains(&LifecycleEffect::Focus));
@@ -818,9 +826,10 @@ mod tests {
     }
 
     #[test]
-    fn background_monitor_never_drives_macos_visibility() {
+    fn background_monitor_never_drives_visibility_outside_windows() {
         assert_eq!(monitor_visibility_event("macos", false), None);
         assert_eq!(monitor_visibility_event("macos", true), None);
+        assert_eq!(monitor_visibility_event("linux", true), None);
     }
 
     #[test]
@@ -833,6 +842,13 @@ mod tests {
             monitor_visibility_event("windows", true),
             Some(LifecycleEvent::GameDetected(true))
         );
+    }
+
+    #[test]
+    fn process_monitor_thread_is_only_enabled_on_windows() {
+        assert!(process_monitor_enabled("windows"));
+        assert!(!process_monitor_enabled("macos"));
+        assert!(!process_monitor_enabled("linux"));
     }
 
     #[test]
