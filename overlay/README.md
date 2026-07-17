@@ -63,7 +63,7 @@ npm --prefix overlay run tauri -- build --bundles app,dmg
 - 格式为 `overlay-v<overlay/package.json 中的版本>`，例如当前版本 `overlay-v0.1.0`。
 - 标签提交属于仓库默认分支的历史。
 - Go、Overlay 前端及两个原生平台测试全部通过。
-- macOS 构建通过受保护的 `overlay-release` environment，并具备完整 Apple secrets。
+- macOS 默认发布明确标记为 `development-unsigned` 的 ad-hoc 产物，不要求 Apple 账号。
 
 确认版本号、默认分支和 environment 后执行：
 
@@ -72,11 +72,11 @@ git tag overlay-v0.1.0
 git push origin overlay-v0.1.0
 ```
 
-CI 会构建 NSIS/MSI、签名并公证 macOS app/DMG，验证签名与公证票据，然后自动创建同名 GitHub Release。Windows 产物在配置 Windows 代码签名前仍属于未签名安装包；macOS secrets 缺失或任一测试失败时不会创建 Release。
+CI 会构建 NSIS/MSI 和 macOS app/DMG，然后自动创建同名 GitHub Release。默认上传的 macOS 文件名包含 `development-unsigned`，首次运行需要用户在系统设置中明确允许；不需要 Apple Developer 账号。Windows 产物在配置 Windows 代码签名前同样属于未签名安装包。任一必需测试或平台构建失败时不会创建 Release。
 
 ## macOS 正式签名与公证
 
-GitHub 的受保护 environment `overlay-release` 必须配置以下 6 个 secrets：
+正式 Apple 签名是可选升级项。默认不需要创建 `overlay-release` environment，也不需要任何 Apple secrets。只有希望发布签名、公证版本时，才设置仓库变量 `ENABLE_APPLE_SIGNING=true`，创建受保护 environment `overlay-release`，并配置以下 6 个 secrets：
 
 - `APPLE_CERTIFICATE`
 - `APPLE_CERTIFICATE_PASSWORD`
@@ -85,7 +85,7 @@ GitHub 的受保护 environment `overlay-release` 必须配置以下 6 个 secre
 - `APPLE_PASSWORD`
 - `APPLE_TEAM_ID`
 
-正式交付有两条受保护路径：推送与 `overlay/package.json` 版本一致的 `overlay-v*` 标签，会由 `.github/workflows/overlay-release.yml` 自动创建 GitHub Release；需要只生成签名 artifact 而不创建 Release 时，可从仓库默认分支手动运行 `.github/workflows/overlay.yml`。两条路径都会在自动化测试成功后进入 `overlay-release` environment；缺少任一 secret 就明确失败，不生成或上传冒充正式交付的产物。environment 应启用所需审批与分支保护。
+未设置 `ENABLE_APPLE_SIGNING` 时，推送与 `overlay/package.json` 版本一致的 `overlay-v*` 标签会直接发布未签名 macOS 版本。设置为 `true` 后，标签流程会在 unsigned 构建通过后进入 `overlay-release` environment，重新构建签名、公证版本；缺少任一 secret 或签名验证失败都会阻止 Release。需要只生成签名 artifact 而不创建 Release 时，也可从仓库默认分支手动运行 `.github/workflows/overlay.yml`。environment 应启用所需审批与分支保护。
 
 ## Windows/macOS 实机 smoke checklist
 
