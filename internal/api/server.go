@@ -140,6 +140,7 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 	mux.HandleFunc("GET /api/v1/guild-bases", server.getGuildBases)
 	mux.HandleFunc("GET /api/v1/live/positions", server.getLivePositions)
 	mux.HandleFunc("GET /api/v1/overlay/snapshot", server.getOverlaySnapshot)
+	mux.HandleFunc("GET /api/v1/overlay/presentation", server.getOverlayPresentation)
 	mux.HandleFunc("GET /api/v1/analytics/summary", server.getAnalyticsSummary)
 	mux.HandleFunc("GET /api/v1/analytics/activity", server.getAnalyticsActivity)
 	mux.HandleFunc("GET /api/v1/analytics/behavior", server.getAnalyticsBehavior)

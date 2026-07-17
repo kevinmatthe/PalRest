@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,11 +22,13 @@ import (
 )
 
 type overlayProviderFake struct {
-	snapshot overlay.Snapshot
-	err      error
-	calls    int
-	gameID   string
-	userID   string
+	snapshot          overlay.Snapshot
+	presentation      overlay.Presentation
+	err               error
+	calls             int
+	presentationCalls int
+	gameID            string
+	userID            string
 }
 
 func (f *overlayProviderFake) Snapshot(_ context.Context, gameID, userID string) (overlay.Snapshot, error) {
@@ -33,6 +36,13 @@ func (f *overlayProviderFake) Snapshot(_ context.Context, gameID, userID string)
 	f.gameID = gameID
 	f.userID = userID
 	return f.snapshot, f.err
+}
+
+func (f *overlayProviderFake) Presentation(_ context.Context, gameID, userID string) (overlay.Presentation, error) {
+	f.presentationCalls++
+	f.gameID = gameID
+	f.userID = userID
+	return f.presentation, f.err
 }
 
 func overlayTestSnapshot() overlay.Snapshot {
@@ -47,6 +57,24 @@ func overlayTestSnapshot() overlay.Snapshot {
 		Identity:     overlay.Identity{DisplayName: "Kevin", AccountName: "safe-account"},
 		Latency:      &overlay.Latency{Milliseconds: 23.5},
 		Timers:       []overlay.Timer{{ID: "today", Label: "Today", ValueMS: 1234, Semantic: "duration", Tone: "normal"}},
+	}
+}
+
+func overlayTestPresentation() overlay.Presentation {
+	progress := 0.5
+	return overlay.Presentation{
+		Schema:       overlay.PresentationSchemaV1,
+		GameID:       "palworld",
+		UserID:       "steam_1",
+		ObservedAt:   time.Date(2026, 7, 16, 1, 2, 3, 0, time.UTC),
+		FreshUntil:   time.Date(2026, 7, 16, 1, 7, 3, 0, time.UTC),
+		SourceStatus: "online",
+		Identity:     overlay.Identity{DisplayName: "Kevin", AccountName: "safe-account"},
+		Fields: []overlay.DisplayField{
+			overlay.StringDisplayField("presence.status", "Status", "status", "online", "normal", nil),
+			overlay.NumberDisplayField("activity.today", "Today", "duration_ms", 1234, "normal", &progress),
+			overlay.UnavailableDisplayField("network.latency", "Latency", "latency_ms", "muted"),
+		},
 	}
 }
 
@@ -84,6 +112,170 @@ func requireOverlayError(t *testing.T, res *httptest.ResponseRecorder, status in
 	}
 	if body.Error.Code != code {
 		t.Fatalf("error code=%q want=%q body=%s", body.Error.Code, code, res.Body.String())
+	}
+}
+
+func TestOverlayPresentationReturnsCanonicalJSONForOnePlayer(t *testing.T) {
+	presentation := overlayTestPresentation()
+	provider := &overlayProviderFake{presentation: presentation}
+	res := overlayRequest(t, newOverlayTestServer(provider), "/api/v1/overlay/presentation?game_id=%20palworld%20&user_id=%20steam_1%20", nil)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d want=%d body=%s", res.Code, http.StatusOK, res.Body.String())
+	}
+	payload, err := json.Marshal(presentation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := res.Body.Bytes(), append(payload, '\n'); !bytes.Equal(got, want) {
+		t.Fatalf("body=%q want=%q", got, want)
+	}
+	if got := res.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("Content-Type=%q", got)
+	}
+	if provider.presentationCalls != 1 || provider.gameID != "palworld" || provider.userID != "steam_1" {
+		t.Fatalf("presentation calls=%d gameID=%q userID=%q", provider.presentationCalls, provider.gameID, provider.userID)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("snapshot calls=%d want=0", provider.calls)
+	}
+}
+
+func TestOverlayPresentationRejectsInvalidQueryBeforeProvider(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawQuery string
+	}{
+		{name: "missing game", rawQuery: "user_id=u"},
+		{name: "missing user", rawQuery: "game_id=palworld"},
+		{name: "duplicate game", rawQuery: "game_id=palworld&game_id=x&user_id=u"},
+		{name: "duplicate user", rawQuery: "game_id=palworld&user_id=u&user_id=v"},
+		{name: "long game", rawQuery: "game_id=" + strings.Repeat("g", 65) + "&user_id=u"},
+		{name: "long user", rawQuery: "game_id=palworld&user_id=" + strings.Repeat("u", 257)},
+		{name: "blank game", rawQuery: "game_id=%20%09&user_id=u"},
+		{name: "blank user", rawQuery: "game_id=palworld&user_id=%20%09"},
+		{name: "control character", rawQuery: "game_id=palworld&user_id=u%00x"},
+		{name: "format character", rawQuery: "game_id=palworld&user_id=u%E2%80%AEx"},
+		{name: "invalid percent encoding", rawQuery: "game_id=palworld&user_id=%ZZ"},
+		{name: "raw semicolon", rawQuery: "game_id=palworld;user_id=u"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &overlayProviderFake{}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/overlay/presentation", nil)
+			req.URL.RawQuery = tt.rawQuery
+			res := httptest.NewRecorder()
+			newOverlayTestServer(provider).Handler().ServeHTTP(res, req)
+			requireOverlayError(t, res, http.StatusBadRequest, "invalid_request")
+			if provider.presentationCalls != 0 {
+				t.Fatalf("presentation calls=%d want=0", provider.presentationCalls)
+			}
+		})
+	}
+}
+
+func TestOverlayPresentationMapsProviderErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{name: "unsupported game", err: overlay.ErrGameNotSupported, status: http.StatusNotFound, code: "game_not_supported"},
+		{name: "missing player", err: store.ErrNotFound, status: http.StatusNotFound, code: "player_not_found"},
+		{name: "invalid request", err: overlay.ErrInvalidRequest, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "generic failure", err: errors.New("database password=secret"), status: http.StatusServiceUnavailable, code: "presentation_unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &overlayProviderFake{err: tt.err}
+			res := overlayRequest(t, newOverlayTestServer(provider), "/api/v1/overlay/presentation?game_id=palworld&user_id=steam_1", nil)
+			requireOverlayError(t, res, tt.status, tt.code)
+			if provider.presentationCalls != 1 {
+				t.Fatalf("presentation calls=%d want=1", provider.presentationCalls)
+			}
+			if strings.Contains(res.Body.String(), "password=secret") {
+				t.Fatalf("response leaked provider error: %s", res.Body.String())
+			}
+		})
+	}
+}
+
+func TestOverlayPresentationFailsSafelyWithoutProviderOrWithInvalidOutput(t *testing.T) {
+	t.Run("without provider", func(t *testing.T) {
+		res := overlayRequest(t, newOverlayTestServer(nil), "/api/v1/overlay/presentation?game_id=palworld&user_id=steam_1", nil)
+		requireOverlayError(t, res, http.StatusServiceUnavailable, "presentation_unavailable")
+	})
+
+	t.Run("invalid provider output", func(t *testing.T) {
+		provider := &overlayProviderFake{presentation: overlay.Presentation{
+			Schema: overlay.PresentationSchemaV1,
+			Fields: []overlay.DisplayField{{ID: "private_samples", Label: "leak", Kind: "text", Available: true, Value: json.RawMessage(`"secret"`), Tone: "unsupported"}},
+		}}
+		res := overlayRequest(t, newOverlayTestServer(provider), "/api/v1/overlay/presentation?game_id=palworld&user_id=steam_1", nil)
+		requireOverlayError(t, res, http.StatusServiceUnavailable, "presentation_unavailable")
+		if bytes.Contains(bytes.ToLower(res.Body.Bytes()), []byte("private_samples")) || bytes.Contains(bytes.ToLower(res.Body.Bytes()), []byte("secret")) {
+			t.Fatalf("response leaked invalid provider output: %s", res.Body.String())
+		}
+	})
+}
+
+func TestOverlayPresentationReturnsETagAndSupportsConditionalGET(t *testing.T) {
+	presentation := overlayTestPresentation()
+	provider := &overlayProviderFake{presentation: presentation}
+	server := newOverlayTestServer(provider)
+	payload, err := json.Marshal(presentation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	wantETag := `"` + hex.EncodeToString(digest[:]) + `"`
+
+	res := overlayRequest(t, server, "/api/v1/overlay/presentation?game_id=palworld&user_id=steam_1", nil)
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	if got := res.Header().Get("ETag"); got != wantETag {
+		t.Fatalf("ETag=%q want=%q", got, wantETag)
+	}
+	if got := res.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("Cache-Control=%q want=no-cache", got)
+	}
+
+	notModified := overlayRequest(t, server, "/api/v1/overlay/presentation?game_id=palworld&user_id=steam_1", map[string]string{"If-None-Match": wantETag})
+	if notModified.Code != http.StatusNotModified {
+		t.Fatalf("code=%d body=%s", notModified.Code, notModified.Body.String())
+	}
+	if notModified.Body.Len() != 0 {
+		t.Fatalf("304 body=%q want empty", notModified.Body.String())
+	}
+	if got := notModified.Header().Get("ETag"); got != wantETag {
+		t.Fatalf("304 ETag=%q want=%q", got, wantETag)
+	}
+	if got := notModified.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("304 Cache-Control=%q want=no-cache", got)
+	}
+	if provider.presentationCalls != 2 {
+		t.Fatalf("presentation calls=%d want=2", provider.presentationCalls)
+	}
+
+	nonExact := overlayRequest(t, server, "/api/v1/overlay/presentation?game_id=palworld&user_id=steam_1", map[string]string{"If-None-Match": wantETag + ", " + wantETag})
+	if nonExact.Code != http.StatusOK {
+		t.Fatalf("non-exact If-None-Match code=%d want=200", nonExact.Code)
+	}
+}
+
+func TestOverlayPresentationDoesNotExposeForbiddenKeys(t *testing.T) {
+	provider := &overlayProviderFake{presentation: overlayTestPresentation()}
+	res := overlayRequest(t, newOverlayTestServer(provider), "/api/v1/overlay/presentation?game_id=palworld&user_id=steam_1", nil)
+	if res.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+	body := bytes.ToLower(res.Body.Bytes())
+	for _, forbidden := range []string{"ip", "password", "credential", "private_samples", "warnings"} {
+		if bytes.Contains(body, []byte(forbidden)) {
+			t.Fatalf("presentation leaked forbidden key %q", forbidden)
+		}
 	}
 }
 
@@ -351,6 +543,14 @@ func TestOverlayHandlerMatchesCanonicalFixture(t *testing.T) {
 	fixtureBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "overlay", "palworld_snapshot_v1.json"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	var compactFixture bytes.Buffer
+	if err := json.Compact(&compactFixture, fixtureBytes); err != nil {
+		t.Fatalf("compact canonical fixture: %v", err)
+	}
+	compactFixture.WriteByte('\n')
+	if got, want := res.Body.Bytes(), compactFixture.Bytes(); !bytes.Equal(got, want) {
+		t.Fatalf("legacy snapshot bytes changed\ngot:  %q\nwant: %q", got, want)
 	}
 	var got, want any
 	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {

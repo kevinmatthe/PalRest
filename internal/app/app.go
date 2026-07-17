@@ -71,6 +71,12 @@ func (c *overlayPolicyCoordinator) Snapshot(ctx context.Context, gameID, userID 
 	return c.provider.Snapshot(ctx, gameID, userID)
 }
 
+func (c *overlayPolicyCoordinator) Presentation(ctx context.Context, gameID, userID string) (overlay.Presentation, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.provider.Presentation(ctx, gameID, userID)
+}
+
 func (c *overlayPolicyCoordinator) ApplyPolicyTimezone(update func() error, location *time.Location) error {
 	if location == nil {
 		return errors.New("overlay policy location is nil")

@@ -19,6 +19,7 @@ import (
 
 type OverlayProvider interface {
 	Snapshot(context.Context, string, string) (overlay.Snapshot, error)
+	Presentation(context.Context, string, string) (overlay.Presentation, error)
 }
 
 type overlayOption struct {
@@ -84,6 +85,64 @@ func (s *Server) getOverlaySnapshot(w http.ResponseWriter, r *http.Request) {
 	payload, err := json.Marshal(snapshot)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "snapshot_unavailable", "overlay snapshot is unavailable")
+		return
+	}
+	digest := sha256.Sum256(payload)
+	etag := `"` + hex.EncodeToString(digest[:]) + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(append(payload, '\n'))
+}
+
+func (s *Server) getOverlayPresentation(w http.ResponseWriter, r *http.Request) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "query parameters are invalid")
+		return
+	}
+	gameID, ok := overlayQueryValue(query, "game_id", 64)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request", "game_id must be provided exactly once and be valid")
+		return
+	}
+	userID, ok := overlayQueryValue(query, "user_id", 256)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request", "user_id must be provided exactly once and be valid")
+		return
+	}
+	if s.overlayProvider == nil {
+		writeError(w, http.StatusServiceUnavailable, "presentation_unavailable", "overlay presentation is unavailable")
+		return
+	}
+
+	presentation, err := s.overlayProvider.Presentation(r.Context(), gameID, userID)
+	if err != nil {
+		switch {
+		case errors.Is(err, overlay.ErrInvalidRequest):
+			writeError(w, http.StatusBadRequest, "invalid_request", "invalid overlay presentation request")
+		case errors.Is(err, overlay.ErrGameNotSupported):
+			writeError(w, http.StatusNotFound, "game_not_supported", "game is not supported")
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "player_not_found", "player was not found")
+		default:
+			writeError(w, http.StatusServiceUnavailable, "presentation_unavailable", "overlay presentation is unavailable")
+		}
+		return
+	}
+	if err := overlay.ValidatePresentation(presentation); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "presentation_unavailable", "overlay presentation is unavailable")
+		return
+	}
+
+	payload, err := json.Marshal(presentation)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "presentation_unavailable", "overlay presentation is unavailable")
 		return
 	}
 	digest := sha256.Sum256(payload)

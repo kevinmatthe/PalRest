@@ -158,6 +158,22 @@ func TestOverlayPolicyCoordinatorKeepsLocationWhenBaseUpdateFails(t *testing.T) 
 	}
 }
 
+func TestOverlayPolicyCoordinatorDelegatesPresentation(t *testing.T) {
+	daily := &overlayCoordinatorDaily{called: make(chan struct{}, 1)}
+	provider := overlay.NewPalworldProvider(overlayCoordinatorSnapshots{}, daily, overlayCoordinatorStatus{}, time.UTC, time.Minute)
+	coordinator := newOverlayPolicyCoordinator(overlayCoordinatorUpdaterFake{apply: func(update func() error, _ *time.Location) error {
+		return update()
+	}}, provider)
+
+	presentation, err := coordinator.Presentation(t.Context(), "palworld", "player-one")
+	if err != nil {
+		t.Fatalf("Presentation() error=%v", err)
+	}
+	if presentation.Schema != overlay.PresentationSchemaV1 || presentation.GameID != "palworld" || presentation.UserID != "player-one" {
+		t.Fatalf("presentation identity=%q/%q schema=%q", presentation.GameID, presentation.UserID, presentation.Schema)
+	}
+}
+
 func appConfig(baseURL, dbPath, listen string, enabled bool) string {
 	return fmt.Sprintf(`
 version: 1
