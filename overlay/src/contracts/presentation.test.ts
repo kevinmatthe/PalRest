@@ -115,6 +115,17 @@ describe('parsePresentation', () => {
     expect(input).toEqual(original)
   })
 
+  it('accepts ordinary and null-prototype records but rejects custom prototypes', () => {
+    const nullPrototypeField = field()
+    Object.setPrototypeOf(nullPrototypeField, null)
+    expect(parsePresentation(presentation([nullPrototypeField])).fields).toHaveLength(1)
+
+    const customPrototypeField = field()
+    Object.setPrototypeOf(customPrototypeField, { inherited: true })
+    expect(() => parsePresentation(presentation([customPrototypeField])))
+      .toThrow(/plain object/)
+  })
+
   it('accepts every finite duration and latency number allowed by the protocol', () => {
     const parsed = parsePresentation(presentation([
       field({ id: 'activity.today', kind: 'duration_ms', value: 1.5 }),
@@ -164,6 +175,17 @@ describe('parsePresentation', () => {
     expect(() => parsePresentation(presentation([
       field({ id: 'presence.last_online', kind: 'timestamp', value }),
     ]))).toThrow(/RFC3339/)
+  })
+
+  it('validates RFC3339 year zero with Gregorian leap-year rules', () => {
+    const leapYearZero = presentation()
+    leapYearZero.observed_at = '0000-02-29T00:00:00Z'
+    expect(parsePresentation(leapYearZero).observed_at)
+      .toBe('0000-02-29T00:00:00Z')
+
+    const nonLeapYearOne = presentation()
+    nonLeapYearOne.observed_at = '0001-02-29T00:00:00Z'
+    expect(() => parsePresentation(nonLeapYearOne)).toThrow(/RFC3339/)
   })
 
   it.each([

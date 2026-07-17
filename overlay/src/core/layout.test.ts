@@ -130,6 +130,21 @@ describe('layout field resolution', () => {
       progress: { mode: 'auto', field: 'policy.cycle_used' },
     })
   })
+
+  it('deep-freezes the exported Palworld default template', () => {
+    const original = structuredClone(PALWORLD_DEFAULT_LAYOUT)
+
+    expect(Object.isFrozen(PALWORLD_DEFAULT_LAYOUT)).toBe(true)
+    expect(Object.isFrozen(PALWORLD_DEFAULT_LAYOUT.left)).toBe(true)
+    expect(Object.isFrozen(PALWORLD_DEFAULT_LAYOUT.slots)).toBe(true)
+    expect(PALWORLD_DEFAULT_LAYOUT.slots.every(Object.isFrozen)).toBe(true)
+    expect(Object.isFrozen(PALWORLD_DEFAULT_LAYOUT.progress)).toBe(true)
+
+    Reflect.set(PALWORLD_DEFAULT_LAYOUT.left, 'primary', 'player_badge')
+    Reflect.set(PALWORLD_DEFAULT_LAYOUT.slots[0], 'primary', 'changed.field')
+    Reflect.set(PALWORLD_DEFAULT_LAYOUT.progress, 'field', 'changed.progress')
+    expect(PALWORLD_DEFAULT_LAYOUT).toEqual(original)
+  })
 })
 
 describe('resolveProgress', () => {

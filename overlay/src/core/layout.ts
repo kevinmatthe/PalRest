@@ -18,15 +18,41 @@ export type LayoutProfile = {
   progress: ProgressSelection
 }
 
-export const PALWORLD_DEFAULT_LAYOUT: LayoutProfile = {
-  left: { primary: 'map', fallback: 'player_badge' },
-  slots: [
-    { primary: 'network.latency', fallback: 'presence.last_online' },
-    { primary: 'activity.today', fallback: 'activity.week' },
-    { primary: 'policy.strategy', fallback: 'policy.enforcement' },
-    { primary: 'policy.period_end', fallback: 'policy.remaining' },
-  ],
-  progress: { mode: 'auto', field: 'policy.cycle_used' },
+export type ReadonlyLayoutProfile = {
+  readonly left: Readonly<LeftSelection>
+  readonly slots: readonly [
+    Readonly<SlotSelection>,
+    Readonly<SlotSelection>,
+    Readonly<SlotSelection>,
+    Readonly<SlotSelection>,
+  ]
+  readonly progress: Readonly<ProgressSelection>
+}
+
+export const PALWORLD_DEFAULT_LAYOUT: ReadonlyLayoutProfile = Object.freeze({
+  left: Object.freeze({ primary: 'map', fallback: 'player_badge' }),
+  slots: Object.freeze([
+    Object.freeze({ primary: 'network.latency', fallback: 'presence.last_online' }),
+    Object.freeze({ primary: 'activity.today', fallback: 'activity.week' }),
+    Object.freeze({ primary: 'policy.strategy', fallback: 'policy.enforcement' }),
+    Object.freeze({ primary: 'policy.period_end', fallback: 'policy.remaining' }),
+  ] as const),
+  progress: Object.freeze({ mode: 'auto', field: 'policy.cycle_used' }),
+})
+
+export function cloneLayoutProfile(layout: ReadonlyLayoutProfile): LayoutProfile {
+  const progress: ProgressSelection = { mode: layout.progress.mode }
+  if (layout.progress.field !== undefined) progress.field = layout.progress.field
+  return {
+    left: { ...layout.left },
+    slots: [
+      { ...layout.slots[0] },
+      { ...layout.slots[1] },
+      { ...layout.slots[2] },
+      { ...layout.slots[3] },
+    ],
+    progress,
+  }
 }
 
 export interface ResolvedSlot {

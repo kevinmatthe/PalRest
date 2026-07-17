@@ -40,6 +40,24 @@ describe('palworldAdapter', () => {
     })
   })
 
+  it('returns an isolated editable copy of the default layout on every read', () => {
+    const first = palworldAdapter.defaultLayout
+    const second = palworldAdapter.defaultLayout
+
+    expect(first).toEqual(PALWORLD_DEFAULT_LAYOUT)
+    expect(first).not.toBe(second)
+    expect(first.left).not.toBe(second.left)
+    expect(first.slots).not.toBe(second.slots)
+    expect(first.slots[0]).not.toBe(second.slots[0])
+    expect(first.progress).not.toBe(second.progress)
+
+    first.left.primary = 'player_badge'
+    first.slots[0].primary = 'changed.field'
+    first.progress.field = 'changed.progress'
+
+    expect(palworldAdapter.defaultLayout).toEqual(PALWORLD_DEFAULT_LAYOUT)
+  })
+
   it.each([
     [0, '0分钟'],
     [29_999, '0分钟'],

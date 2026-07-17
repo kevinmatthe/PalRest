@@ -78,12 +78,14 @@ const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|
 const SAFE_FIELD_ID = /^[a-z0-9][a-z0-9._-]{0,95}$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
 }
 
 function record(value: unknown, path: string): Record<string, unknown> {
   if (!isRecord(value)) {
-    throw new Error(`${path} must be an object`)
+    throw new Error(`${path} must be a plain object`)
   }
   return value
 }
@@ -134,7 +136,22 @@ function rfc3339(value: unknown, path: string): string {
   const yearNumber = Number(year)
   const monthNumber = Number(month)
   const dayNumber = Number(day)
-  const daysInMonth = new Date(Date.UTC(yearNumber, monthNumber, 0)).getUTCDate()
+  const leapYear = yearNumber % 4 === 0 &&
+    (yearNumber % 100 !== 0 || yearNumber % 400 === 0)
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ][monthNumber - 1] ?? 0
   if (
     monthNumber < 1 || monthNumber > 12 || dayNumber < 1 || dayNumber > daysInMonth ||
     Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59 ||
