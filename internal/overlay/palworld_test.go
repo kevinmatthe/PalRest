@@ -2,14 +2,150 @@ package overlay
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kevinmatt/palworld-playtime-guard/internal/domain"
 	"github.com/kevinmatt/palworld-playtime-guard/internal/store"
 )
+
+var palworldPresentationFieldIDs = []string{
+	"identity.account", "identity.uid", "identity.level",
+	"presence.status", "presence.last_online",
+	"network.latency", "location.coordinates",
+	"activity.today", "activity.week",
+	"policy.strategy", "policy.cycle_used", "policy.remaining",
+	"policy.period_end", "policy.enforcement",
+}
+
+func TestPalworldProviderBuildsPresentationFieldCatalog(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 10, 0, time.UTC)
+	lastOnline := now.Add(-time.Hour)
+	guard := &fakeSnapshotSource{snapshot: domain.PlayerSnapshot{
+		Player: domain.Player{UserID: "steam_1", Name: "Keeper", AccountName: "account_1", Level: 42, LastOnline: lastOnline, Ping: 38.5, LocationX: 187.25, LocationY: -64.5},
+		Policy: domain.ResolvedPolicy{Enabled: true, Strategy: "fixed_window", WarningBefore: []time.Duration{45 * time.Minute}},
+		Period: domain.Period{End: now.Add(30 * time.Minute)}, Used: 90 * time.Minute, Remaining: 30 * time.Minute,
+		Enforcement: domain.EnforcementState{Status: "pending"}, Online: true,
+	}}
+	daily := &fakeDailySource{rows: []store.DailyActivity{{Date: "2026-07-16", Observed: 30 * time.Minute}}}
+	p := NewPalworldProvider(guard, daily, fakeStatusSource{domain.PollStatus{LastSuccess: now}}, time.UTC, 15*time.Second)
+	p.now = func() time.Time { return now }
+
+	got, err := p.Presentation(t.Context(), "palworld", " steam_1 ")
+	if err != nil {
+		t.Fatalf("Presentation() error = %v", err)
+	}
+	if got.Schema != PresentationSchemaV1 || got.SourceStatus != "online" || got.Map == nil {
+		t.Fatalf("presentation header = %#v", got)
+	}
+	if len(got.Fields) != len(palworldPresentationFieldIDs) {
+		t.Fatalf("field count = %d, want %d", len(got.Fields), len(palworldPresentationFieldIDs))
+	}
+	for i, want := range palworldPresentationFieldIDs {
+		if got.Fields[i].ID != want {
+			t.Errorf("Fields[%d].ID = %q, want %q", i, got.Fields[i].ID, want)
+		}
+	}
+	assertDisplayField(t, got.Fields, "identity.account", "text", true, "account_1", "normal")
+	assertDisplayField(t, got.Fields, "identity.uid", "text", true, "steam_1", "normal")
+	assertDisplayField(t, got.Fields, "identity.level", "integer", true, float64(42), "normal")
+	assertDisplayField(t, got.Fields, "presence.status", "status", true, "online", "normal")
+	assertDisplayField(t, got.Fields, "presence.last_online", "timestamp", true, lastOnline.Format(time.RFC3339Nano), "muted")
+	assertDisplayField(t, got.Fields, "network.latency", "latency_ms", true, 38.5, "normal")
+	assertDisplayField(t, got.Fields, "activity.today", "duration_ms", true, float64((30 * time.Minute).Milliseconds()), "normal")
+	assertDisplayField(t, got.Fields, "policy.strategy", "text", true, "Fixed window", "normal")
+	assertDisplayField(t, got.Fields, "policy.enforcement", "status", true, "Pending", "warning")
+	remaining := displayFieldByID(t, got.Fields, "policy.remaining")
+	if remaining.Tone != "warning" || remaining.Progress == nil || *remaining.Progress != 0.25 {
+		t.Errorf("policy.remaining = %#v", remaining)
+	}
+	if err := ValidatePresentation(got); err != nil {
+		t.Fatalf("ValidatePresentation() error = %v", err)
+	}
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"ip", "password", "credential", "private_samples", "warnings", "revision", "attempts"} {
+		if strings.Contains(strings.ToLower(string(data)), forbidden) {
+			t.Errorf("presentation leaked forbidden data %q: %s", forbidden, data)
+		}
+	}
+}
+
+func TestPalworldPresentationAvailabilityAndPolicyStates(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name              string
+		snapshot          domain.PlayerSnapshot
+		lastSuccess       time.Time
+		wantSource        string
+		wantPresence      string
+		wantPolicy        bool
+		wantRemaining     string
+		wantRemainingMS   int64
+		wantRemainingTone string
+		wantEnforcement   string
+		wantEnforceTone   string
+	}{
+		{name: "offline normal", snapshot: domain.PlayerSnapshot{Player: domain.Player{LastOnline: now.Add(-time.Hour)}, Policy: domain.ResolvedPolicy{Enabled: true, Strategy: "credit"}, Period: domain.Period{End: now.Add(time.Hour)}, Remaining: 2 * time.Hour}, lastSuccess: now, wantSource: "offline", wantPresence: "offline", wantPolicy: true, wantRemaining: "Available credit", wantRemainingMS: (2 * time.Hour).Milliseconds(), wantRemainingTone: "normal", wantEnforcement: "Inactive", wantEnforceTone: "normal"},
+		{name: "unknown stale danger", snapshot: domain.PlayerSnapshot{Online: true, Policy: domain.ResolvedPolicy{Enabled: true, Strategy: "fixed_window"}, Period: domain.Period{End: now.Add(time.Hour)}, Remaining: 0, Enforcement: domain.EnforcementState{Status: "failure"}}, lastSuccess: now.Add(-time.Minute), wantSource: "unknown", wantPresence: "unknown", wantPolicy: true, wantRemaining: "Remaining", wantRemainingTone: "danger", wantEnforcement: "Failed", wantEnforceTone: "danger"},
+		{name: "disabled", snapshot: domain.PlayerSnapshot{Policy: domain.ResolvedPolicy{Enabled: false, Strategy: "fixed_window"}}, lastSuccess: now, wantSource: "offline", wantPresence: "offline"},
+		{name: "exempt", snapshot: domain.PlayerSnapshot{Policy: domain.ResolvedPolicy{Enabled: true, Exempt: true, Strategy: "fixed_window"}}, lastSuccess: now, wantSource: "offline", wantPresence: "offline"},
+		{name: "cooldown rest", snapshot: domain.PlayerSnapshot{Policy: domain.ResolvedPolicy{Enabled: true, Strategy: "cooldown"}, Period: domain.Period{End: now.Add(15 * time.Minute)}, Used: 30 * time.Minute, Remaining: 0}, lastSuccess: now, wantSource: "offline", wantPresence: "offline", wantPolicy: true, wantRemaining: "Rest remaining", wantRemainingMS: (15 * time.Minute).Milliseconds(), wantRemainingTone: "danger", wantEnforcement: "Inactive", wantEnforceTone: "normal"},
+		{name: "enforced success", snapshot: domain.PlayerSnapshot{Online: true, Policy: domain.ResolvedPolicy{Enabled: true, Strategy: "fixed_window"}, Period: domain.Period{End: now.Add(time.Hour)}, Remaining: -time.Minute, Enforcement: domain.EnforcementState{Status: "success"}}, lastSuccess: now, wantSource: "online", wantPresence: "online", wantPolicy: true, wantRemaining: "Remaining", wantRemainingMS: (-time.Minute).Milliseconds(), wantRemainingTone: "danger", wantEnforcement: "Enforced", wantEnforceTone: "danger"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewPalworldProvider(&fakeSnapshotSource{snapshot: tt.snapshot}, &fakeDailySource{}, fakeStatusSource{domain.PollStatus{LastSuccess: tt.lastSuccess}}, time.UTC, 30*time.Second)
+			p.now = func() time.Time { return now }
+			got, err := p.Presentation(t.Context(), "palworld", "u")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.SourceStatus != tt.wantSource {
+				t.Errorf("SourceStatus = %q, want %q", got.SourceStatus, tt.wantSource)
+			}
+			presenceTone := "normal"
+			if tt.wantPresence == "unknown" {
+				presenceTone = "muted"
+			}
+			assertDisplayField(t, got.Fields, "presence.status", "status", true, tt.wantPresence, presenceTone)
+			for _, id := range []string{"network.latency", "location.coordinates"} {
+				if field := displayFieldByID(t, got.Fields, id); field.Available != (tt.wantSource == "online") {
+					t.Errorf("%s available = %v", id, field.Available)
+				}
+			}
+			for _, id := range []string{"policy.strategy", "policy.cycle_used", "policy.remaining", "policy.period_end", "policy.enforcement"} {
+				field := displayFieldByID(t, got.Fields, id)
+				if field.Available != tt.wantPolicy {
+					t.Errorf("%s available = %v, want %v", id, field.Available, tt.wantPolicy)
+				}
+				if !field.Available && (len(field.Value) != 0 || field.Progress != nil) {
+					t.Errorf("unavailable %s carries value/progress: %#v", id, field)
+				}
+			}
+			if tt.wantPolicy {
+				remaining := displayFieldByID(t, got.Fields, "policy.remaining")
+				if remaining.Label != tt.wantRemaining || remaining.Tone != tt.wantRemainingTone {
+					t.Errorf("policy.remaining = %#v", remaining)
+				}
+				if gotMS := decodeFieldValue[float64](t, remaining); int64(gotMS) != tt.wantRemainingMS {
+					t.Errorf("remaining value = %v, want %d", gotMS, tt.wantRemainingMS)
+				}
+				assertDisplayField(t, got.Fields, "policy.enforcement", "status", true, tt.wantEnforcement, tt.wantEnforceTone)
+			}
+			if err := ValidatePresentation(got); err != nil {
+				t.Errorf("ValidatePresentation() error = %v", err)
+			}
+		})
+	}
+}
 
 type fakeSnapshotSource struct {
 	snapshot domain.PlayerSnapshot
@@ -418,4 +554,42 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func displayFieldByID(t *testing.T, fields []DisplayField, id string) DisplayField {
+	t.Helper()
+	for _, field := range fields {
+		if field.ID == id {
+			return field
+		}
+	}
+	t.Fatalf("display field %q not found in %#v", id, fields)
+	return DisplayField{}
+}
+
+func assertDisplayField(t *testing.T, fields []DisplayField, id, kind string, available bool, wantValue any, tone string) DisplayField {
+	t.Helper()
+	field := displayFieldByID(t, fields, id)
+	if field.Kind != kind || field.Available != available || field.Tone != tone {
+		t.Errorf("display field %q = %#v, want kind=%q available=%v tone=%q", id, field, kind, available, tone)
+	}
+	if available {
+		var gotValue any
+		if err := json.Unmarshal(field.Value, &gotValue); err != nil {
+			t.Fatalf("decode field %q value: %v", id, err)
+		}
+		if !reflect.DeepEqual(gotValue, wantValue) {
+			t.Errorf("display field %q value = %#v, want %#v", id, gotValue, wantValue)
+		}
+	}
+	return field
+}
+
+func decodeFieldValue[T any](t *testing.T, field DisplayField) T {
+	t.Helper()
+	var value T
+	if err := json.Unmarshal(field.Value, &value); err != nil {
+		t.Fatalf("decode field %q value: %v", field.ID, err)
+	}
+	return value
 }

@@ -20,6 +20,7 @@ var (
 
 type Provider interface {
 	Snapshot(ctx context.Context, gameID, userID string) (Snapshot, error)
+	Presentation(ctx context.Context, gameID, userID string) (Presentation, error)
 }
 
 type SnapshotSource interface {
@@ -81,17 +82,47 @@ func NewPalworldProvider(s SnapshotSource, d DailySource, status StatusSource, l
 }
 
 func (p *PalworldProvider) Snapshot(ctx context.Context, gameID, userID string) (Snapshot, error) {
+	view, err := p.palworldView(ctx, gameID, userID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return view.snapshot(), nil
+}
+
+func (p *PalworldProvider) Presentation(ctx context.Context, gameID, userID string) (Presentation, error) {
+	view, err := p.palworldView(ctx, gameID, userID)
+	if err != nil {
+		return Presentation{}, err
+	}
+	return view.presentation(), nil
+}
+
+type palworldView struct {
+	userID        string
+	now           time.Time
+	guard         domain.PlayerSnapshot
+	identity      Identity
+	observedAt    time.Time
+	freshUntil    time.Time
+	sourceStatus  string
+	todayObserved time.Duration
+	weekObserved  time.Duration
+	latency       *Latency
+	mapPosition   *MapPosition
+}
+
+func (p *PalworldProvider) palworldView(ctx context.Context, gameID, userID string) (palworldView, error) {
 	if gameID != "palworld" {
-		return Snapshot{}, fmt.Errorf("%w: %q", ErrGameNotSupported, gameID)
+		return palworldView{}, fmt.Errorf("%w: %q", ErrGameNotSupported, gameID)
 	}
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
-		return Snapshot{}, fmt.Errorf("%w: user ID is empty", ErrInvalidRequest)
+		return palworldView{}, fmt.Errorf("%w: user ID is empty", ErrInvalidRequest)
 	}
 
 	guardSnapshot, err := p.snapshots.Snapshot(ctx, userID)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("palworld guard snapshot: %w", err)
+		return palworldView{}, fmt.Errorf("palworld guard snapshot: %w", err)
 	}
 
 	now := p.now()
@@ -104,7 +135,7 @@ func (p *PalworldProvider) Snapshot(ctx context.Context, gameID, userID string) 
 	tomorrow := localNow.AddDate(0, 0, 1)
 	daily, err := p.daily.PlayerDailyActivity(ctx, userID, dateString(monday), dateString(tomorrow))
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("palworld daily activity: %w", err)
+		return palworldView{}, fmt.Errorf("palworld daily activity: %w", err)
 	}
 
 	var todayObserved, weekObserved time.Duration
@@ -115,46 +146,39 @@ func (p *PalworldProvider) Snapshot(ctx context.Context, gameID, userID string) 
 		}
 	}
 
-	snapshot := Snapshot{
-		Schema:       SchemaV1,
-		GameID:       "palworld",
-		UserID:       userID,
-		Capabilities: []string{"identity", "timers"},
-		Identity:     playerIdentity(guardSnapshot.Player, userID),
-		Timers: []Timer{
-			durationTimer("today_observed", "Today observed", todayObserved, "normal", nil),
-			durationTimer("week_observed", "Week observed", weekObserved, "normal", nil),
-		},
+	view := palworldView{
+		userID:        userID,
+		now:           now,
+		guard:         guardSnapshot,
+		identity:      playerIdentity(guardSnapshot.Player, userID),
+		todayObserved: todayObserved,
+		weekObserved:  weekObserved,
 	}
 
 	status := p.status.Status()
-	snapshot.ObservedAt = status.LastSuccess
+	view.observedAt = status.LastSuccess
 	fresh := false
 	if !status.LastSuccess.IsZero() {
-		snapshot.FreshUntil = status.LastSuccess.Add(p.maxGap)
-		fresh = !now.After(snapshot.FreshUntil)
+		view.freshUntil = status.LastSuccess.Add(p.maxGap)
+		fresh = !now.After(view.freshUntil)
 	}
 	if fresh {
 		if guardSnapshot.Online {
-			snapshot.SourceStatus = "online"
+			view.sourceStatus = "online"
 		} else {
-			snapshot.SourceStatus = "offline"
+			view.sourceStatus = "offline"
 		}
 	} else {
-		snapshot.SourceStatus = "unknown"
-	}
-
-	if guardSnapshot.Policy.Enabled && !guardSnapshot.Policy.Exempt {
-		snapshot.Timers = append(snapshot.Timers, policyTimers(guardSnapshot, now)...)
+		view.sourceStatus = "unknown"
 	}
 
 	if fresh && guardSnapshot.Online {
 		player := guardSnapshot.Player
 		if finite(player.Ping) && player.Ping >= 0 {
-			snapshot.Latency = &Latency{Milliseconds: player.Ping}
+			view.latency = &Latency{Milliseconds: player.Ping}
 		}
 		if finite(player.LocationX) && finite(player.LocationY) {
-			snapshot.Map = &MapPosition{
+			view.mapPosition = &MapPosition{
 				X:          player.LocationX,
 				Y:          player.LocationY,
 				Projection: "palworld_world_v1",
@@ -163,8 +187,157 @@ func (p *PalworldProvider) Snapshot(ctx context.Context, gameID, userID string) 
 			}
 		}
 	}
+	return view, nil
+}
+
+func (view palworldView) snapshot() Snapshot {
+	snapshot := Snapshot{
+		Schema:       SchemaV1,
+		GameID:       "palworld",
+		UserID:       view.userID,
+		ObservedAt:   view.observedAt,
+		FreshUntil:   view.freshUntil,
+		SourceStatus: view.sourceStatus,
+		Identity:     view.identity,
+		Latency:      view.latency,
+		Timers: []Timer{
+			durationTimer("today_observed", "Today observed", view.todayObserved, "normal", nil),
+			durationTimer("week_observed", "Week observed", view.weekObserved, "normal", nil),
+		},
+		Map: view.mapPosition,
+	}
+	if view.guard.Policy.Enabled && !view.guard.Policy.Exempt {
+		snapshot.Timers = append(snapshot.Timers, policyTimers(view.guard, view.now)...)
+	}
 	snapshot.Capabilities = snapshotCapabilities(snapshot)
-	return snapshot, nil
+	return snapshot
+}
+
+func (view palworldView) presentation() Presentation {
+	player := view.guard.Player
+	accountName := strings.TrimSpace(player.AccountName)
+	fields := make([]DisplayField, 0, 14)
+	if accountName == "" {
+		fields = append(fields, UnavailableDisplayField("identity.account", "Account", "text", "muted"))
+	} else {
+		fields = append(fields, StringDisplayField("identity.account", "Account", "text", accountName, "normal", nil))
+	}
+	fields = append(fields, StringDisplayField("identity.uid", "UID", "text", view.userID, "normal", nil))
+	if player.Level > 0 {
+		fields = append(fields, NumberDisplayField("identity.level", "Level", "integer", float64(player.Level), "normal", nil))
+	} else {
+		fields = append(fields, UnavailableDisplayField("identity.level", "Level", "integer", "muted"))
+	}
+	presenceTone := "normal"
+	if view.sourceStatus == "unknown" {
+		presenceTone = "muted"
+	}
+	fields = append(fields, StringDisplayField("presence.status", "Status", "status", view.sourceStatus, presenceTone, nil))
+	if player.LastOnline.IsZero() {
+		fields = append(fields, UnavailableDisplayField("presence.last_online", "Last online", "timestamp", "muted"))
+	} else {
+		fields = append(fields, TimestampDisplayField("presence.last_online", "Last online", player.LastOnline, "muted"))
+	}
+	if view.latency == nil {
+		fields = append(fields, UnavailableDisplayField("network.latency", "Latency", "latency_ms", "muted"))
+	} else {
+		fields = append(fields, NumberDisplayField("network.latency", "Latency", "latency_ms", view.latency.Milliseconds, "normal", nil))
+	}
+	if view.mapPosition == nil {
+		fields = append(fields, UnavailableDisplayField("location.coordinates", "Coordinates", "coordinates", "muted"))
+	} else {
+		fields = append(fields, CoordinatesDisplayField("location.coordinates", "Coordinates", view.mapPosition.X, view.mapPosition.Y, "normal"))
+	}
+	fields = append(fields,
+		NumberDisplayField("activity.today", "Today", "duration_ms", float64(view.todayObserved.Milliseconds()), "normal", nil),
+		NumberDisplayField("activity.week", "This week", "duration_ms", float64(view.weekObserved.Milliseconds()), "normal", nil),
+	)
+	fields = append(fields, view.policyDisplayFields()...)
+
+	return Presentation{
+		Schema:       PresentationSchemaV1,
+		GameID:       "palworld",
+		UserID:       view.userID,
+		ObservedAt:   view.observedAt,
+		FreshUntil:   view.freshUntil,
+		SourceStatus: view.sourceStatus,
+		Identity:     view.identity,
+		Map:          view.mapPosition,
+		Fields:       fields,
+	}
+}
+
+func (view palworldView) policyDisplayFields() []DisplayField {
+	policy := view.guard.Policy
+	if !policy.Enabled || policy.Exempt {
+		return []DisplayField{
+			UnavailableDisplayField("policy.strategy", "Strategy", "text", "muted"),
+			UnavailableDisplayField("policy.cycle_used", "Cycle used", "duration_ms", "muted"),
+			UnavailableDisplayField("policy.remaining", "Remaining", "duration_ms", "muted"),
+			UnavailableDisplayField("policy.period_end", "Period end", "timestamp", "muted"),
+			UnavailableDisplayField("policy.enforcement", "Enforcement", "status", "muted"),
+		}
+	}
+
+	remainingLabel, remainingValue := policyRemaining(policy.Strategy, view.guard.Remaining, view.guard.Period.End, view.now)
+	tone := policyTone(view.guard.Remaining, policy.WarningBefore)
+	usedProgress, remainingProgress := policyProgress(view.guard.Used, view.guard.Remaining)
+	fields := []DisplayField{
+		StringDisplayField("policy.strategy", "Strategy", "text", policyStrategyLabel(policy.Strategy), "normal", nil),
+		NumberDisplayField("policy.cycle_used", "Cycle used", "duration_ms", float64(view.guard.Used.Milliseconds()), tone, usedProgress),
+		NumberDisplayField("policy.remaining", remainingLabel, "duration_ms", float64(remainingValue.Milliseconds()), tone, remainingProgress),
+	}
+	if view.guard.Period.End.IsZero() {
+		fields = append(fields, UnavailableDisplayField("policy.period_end", "Period end", "timestamp", "muted"))
+	} else {
+		fields = append(fields, TimestampDisplayField("policy.period_end", "Period end", view.guard.Period.End, "normal"))
+	}
+	enforcement, enforcementTone := policyEnforcement(view.guard.Enforcement.Status)
+	fields = append(fields, StringDisplayField("policy.enforcement", "Enforcement", "status", enforcement, enforcementTone, nil))
+	return fields
+}
+
+func policyStrategyLabel(strategy string) string {
+	switch strategy {
+	case "fixed_window":
+		return "Fixed window"
+	case "credit":
+		return "Credit"
+	case "cooldown":
+		return "Cooldown"
+	default:
+		return "Unknown"
+	}
+}
+
+func policyEnforcement(status string) (string, string) {
+	switch status {
+	case "":
+		return "Inactive", "normal"
+	case "pending":
+		return "Pending", "warning"
+	case "success":
+		return "Enforced", "danger"
+	case "failure":
+		return "Failed", "danger"
+	default:
+		return "Unknown", "muted"
+	}
+}
+
+func policyRemaining(strategy string, remaining time.Duration, periodEnd, now time.Time) (string, time.Duration) {
+	label := "Remaining"
+	value := remaining
+	switch strategy {
+	case "credit":
+		label = "Available credit"
+	case "cooldown":
+		if remaining <= 0 && periodEnd.After(now) {
+			label = "Rest remaining"
+			value = periodEnd.Sub(now)
+		}
+	}
+	return label, value
 }
 
 func playerIdentity(player domain.Player, fallback string) Identity {
