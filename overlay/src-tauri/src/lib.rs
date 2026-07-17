@@ -141,6 +141,14 @@ mod native {
     }
 
     #[tauri::command]
+    async fn fetch_presentation(
+        bridge: State<'_, http::HttpBridge>,
+        request: http::PresentationRequest,
+    ) -> Result<http::PresentationResult, String> {
+        bridge.fetch_presentation(request).await
+    }
+
+    #[tauri::command]
     async fn list_players(
         bridge: State<'_, http::HttpBridge>,
         base_url: String,
@@ -210,6 +218,7 @@ mod native {
                 load_config,
                 save_config,
                 fetch_snapshot,
+                fetch_presentation,
                 list_players,
                 current_window_label,
                 current_platform,

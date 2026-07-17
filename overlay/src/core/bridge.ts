@@ -15,11 +15,23 @@ export type FetchSnapshotResult =
   | { status: 404; code: 'player_not_found' | 'game_not_supported' }
   | { status: 503; code: 'snapshot_unavailable' }
 
+export type FetchPresentationRequest = FetchSnapshotRequest
+
+export type FetchPresentationResult =
+  | { status: 200; etag?: string; body: unknown }
+  | { status: 304 }
+  | { status: 404; code: 'player_not_found' | 'game_not_supported' | 'presentation_unsupported' }
+  | { status: 503; code: 'presentation_unavailable' }
+
 export interface OverlayBridge {
   fetchSnapshot(
     request: FetchSnapshotRequest,
     signal: AbortSignal,
   ): Promise<FetchSnapshotResult>
+  fetchPresentation?(
+    request: FetchPresentationRequest,
+    signal: AbortSignal,
+  ): Promise<FetchPresentationResult>
 }
 
 export type PlayerListItem = {
@@ -57,7 +69,7 @@ export interface DesktopBridge extends OverlayBridge {
   onConfigChanged?(handler: (config: unknown) => void): Promise<() => void>
 }
 
-export function createBrowserPlaceholderBridge(): DesktopBridge {
+export function createBrowserPlaceholderBridge(): PresentationDesktopBridge {
   return {
     async currentWindowLabel() { return 'overlay' },
     async loadConfig() { return null },
@@ -65,6 +77,7 @@ export function createBrowserPlaceholderBridge(): DesktopBridge {
     async listPlayers() { throw new Error('desktop bridge unavailable') },
     async setAdjustmentMode() { throw new Error('desktop bridge unavailable') },
     async fetchSnapshot() { throw new Error('desktop bridge unavailable') },
+    async fetchPresentation() { throw new Error('desktop bridge unavailable') },
     async onAdjustmentModeChanged() { return () => {} },
     async onReselectPlayer() { return () => {} },
     async onConfigChanged() { return () => {} },
@@ -114,7 +127,9 @@ function createHttpInvokeGate() {
   }
 }
 
-function createTauriBridge(): DesktopBridge {
+type PresentationDesktopBridge = DesktopBridge & Required<Pick<OverlayBridge, 'fetchPresentation'>>
+
+function createTauriBridge(): PresentationDesktopBridge {
   const invokeHttp = createHttpInvokeGate()
   return {
     currentWindowLabel: () => invoke('current_window_label'),
@@ -129,6 +144,7 @@ function createTauriBridge(): DesktopBridge {
     listPlayers: (baseUrl, signal) => invokeHttp('list_players', { baseUrl }, signal),
     setAdjustmentMode: (enabled) => invoke('set_adjustment_mode', { enabled }),
     fetchSnapshot: (request, signal) => invokeHttp('fetch_snapshot', { request }, signal),
+    fetchPresentation: (request, signal) => invokeHttp('fetch_presentation', { request }, signal),
     currentPlatform: () => invoke('current_platform'),
     detectedPalworldUserId: () => invoke('detected_palworld_user_id'),
     onAdjustmentModeChanged: (handler) => listen<unknown>('adjustment-mode-changed', (event) => {
@@ -139,6 +155,6 @@ function createTauriBridge(): DesktopBridge {
   }
 }
 
-export function createDesktopBridge(): DesktopBridge {
+export function createDesktopBridge(): PresentationDesktopBridge {
   return isTauri() ? createTauriBridge() : createBrowserPlaceholderBridge()
 }

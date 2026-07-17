@@ -35,6 +35,7 @@ impl Default for HttpPolicy {
 #[derive(Clone)]
 pub struct HttpBridge {
     client: Client,
+    presentation_client: Client,
     max_body_bytes: usize,
 }
 
@@ -47,9 +48,36 @@ pub struct SnapshotRequest {
     pub etag: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PresentationRequest {
+    pub base_url: String,
+    pub game_id: String,
+    pub user_id: String,
+    pub etag: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum SnapshotResult {
+    Ok {
+        status: u16,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        etag: Option<String>,
+        body: Value,
+    },
+    Status {
+        status: u16,
+    },
+    Error {
+        status: u16,
+        code: String,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum PresentationResult {
     Ok {
         status: u16,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,18 +111,39 @@ impl HttpBridge {
     }
 
     fn new_with_policy(policy: HttpPolicy) -> Result<Self, String> {
+        let redirect_policy = Policy::custom(move |attempt| {
+            let same_origin = attempt.previous().first().is_none_or(|original| {
+                original.scheme() == attempt.url().scheme()
+                    && original.host_str() == attempt.url().host_str()
+                    && original.port_or_known_default() == attempt.url().port_or_known_default()
+            });
+            if !same_origin || attempt.previous().len() > policy.max_redirects {
+                attempt.error("redirect rejected by HTTP policy")
+            } else {
+                attempt.follow()
+            }
+        });
         let mut builder = Client::builder()
             .connect_timeout(policy.connect_timeout)
             .timeout(policy.request_timeout)
             .redirect(Policy::limited(policy.max_redirects));
+        let mut presentation_builder = Client::builder()
+            .connect_timeout(policy.connect_timeout)
+            .timeout(policy.request_timeout)
+            .redirect(redirect_policy);
         if !policy.use_system_proxy {
             builder = builder.no_proxy();
+            presentation_builder = presentation_builder.no_proxy();
         }
         let client = builder
             .build()
             .map_err(|_| "could not create HTTP client".to_string())?;
+        let presentation_client = presentation_builder
+            .build()
+            .map_err(|_| "could not create HTTP client".to_string())?;
         Ok(Self {
             client,
+            presentation_client,
             max_body_bytes: policy.max_body_bytes,
         })
     }
@@ -143,6 +192,63 @@ impl HttpBridge {
             503 => Ok(SnapshotResult::Error {
                 status: 503,
                 code: "snapshot_unavailable".into(),
+            }),
+            _ => unreachable!(),
+        }
+    }
+
+    pub async fn fetch_presentation(
+        &self,
+        request: PresentationRequest,
+    ) -> Result<PresentationResult, String> {
+        let mut url = endpoint(&request.base_url, "/api/v1/overlay/presentation")?;
+        url.query_pairs_mut()
+            .append_pair("game_id", &request.game_id)
+            .append_pair("user_id", &request.user_id);
+        let mut builder = self.presentation_client.get(url);
+        if let Some(etag) = request.etag.filter(|value| !value.contains(['\r', '\n'])) {
+            builder = builder.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+        let response = builder
+            .send()
+            .await
+            .map_err(|_| "presentation request failed".to_string())?;
+        let status = response.status();
+        let etag = response
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        match map_status(status.as_u16())? {
+            200 => Ok(PresentationResult::Ok {
+                status: 200,
+                etag,
+                body: read_json(response, self.max_body_bytes).await?,
+            }),
+            304 => Ok(PresentationResult::Status { status: 304 }),
+            404 => {
+                let body = read_json(response, self.max_body_bytes).await?;
+                let code = body
+                    .pointer("/error/code")
+                    .or_else(|| body.get("code"))
+                    .and_then(Value::as_str)
+                    .and_then(|code| match code {
+                        "player_not_found" => Some("player_not_found"),
+                        "game_not_supported" => Some("game_not_supported"),
+                        "presentation_unsupported" | "not_found" => {
+                            Some("presentation_unsupported")
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| "invalid_response: unknown 404 error code".to_string())?;
+                Ok(PresentationResult::Error {
+                    status: 404,
+                    code: code.into(),
+                })
+            }
+            503 => Ok(PresentationResult::Error {
+                status: 503,
+                code: "presentation_unavailable".into(),
             }),
             _ => unreachable!(),
         }
@@ -205,8 +311,8 @@ async fn read_json(mut response: Response, max_body_bytes: usize) -> Result<Valu
 #[cfg(test)]
 mod tests {
     use super::{
-        HttpBridge, HttpPolicy, MAX_BODY_BYTES, REQUEST_TIMEOUT, SnapshotRequest, endpoint,
-        map_status,
+        HttpBridge, HttpPolicy, MAX_BODY_BYTES, PresentationRequest, REQUEST_TIMEOUT,
+        SnapshotRequest, endpoint, map_status,
     };
     use std::{
         io::{Read, Write},
@@ -275,6 +381,15 @@ mod tests {
         }
     }
 
+    fn presentation_request(base_url: String) -> PresentationRequest {
+        PresentationRequest {
+            base_url,
+            game_id: "Pal world/+".into(),
+            user_id: "steam id?&=".into(),
+            etag: Some("\"presentation-v1\"".into()),
+        }
+    }
+
     #[test]
     fn maps_supported_statuses() {
         assert_eq!(map_status(200).unwrap(), 200);
@@ -293,6 +408,20 @@ mod tests {
     #[test]
     fn response_body_limit_is_one_mebibyte() {
         assert_eq!(MAX_BODY_BYTES, 1024 * 1024);
+    }
+
+    #[test]
+    fn presentation_request_accepts_only_the_restricted_command_shape() {
+        let valid = serde_json::json!({
+            "baseUrl": "https://palbox.test",
+            "gameId": "palworld",
+            "userId": "uid",
+            "etag": "\"v1\""
+        });
+        assert!(serde_json::from_value::<PresentationRequest>(valid.clone()).is_ok());
+        let mut extra = valid.as_object().unwrap().clone();
+        extra.insert("path".into(), serde_json::json!("/admin"));
+        assert!(serde_json::from_value::<PresentationRequest>(extra.into()).is_err());
     }
 
     #[test]
@@ -427,5 +556,164 @@ mod tests {
         let bridge = HttpBridge::new_with_policy(policy(1024)).unwrap();
         assert!(bridge.fetch_snapshot(request(base_url)).await.is_err());
         handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn presentation_uses_fixed_endpoint_exact_query_encoding_and_forwards_etag() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let count = stream.read(&mut request).unwrap();
+            sender
+                .send(String::from_utf8_lossy(&request[..count]).into_owned())
+                .unwrap();
+            stream
+                .write_all(&response("200 OK", "ETag: \"v2\"\r\n", "{}"))
+                .unwrap();
+        });
+        let bridge = HttpBridge::new_with_policy(policy(1024)).unwrap();
+        let result = bridge
+            .fetch_presentation(presentation_request(base_url))
+            .await
+            .unwrap();
+        let wire = receiver.recv().unwrap();
+        assert!(wire.starts_with(
+            "GET /api/v1/overlay/presentation?game_id=Pal+world%2F%2B&user_id=steam+id%3F%26%3D HTTP/1.1\r\n"
+        ), "{wire}");
+        assert!(
+            wire.to_ascii_lowercase()
+                .contains("if-none-match: \"presentation-v1\"")
+        );
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            serde_json::json!({
+                "status": 200, "etag": "\"v2\"", "body": {}
+            })
+        );
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn presentation_maps_stable_statuses_and_legacy_not_found() {
+        let cases = [
+            ("304 Not Modified", "", serde_json::json!({ "status": 304 })),
+            (
+                "404 Not Found",
+                r#"{"error":{"code":"player_not_found"}}"#,
+                serde_json::json!({ "status": 404, "code": "player_not_found" }),
+            ),
+            (
+                "404 Not Found",
+                r#"{"code":"not_found"}"#,
+                serde_json::json!({ "status": 404, "code": "presentation_unsupported" }),
+            ),
+            (
+                "503 Service Unavailable",
+                "",
+                serde_json::json!({ "status": 503, "code": "presentation_unavailable" }),
+            ),
+        ];
+        for (status, body, expected) in cases {
+            let (base_url, server) = serve(vec![Reply {
+                bytes: response(status, "", body),
+                hold_open: Duration::ZERO,
+            }]);
+            let bridge = HttpBridge::new_with_policy(policy(1024)).unwrap();
+            let result = bridge
+                .fetch_presentation(presentation_request(base_url))
+                .await
+                .unwrap();
+            assert_eq!(serde_json::to_value(result).unwrap(), expected);
+            server.join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn presentation_enforces_declared_and_chunked_body_limits_and_total_timeout() {
+        let chunked = format!(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n28\r\n{}\r\n0\r\n\r\n",
+            "a".repeat(40)
+        ).into_bytes();
+        let declared =
+            b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 100\r\n\r\n{}".to_vec();
+        for bytes in [chunked, declared] {
+            let (base_url, server) = serve(vec![Reply {
+                bytes,
+                hold_open: Duration::ZERO,
+            }]);
+            let bridge = HttpBridge::new_with_policy(policy(32)).unwrap();
+            assert!(
+                bridge
+                    .fetch_presentation(presentation_request(base_url))
+                    .await
+                    .unwrap_err()
+                    .contains("exceeded")
+            );
+            server.join().unwrap();
+        }
+        for reply in [
+            Reply {
+                bytes: vec![],
+                hold_open: Duration::from_millis(250),
+            },
+            Reply {
+                bytes: b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n{".to_vec(),
+                hold_open: Duration::from_millis(250),
+            },
+        ] {
+            let (base_url, server) = serve(vec![reply]);
+            let bridge = HttpBridge::new_with_policy(timeout_policy()).unwrap();
+            assert!(
+                bridge
+                    .fetch_presentation(presentation_request(base_url))
+                    .await
+                    .is_err()
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn presentation_rejects_unsafe_base_urls_and_excess_redirects() {
+        assert!(endpoint("https://palbox.test/a/..", "/api/v1/overlay/presentation").is_err());
+        assert!(endpoint("https://palbox.test/%2e", "/api/v1/overlay/presentation").is_err());
+        let redirect = Reply {
+            bytes: response("302 Found", "Location: /again\r\n", ""),
+            hold_open: Duration::ZERO,
+        };
+        let (base_url, server) = serve(vec![
+            redirect,
+            Reply {
+                bytes: response("302 Found", "Location: /again\r\n", ""),
+                hold_open: Duration::ZERO,
+            },
+        ]);
+        let bridge = HttpBridge::new_with_policy(policy(1024)).unwrap();
+        assert!(
+            bridge
+                .fetch_presentation(presentation_request(base_url))
+                .await
+                .is_err()
+        );
+        server.join().unwrap();
+
+        let (base_url, server) = serve(vec![Reply {
+            bytes: response(
+                "302 Found",
+                "Location: http://example.com/elsewhere\r\n",
+                "",
+            ),
+            hold_open: Duration::ZERO,
+        }]);
+        assert!(
+            bridge
+                .fetch_presentation(presentation_request(base_url))
+                .await
+                .is_err()
+        );
+        server.join().unwrap();
     }
 }

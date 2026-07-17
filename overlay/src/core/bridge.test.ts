@@ -22,6 +22,7 @@ function deferred<T>() {
 }
 
 const snapshotRequest = { baseUrl: 'https://palbox.test', gameId: 'palworld', userId: 'uid' }
+const presentationRequest = { ...snapshotRequest, etag: '"presentation-v1"' }
 
 describe('native HTTP invoke gate', () => {
   beforeEach(() => {
@@ -104,6 +105,45 @@ describe('native HTTP invoke gate', () => {
 
     await expect(bridge.currentWindowLabel()).resolves.toBe('settings')
     expect(tauri.invoke).toHaveBeenCalledTimes(2)
+    native.resolve({ status: 304 })
+  })
+
+  it('maps presentation requests and results exactly through the serialized HTTP gate', async () => {
+    tauri.invoke.mockResolvedValueOnce({
+      status: 200,
+      etag: '"presentation-v2"',
+      body: { schema: 'overlay.presentation/v1' },
+    })
+    const bridge = createDesktopBridge()
+
+    await expect(bridge.fetchPresentation(
+      presentationRequest,
+      new AbortController().signal,
+    )).resolves.toEqual({
+      status: 200,
+      etag: '"presentation-v2"',
+      body: { schema: 'overlay.presentation/v1' },
+    })
+    expect(tauri.invoke).toHaveBeenCalledWith('fetch_presentation', {
+      request: presentationRequest,
+    })
+  })
+
+  it('handles presentation aborts before invocation and after invocation starts', async () => {
+    const bridge = createDesktopBridge()
+    const before = new AbortController()
+    before.abort()
+    await expect(bridge.fetchPresentation(presentationRequest, before.signal))
+      .rejects.toMatchObject({ name: 'AbortError' })
+    expect(tauri.invoke).not.toHaveBeenCalled()
+
+    const native = deferred<unknown>()
+    tauri.invoke.mockImplementationOnce(() => native.promise)
+    const after = new AbortController()
+    const request = bridge.fetchPresentation(presentationRequest, after.signal)
+    await vi.waitFor(() => expect(tauri.invoke).toHaveBeenCalledTimes(1))
+    after.abort()
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' })
     native.resolve({ status: 304 })
   })
 
