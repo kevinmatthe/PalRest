@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"strconv"
 	"time"
 )
@@ -172,8 +173,11 @@ func validateDisplayValue(kind string, raw json.RawMessage) error {
 		if err != nil || !finite(value) {
 			return errors.New("must be a finite number")
 		}
-		if kind == "integer" && math.Trunc(value) != value {
-			return errors.New("must be an integer")
+		if kind == "integer" {
+			rational, ok := new(big.Rat).SetString(number.String())
+			if !ok || !rational.IsInt() {
+				return errors.New("must be an integer")
+			}
 		}
 		return nil
 	case "timestamp":
@@ -186,31 +190,72 @@ func validateDisplayValue(kind string, raw json.RawMessage) error {
 		}
 		return nil
 	case "coordinates":
-		var object map[string]json.RawMessage
-		if err := decodeSingleJSON(raw, &object); err != nil {
-			return err
-		}
-		if len(object) != 2 {
-			return errors.New("must contain exactly x and y")
-		}
-		for _, key := range []string{"x", "y"} {
-			coordinate, ok := object[key]
-			if !ok {
-				return fmt.Errorf("missing %s", key)
-			}
-			number, err := decodeJSONNumber(coordinate)
-			if err != nil {
-				return fmt.Errorf("%s: %w", key, err)
-			}
-			value, err := number.Float64()
-			if err != nil || !finite(value) {
-				return fmt.Errorf("%s must be finite", key)
-			}
-		}
-		return nil
+		return validateCoordinates(raw)
 	default:
 		return errors.New("unsupported kind")
 	}
+}
+
+func validateCoordinates(raw json.RawMessage) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	opening, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if delimiter, ok := opening.(json.Delim); !ok || delimiter != '{' {
+		return errors.New("must be an object")
+	}
+
+	seen := map[string]bool{"x": false, "y": false}
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return errors.New("object key must be a string")
+		}
+		wasSeen, supported := seen[key]
+		if !supported {
+			return fmt.Errorf("unknown key %q", key)
+		}
+		if wasSeen {
+			return fmt.Errorf("duplicate key %q", key)
+		}
+
+		var coordinate any
+		if err := decoder.Decode(&coordinate); err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+		number, ok := coordinate.(json.Number)
+		if !ok {
+			return fmt.Errorf("%s must be a number", key)
+		}
+		value, err := number.Float64()
+		if err != nil || !finite(value) {
+			return fmt.Errorf("%s must be finite", key)
+		}
+		seen[key] = true
+	}
+
+	closing, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if delimiter, ok := closing.(json.Delim); !ok || delimiter != '}' {
+		return errors.New("object is not closed")
+	}
+	for _, key := range []string{"x", "y"} {
+		if !seen[key] {
+			return fmt.Errorf("missing %s", key)
+		}
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("must contain one JSON value")
+	}
+	return nil
 }
 
 func decodeJSONNumber(raw json.RawMessage) (json.Number, error) {

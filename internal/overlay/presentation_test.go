@@ -87,11 +87,15 @@ func TestValidatePresentationRejectsInvalidFields(t *testing.T) {
 		{name: "text wrong JSON type", fields: []DisplayField{{ID: "field.one", Label: "One", Kind: "text", Available: true, Value: json.RawMessage(`1`), Tone: "normal"}}, want: "text"},
 		{name: "status malformed JSON", fields: []DisplayField{{ID: "field.one", Label: "One", Kind: "status", Available: true, Value: json.RawMessage(`"online`), Tone: "normal"}}, want: "status"},
 		{name: "integer fractional", fields: []DisplayField{{ID: "field.one", Label: "One", Kind: "integer", Available: true, Value: json.RawMessage(`1.5`), Tone: "normal"}}, want: "integer"},
+		{name: "integer precision-hidden fraction", fields: []DisplayField{{ID: "field.one", Label: "One", Kind: "integer", Available: true, Value: json.RawMessage(`9007199254740992.1`), Tone: "normal"}}, want: "integer"},
 		{name: "duration string", fields: []DisplayField{{ID: "field.one", Label: "One", Kind: "duration_ms", Available: true, Value: json.RawMessage(`"1000"`), Tone: "normal"}}, want: "duration_ms"},
 		{name: "latency object", fields: []DisplayField{{ID: "field.one", Label: "One", Kind: "latency_ms", Available: true, Value: json.RawMessage(`{}`), Tone: "normal"}}, want: "latency_ms"},
 		{name: "timestamp invalid", fields: []DisplayField{{ID: "field.one", Label: "One", Kind: "timestamp", Available: true, Value: json.RawMessage(`"yesterday"`), Tone: "normal"}}, want: "timestamp"},
 		{name: "coordinates missing y", fields: []DisplayField{{ID: "field.one", Label: "One", Kind: "coordinates", Available: true, Value: json.RawMessage(`{"x":1}`), Tone: "normal"}}, want: "coordinates"},
 		{name: "coordinates extra data", fields: []DisplayField{{ID: "field.one", Label: "One", Kind: "coordinates", Available: true, Value: json.RawMessage(`{"x":1,"y":2,"ip":"secret"}`), Tone: "normal"}}, want: "coordinates"},
+		{name: "coordinates duplicate x", fields: []DisplayField{{ID: "field.one", Label: "One", Kind: "coordinates", Available: true, Value: json.RawMessage(`{"x":"hidden","x":1,"y":2}`), Tone: "normal"}}, want: "coordinates"},
+		{name: "coordinates duplicate y", fields: []DisplayField{{ID: "field.one", Label: "One", Kind: "coordinates", Available: true, Value: json.RawMessage(`{"x":1,"y":0,"y":2}`), Tone: "normal"}}, want: "coordinates"},
+		{name: "coordinates trailing JSON", fields: []DisplayField{{ID: "field.one", Label: "One", Kind: "coordinates", Available: true, Value: json.RawMessage(`{"x":1,"y":2} true`), Tone: "normal"}}, want: "coordinates"},
 	}
 
 	for _, tt := range tests {
@@ -101,6 +105,17 @@ func TestValidatePresentationRejectsInvalidFields(t *testing.T) {
 				t.Fatalf("ValidatePresentation() error = %v, want containing %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestValidatePresentationAcceptsExactIntegerAndCoordinateBoundaries(t *testing.T) {
+	tests := []DisplayField{
+		{ID: "integer.large", Label: "Large", Kind: "integer", Available: true, Value: json.RawMessage(`9007199254740992`), Tone: "normal"},
+		{ID: "integer.exponent", Label: "Exponent", Kind: "integer", Available: true, Value: json.RawMessage(`1e3`), Tone: "normal"},
+		{ID: "coordinates.reordered", Label: "Coordinates", Kind: "coordinates", Available: true, Value: json.RawMessage(`{"y":-2.5e2,"x":1.25}`), Tone: "normal"},
+	}
+	if err := ValidatePresentation(Presentation{Schema: PresentationSchemaV1, Fields: tests}); err != nil {
+		t.Fatalf("ValidatePresentation() error = %v", err)
 	}
 }
 
