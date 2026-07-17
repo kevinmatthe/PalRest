@@ -40,6 +40,8 @@ npm --prefix overlay run tauri -- build --bundles nsis,msi
 
 产物位于 `overlay/src-tauri/target/release/bundle/nsis/` 和 `overlay/src-tauri/target/release/bundle/msi/`。
 
+安装时优先运行 NSIS `.exe`，也可以使用 `.msi` 交给 Windows Installer。当前项目尚未配置 Windows 代码签名证书，因此首次运行可能出现 SmartScreen 提示；正式公开分发前应补 Windows 签名。
+
 macOS（Terminal，在仓库根目录）：
 
 ```bash
@@ -49,6 +51,28 @@ npm --prefix overlay run tauri -- build --bundles app,dmg
 ```
 
 开发用 `.app`/`.dmg` 位于 `overlay/src-tauri/target/release/bundle/macos/` 与 `overlay/src-tauri/target/release/bundle/dmg/`。无正式凭据时它们只是 ad-hoc 开发产物，不能宣称已通过正式签名、公证或 Gatekeeper 验收。
+
+安装正式产物时打开 `.dmg`，将应用拖入 `Applications`。`.app.zip` 用于保留 bundle 文件权限的直接分发或调试。
+
+## GitHub CI 自动构建与 Release
+
+`.github/workflows/overlay.yml` 会在 push、PR 和手动运行时构建 Windows/macOS 开发产物，结果可从对应 Actions run 的 Artifacts 下载。
+
+`.github/workflows/overlay-release.yml` 负责正式 Release。发布标签必须同时满足：
+
+- 格式为 `overlay-v<overlay/package.json 中的版本>`，例如当前版本 `overlay-v0.1.0`。
+- 标签提交属于仓库默认分支的历史。
+- Go、Overlay 前端及两个原生平台测试全部通过。
+- macOS 构建通过受保护的 `overlay-release` environment，并具备完整 Apple secrets。
+
+确认版本号、默认分支和 environment 后执行：
+
+```bash
+git tag overlay-v0.1.0
+git push origin overlay-v0.1.0
+```
+
+CI 会构建 NSIS/MSI、签名并公证 macOS app/DMG，验证签名与公证票据，然后自动创建同名 GitHub Release。Windows 产物在配置 Windows 代码签名前仍属于未签名安装包；macOS secrets 缺失或任一测试失败时不会创建 Release。
 
 ## macOS 正式签名与公证
 
@@ -61,7 +85,7 @@ GitHub 的受保护 environment `overlay-release` 必须配置以下 6 个 secre
 - `APPLE_PASSWORD`
 - `APPLE_TEAM_ID`
 
-正式交付只能从仓库默认分支手动运行 `.github/workflows/overlay.yml` 的 `workflow_dispatch`。`macos-signed-delivery` 会在 Windows/macOS 自动化测试成功后进入 `overlay-release` environment；缺少任一 secret 就明确失败，不生成或上传冒充正式交付的产物。environment 应启用所需审批与分支保护。
+正式交付有两条受保护路径：推送与 `overlay/package.json` 版本一致的 `overlay-v*` 标签，会由 `.github/workflows/overlay-release.yml` 自动创建 GitHub Release；需要只生成签名 artifact 而不创建 Release 时，可从仓库默认分支手动运行 `.github/workflows/overlay.yml`。两条路径都会在自动化测试成功后进入 `overlay-release` environment；缺少任一 secret 就明确失败，不生成或上传冒充正式交付的产物。environment 应启用所需审批与分支保护。
 
 ## Windows/macOS 实机 smoke checklist
 
