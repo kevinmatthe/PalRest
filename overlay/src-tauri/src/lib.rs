@@ -25,7 +25,7 @@ mod tests {
 #[cfg(feature = "native")]
 mod native {
     use super::{config, http, lifecycle, platform, tray};
-    use tauri::{AppHandle, Manager, State, Window, WindowEvent};
+    use tauri::{AppHandle, Emitter, Manager, State, Window, WindowEvent};
 
     fn config_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         app.path()
@@ -47,7 +47,9 @@ mod native {
 
     #[tauri::command]
     fn save_config(app: AppHandle, config: config::OverlayConfig) -> Result<(), String> {
-        config::save_editable_to_path(&config_dir(&app)?, &config)
+        let saved = config::save_editable_and_load_from_path(&config_dir(&app)?, &config)
+            .map_err(|error| error.to_string())?;
+        app.emit_to("overlay", "overlay-config-changed", &saved)
             .map_err(|error| error.to_string())
     }
 

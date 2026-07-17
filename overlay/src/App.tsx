@@ -78,6 +78,16 @@ export default function App({ bridge }: AppProps) {
     if (bridge.onReselectPlayer) {
       attach(bridge.onReselectPlayer(() => { if (active) setReselectSignal((value) => value + 1) }))
     }
+    if (bridge.onConfigChanged) {
+      attach(bridge.onConfigChanged((rawConfig) => {
+        if (!active) return
+        const config = parseOverlayConfig(rawConfig)
+        if (!config) return
+        setBootstrap((current) => current.status === 'ready' && current.label === 'overlay'
+          ? { ...current, config }
+          : current)
+      }))
+    }
     return () => {
       active = false
       cleanups.splice(0).forEach((unlisten) => unlisten())

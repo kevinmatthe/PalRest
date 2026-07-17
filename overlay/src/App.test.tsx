@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopBridge, FetchSnapshotResult } from './core/bridge'
@@ -9,6 +9,12 @@ import App from './App'
 afterEach(cleanup)
 
 const config: OverlayConfigV1 = { schema: 1, baseUrl: 'https://palbox.test', gameId: 'palworld', userId: 'uid', scale: 1, locked: true }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise })
+  return { promise, resolve }
+}
 
 function bridge(overrides: Partial<DesktopBridge> = {}): DesktopBridge {
   return {
@@ -174,6 +180,77 @@ describe('App window routing', () => {
     const signal = (api.fetchSnapshot as ReturnType<typeof vi.fn>).mock.calls[0][1] as AbortSignal
     unmount()
     expect(signal.aborted).toBe(true)
+  })
+
+  it('aborts the old poll and immediately requests a newly saved overlay config', async () => {
+    let publishConfig!: (value: unknown) => void
+    const oldRequest = deferred<FetchSnapshotResult>()
+    const fetchSnapshot = vi.fn<DesktopBridge['fetchSnapshot']>((request) => {
+      if (request.userId === 'uid') return oldRequest.promise
+      return Promise.resolve({ status: 503, code: 'snapshot_unavailable' })
+    })
+    const api = bridge({
+      fetchSnapshot,
+      onConfigChanged: vi.fn(async (handler) => { publishConfig = handler; return () => {} }),
+    })
+    render(<App bridge={api} />)
+    await waitFor(() => expect(fetchSnapshot).toHaveBeenCalledWith(
+      { baseUrl: config.baseUrl, gameId: config.gameId, userId: 'uid' }, expect.any(AbortSignal),
+    ))
+    const oldSignal = fetchSnapshot.mock.calls[0][1]
+
+    act(() => publishConfig({ ...config, baseUrl: 'https://replacement.test', userId: 'uid-2' }))
+
+    await waitFor(() => expect(fetchSnapshot).toHaveBeenCalledWith(
+      { baseUrl: 'https://replacement.test', gameId: config.gameId, userId: 'uid-2' }, expect.any(AbortSignal),
+    ))
+    expect(oldSignal.aborted).toBe(true)
+  })
+
+  it('ignores invalid native config payloads', async () => {
+    let publishConfig!: (value: unknown) => void
+    const fetchSnapshot = vi.fn<DesktopBridge['fetchSnapshot']>(() => new Promise(() => {}))
+    const api = bridge({
+      fetchSnapshot,
+      onConfigChanged: vi.fn(async (handler) => { publishConfig = handler; return () => {} }),
+    })
+    render(<App bridge={api} />)
+    await waitFor(() => expect(fetchSnapshot).toHaveBeenCalledTimes(1))
+    const oldSignal = fetchSnapshot.mock.calls[0][1]
+
+    act(() => publishConfig({ ...config, userId: '' }))
+
+    await Promise.resolve()
+    expect(fetchSnapshot).toHaveBeenCalledTimes(1)
+    expect(oldSignal.aborted).toBe(false)
+  })
+
+  it('unregisters the config listener on unmount', async () => {
+    const unlisten = vi.fn()
+    const api = bridge({
+      onConfigChanged: vi.fn(async () => unlisten),
+      fetchSnapshot: vi.fn<DesktopBridge['fetchSnapshot']>(() => new Promise(() => {})),
+    })
+    const { unmount } = render(<App bridge={api} />)
+    await waitFor(() => expect(api.onConfigChanged).toHaveBeenCalledTimes(1))
+    unmount()
+    expect(unlisten).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not apply overlay config events to the settings window bootstrap', async () => {
+    let publishConfig!: (value: unknown) => void
+    const api = bridge({
+      currentWindowLabel: vi.fn(async () => 'settings' as const),
+      loadConfig: vi.fn(async () => null),
+      onConfigChanged: vi.fn(async (handler) => { publishConfig = handler; return () => {} }),
+    })
+    render(<App bridge={api} />)
+    await screen.findByRole('heading', { name: '悬浮条设置' })
+    await waitFor(() => expect(api.onConfigChanged).toHaveBeenCalledTimes(1))
+
+    act(() => publishConfig({ ...config, baseUrl: 'https://replacement.test', userId: 'uid-2' }))
+
+    expect(screen.queryByRole('button', { name: '调整悬浮条位置' })).not.toBeInTheDocument()
   })
 
   it('opens settings for an invalid exact player when the desktop supports it', async () => {

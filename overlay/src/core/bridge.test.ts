@@ -9,7 +9,7 @@ const events = vi.hoisted(() => ({ listen: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => tauri)
 vi.mock('@tauri-apps/api/event', () => events)
 
-import { createDesktopBridge } from './bridge'
+import { createBrowserPlaceholderBridge, createDesktopBridge } from './bridge'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -33,17 +33,27 @@ describe('native HTTP invoke gate', () => {
   it('subscribes to native lifecycle events and returns their cleanup handles', async () => {
     const unlistenAdjustment = vi.fn()
     const unlistenReselect = vi.fn()
-    events.listen.mockResolvedValueOnce(unlistenAdjustment).mockResolvedValueOnce(unlistenReselect)
+    const unlistenConfig = vi.fn()
+    events.listen
+      .mockResolvedValueOnce(unlistenAdjustment)
+      .mockResolvedValueOnce(unlistenReselect)
+      .mockResolvedValueOnce(unlistenConfig)
     const bridge = createDesktopBridge()
     const adjustment = vi.fn()
     const reselect = vi.fn()
+    const config = vi.fn()
 
     await expect(bridge.onAdjustmentModeChanged!(adjustment)).resolves.toBe(unlistenAdjustment)
     await expect(bridge.onReselectPlayer!(reselect)).resolves.toBe(unlistenReselect)
+    await expect(bridge.onConfigChanged!(config)).resolves.toBe(unlistenConfig)
     events.listen.mock.calls[0][1]({ payload: true })
     events.listen.mock.calls[1][1]({ payload: null })
+    const payload = { schema: 1, userId: 'replacement' }
+    events.listen.mock.calls[2][1]({ payload })
     expect(adjustment).toHaveBeenCalledWith(true)
     expect(reselect).toHaveBeenCalledTimes(1)
+    expect(events.listen).toHaveBeenNthCalledWith(3, 'overlay-config-changed', expect.any(Function))
+    expect(config).toHaveBeenCalledWith(payload)
   })
 
   it('rejects an aborted caller promptly but waits for its native invoke before starting the next HTTP request', async () => {
@@ -95,5 +105,18 @@ describe('native HTTP invoke gate', () => {
     await expect(bridge.currentWindowLabel()).resolves.toBe('settings')
     expect(tauri.invoke).toHaveBeenCalledTimes(2)
     native.resolve({ status: 304 })
+  })
+})
+
+describe('browser placeholder bridge', () => {
+  it('provides a no-op config listener cleanup', async () => {
+    const bridge = createBrowserPlaceholderBridge()
+    const handler = vi.fn()
+
+    const unlisten = await bridge.onConfigChanged!(handler)
+
+    expect(unlisten).toBeTypeOf('function')
+    expect(() => unlisten()).not.toThrow()
+    expect(handler).not.toHaveBeenCalled()
   })
 })

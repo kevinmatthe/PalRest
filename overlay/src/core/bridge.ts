@@ -39,6 +39,7 @@ export interface DesktopBridge extends OverlayBridge {
   detectedPalworldUserId?(): Promise<string | null>
   onAdjustmentModeChanged?(handler: (enabled: boolean) => void): Promise<() => void>
   onReselectPlayer?(handler: () => void): Promise<() => void>
+  onConfigChanged?(handler: (config: unknown) => void): Promise<() => void>
 }
 
 export function createBrowserPlaceholderBridge(): DesktopBridge {
@@ -51,6 +52,7 @@ export function createBrowserPlaceholderBridge(): DesktopBridge {
     async fetchSnapshot() { throw new Error('desktop bridge unavailable') },
     async onAdjustmentModeChanged() { return () => {} },
     async onReselectPlayer() { return () => {} },
+    async onConfigChanged() { return () => {} },
   }
 }
 
@@ -112,6 +114,7 @@ function createTauriBridge(): DesktopBridge {
       if (typeof event.payload === 'boolean') handler(event.payload)
     }),
     onReselectPlayer: (handler) => listen('reselect-player', handler),
+    onConfigChanged: (handler) => listen<unknown>('overlay-config-changed', (event) => handler(event.payload)),
   }
 }
 

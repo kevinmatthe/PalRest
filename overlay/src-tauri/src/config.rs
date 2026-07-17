@@ -166,6 +166,15 @@ pub fn save_editable_to_path(config_dir: &Path, incoming: &OverlayConfig) -> io:
     save_to_path(config_dir, &merged)
 }
 
+pub fn save_editable_and_load_from_path(
+    config_dir: &Path,
+    incoming: &OverlayConfig,
+) -> io::Result<OverlayConfig> {
+    save_editable_to_path(config_dir, incoming)?;
+    load_from_path(config_dir)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "saved config was not found"))
+}
+
 pub fn save_geometry_to_path(
     config_dir: &Path,
     display_id: Option<String>,
@@ -207,8 +216,8 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        OverlayConfig, load_from_path, restore_geometry_to_path, save_editable_to_path,
-        save_geometry_to_path, save_to_path,
+        OverlayConfig, load_from_path, restore_geometry_to_path, save_editable_and_load_from_path,
+        save_editable_to_path, save_geometry_to_path, save_to_path,
     };
     use std::fs;
 
@@ -328,6 +337,43 @@ mod tests {
         assert_eq!(merged.x, native.x);
         assert_eq!(merged.y, native.y);
         assert!(!merged.locked);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn editable_save_returns_the_canonical_config_with_native_geometry() {
+        let dir = temp_dir("editable-return");
+        let native = config();
+        save_to_path(&dir, &native).unwrap();
+        let mut incoming = native.clone();
+        incoming.base_url = "https://replacement.test".into();
+        incoming.user_id = "replacement".into();
+        incoming.display_id = Some("stale-display".into());
+        incoming.x = Some(999.0);
+        incoming.y = Some(999.0);
+
+        let saved = save_editable_and_load_from_path(&dir, &incoming).unwrap();
+
+        assert_eq!(saved.base_url, incoming.base_url);
+        assert_eq!(saved.user_id, incoming.user_id);
+        assert_eq!(saved.display_id, native.display_id);
+        assert_eq!(saved.x, native.x);
+        assert_eq!(saved.y, native.y);
+        assert_eq!(load_from_path(&dir).unwrap(), Some(saved));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn editable_save_return_propagates_persistence_failure_without_replacing_config() {
+        let dir = temp_dir("editable-return-failure");
+        let original = config();
+        save_to_path(&dir, &original).unwrap();
+        fs::create_dir(dir.join("config.json.tmp")).unwrap();
+        let mut incoming = original.clone();
+        incoming.user_id = "replacement".into();
+
+        assert!(save_editable_and_load_from_path(&dir, &incoming).is_err());
+        assert_eq!(load_from_path(&dir).unwrap(), Some(original));
         fs::remove_dir_all(dir).unwrap();
     }
 
