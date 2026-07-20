@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopBridge } from '../core/bridge'
+import type { FetchPresentationResult } from '../core/bridge'
+import type { Presentation } from '../contracts/presentation'
 import type { OverlayConfigV1 } from '../core/config'
 import { cloneLayoutProfile, PALWORLD_DEFAULT_LAYOUT } from '../core/layout'
 import { SettingsView } from './SettingsView'
@@ -11,15 +13,37 @@ afterEach(cleanup)
 
 function bridge(overrides: Partial<DesktopBridge> = {}): DesktopBridge {
   return {
-    fetchPresentation: vi.fn(), loadConfig: vi.fn(), saveConfig: vi.fn(),
+    fetchPresentation: vi.fn(async () => ({ status: 200 as const, body: preview })), loadConfig: vi.fn(), saveConfig: vi.fn(),
     listPlayers: vi.fn(async () => []), currentWindowLabel: vi.fn(async () => 'settings' as const),
     setAdjustmentMode: vi.fn(), ...overrides,
   }
 }
 
+function cssDeclarations(css: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`, 's').exec(css)
+  if (!match) throw new Error(`missing CSS selector: ${selector}`)
+  return match[1]
+}
+
 const saved: OverlayConfigV1 = {
   schema: 2, baseUrl: 'https://palbox.test', gameId: 'palworld', userId: 'uid-2', scale: 1, locked: true,
   layouts: { palworld: cloneLayoutProfile(PALWORLD_DEFAULT_LAYOUT) },
+}
+
+const preview: Presentation = {
+  schema: 'overlay.presentation/v1', game_id: 'palworld', user_id: 'uid-2',
+  observed_at: '2026-07-17T04:00:00Z', fresh_until: '2026-07-17T04:00:15Z',
+  source_status: 'online', identity: { display_name: 'Preview Player' }, fields: [
+    { id: 'network.latency', label: '延迟', kind: 'latency_ms', available: true, value: 35, tone: 'normal' },
+    { id: 'presence.last_online', label: '最后在线', kind: 'text', available: true, value: '现在', tone: 'normal' },
+    { id: 'activity.today', label: '今日已玩', kind: 'duration_ms', available: true, value: 3_600_000, tone: 'normal' },
+    { id: 'activity.week', label: '本周已玩', kind: 'duration_ms', available: true, value: 7_200_000, tone: 'normal' },
+    { id: 'policy.strategy', label: '策略', kind: 'text', available: true, value: '限制', tone: 'normal' },
+    { id: 'policy.enforcement', label: '执行', kind: 'status', available: true, value: '启用', tone: 'normal' },
+    { id: 'policy.period_end', label: '周期结束', kind: 'text', available: true, value: '周日', tone: 'normal' },
+    { id: 'policy.remaining', label: '剩余', kind: 'duration_ms', available: true, value: 5_000_000, tone: 'normal' },
+  ],
 }
 
 describe('SettingsView', () => {
@@ -30,6 +54,22 @@ describe('SettingsView', () => {
     expect(css).toMatch(/\.settings-form\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\) auto/s)
     expect(css).toMatch(/\.settings-form__content\s*\{[^}]*overflow-y:\s*auto/s)
     expect(css).toMatch(/\.settings-actions\s*\{[^}]*position:\s*relative/s)
+    expect(css).toMatch(/\.settings-actions\s*\{[^}]*flex:\s*none/s)
+    expect(css).toMatch(/\.hud-editor\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s)
+    expect(css).toMatch(/\.hud-editor__preview\s*\{[^}]*order:\s*-1/s)
+    expect(css).toMatch(/\.hud-editor select\s*\{[^}]*min-height:\s*2\.75rem/s)
+    const previewStage = cssDeclarations(css, '.hud-editor__preview-stage')
+    expect(previewStage).toMatch(/overflow-x:\s*auto/)
+    const previewOverlay = cssDeclarations(css, '.hud-editor__preview-stage .overlay')
+    expect(previewOverlay).toMatch(/width:\s*30rem/)
+    expect(previewOverlay).toMatch(/min-width:\s*30rem/)
+    expect(previewOverlay).toMatch(/max-width:\s*none/)
+    expect(previewOverlay).toMatch(/height:\s*4\.75rem/)
+    expect(previewOverlay).toMatch(/min-height:\s*4\.75rem/)
+    const globalOverlay = cssDeclarations(css, '.overlay')
+    expect(globalOverlay).toMatch(/width:\s*min\(100%,\s*var\(--overlay-width\)\)/)
+    expect(globalOverlay).toMatch(/height:\s*min\(100%,\s*var\(--overlay-height\)\)/)
+    expect(globalOverlay).not.toMatch(/max-width:\s*none/)
     expect(css).toMatch(/\.settings-field\s*>\s*span\s*\{[^}]*font-size:\s*0\.875rem/s)
     expect(css).toMatch(/\.settings-button\s*\{[^}]*min-height:\s*2\.75rem[^}]*font-size:\s*0\.875rem/s)
     expect(css).toMatch(/\.settings-message\s*\{[^}]*font-size:\s*0\.875rem/s)
@@ -37,6 +77,149 @@ describe('SettingsView', () => {
     const { container } = render(<SettingsView bridge={bridge()} initialConfig={null} />)
     expect(container.querySelector('.settings-form__content')).toContainElement(screen.getByText('服务连接').closest('section'))
     expect(container.querySelector('.settings-form__content')).not.toContainElement(screen.getByRole('button', { name: '保存设置' }))
+    const tauri = readFileSync('src-tauri/tauri.conf.json', 'utf8')
+    expect(tauri).toMatch(/"label":\s*"settings"[\s\S]*?"width":\s*560[\s\S]*?"height":\s*520/)
+  })
+
+  it('blocks save during compatibility loading and resumes only after a ready catalog', async () => {
+    let resolvePreview!: (result: FetchPresentationResult) => void
+    const api = bridge({
+      listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Player', account_name: '' }]),
+      fetchPresentation: vi.fn<DesktopBridge['fetchPresentation']>(() => new Promise((resolve) => { resolvePreview = resolve })),
+      saveConfig: vi.fn(async () => {}), setAdjustmentMode: vi.fn(async () => {}),
+    })
+    const { container } = render(<SettingsView bridge={api} initialConfig={saved} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(api.fetchPresentation).toHaveBeenCalledTimes(1))
+    expect(screen.getByRole('button', { name: '保存设置' })).toBeDisabled()
+    fireEvent.submit(container.querySelector('form')!)
+    expect(api.saveConfig).not.toHaveBeenCalled()
+
+    resolvePreview({ status: 200, body: preview })
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存设置' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    await waitFor(() => expect(api.saveConfig).toHaveBeenCalledTimes(1))
+  })
+
+  it.each([
+    ['presentation_unsupported', '服务版本不支持可配置字段'],
+    ['game_not_supported', '当前游戏不支持可配置字段'],
+  ] as const)('keeps save blocked after %s compatibility response', async (code, message) => {
+    const api = bridge({
+      listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Player', account_name: '' }]),
+      fetchPresentation: vi.fn(async () => ({ status: 404 as const, code })),
+      saveConfig: vi.fn(async () => {}),
+    })
+    const { container } = render(<SettingsView bridge={api} initialConfig={saved} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(message)
+    expect(screen.getByRole('button', { name: '保存设置' })).toBeDisabled()
+    fireEvent.submit(container.querySelector('form')!)
+    expect(api.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('treats a successful response without a field catalog as non-configurable', async () => {
+    const api = bridge({
+      listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Player', account_name: '' }]),
+      fetchPresentation: vi.fn(async () => ({ status: 200 as const, body: { ...preview, fields: [] } })),
+      saveConfig: vi.fn(async () => {}),
+    })
+    const { container } = render(<SettingsView bridge={api} initialConfig={saved} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('当前游戏没有可配置字段')
+    expect(screen.getByRole('button', { name: '保存设置' })).toBeDisabled()
+    fireEvent.submit(container.querySelector('form')!)
+    expect(api.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('loads a presentation after exact player selection with an abort signal', async () => {
+    const api = bridge({
+      listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Player', account_name: '' }]),
+      fetchPresentation: vi.fn(async () => ({ status: 200 as const, body: preview })),
+    })
+    render(<SettingsView bridge={api} initialConfig={saved} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(api.fetchPresentation).toHaveBeenCalledWith({
+      baseUrl: 'https://palbox.test', gameId: 'palworld', userId: 'uid-2',
+    }, expect.any(AbortSignal)))
+    expect(await screen.findByTestId('identity-header')).toHaveTextContent('Preview Player')
+  })
+
+  it('aborts stale preview requests and ignores a late presentation', async () => {
+    const signals: AbortSignal[] = []
+    let finishOld!: (value: { status: 200; body: Presentation }) => void
+    const api = bridge({
+      listPlayers: vi.fn(async (url) => [{ user_id: url.includes('other') ? 'uid-3' : 'uid-2', name: 'Player', account_name: '' }]),
+      fetchPresentation: vi.fn<DesktopBridge['fetchPresentation']>((_request, signal) => {
+        signals.push(signal)
+        if (signals.length === 1) return new Promise((resolve) => { finishOld = resolve })
+        return Promise.resolve({ status: 200 as const, body: { ...preview, user_id: 'uid-3', identity: { display_name: 'Fresh Player' } } })
+      }),
+    })
+    render(<SettingsView bridge={api} initialConfig={saved} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(api.fetchPresentation).toHaveBeenCalledTimes(1))
+    fireEvent.change(screen.getByLabelText('服务地址'), { target: { value: 'https://other.test' } })
+    expect(signals[0].aborted).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await waitFor(() => expect(screen.getByLabelText('玩家').querySelector('option[value="uid-3"]')).toBeInTheDocument())
+    fireEvent.change(screen.getByLabelText('玩家'), { target: { value: 'uid-3' } })
+    await waitFor(() => expect(api.fetchPresentation).toHaveBeenCalledTimes(2))
+    finishOld({ status: 200, body: preview })
+    await waitFor(() => expect(screen.getByTestId('identity-header')).toHaveTextContent('Fresh Player'))
+    expect(screen.queryByText('Preview Player')).not.toBeInTheDocument()
+  })
+
+  it('reports unsupported presentation precisely and disables saving without losing the layout', async () => {
+    const api = bridge({
+      listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Player', account_name: '' }]),
+      fetchPresentation: vi.fn(async () => ({ status: 404 as const, code: 'presentation_unsupported' as const })),
+    })
+    render(<SettingsView bridge={api} initialConfig={saved} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('服务版本不支持可配置字段')
+    expect(screen.getByRole('button', { name: '保存设置' })).toBeDisabled()
+  })
+
+  it('preserves other profiles and geometry while saving the edited current-game layout', async () => {
+    const other = cloneLayoutProfile(PALWORLD_DEFAULT_LAYOUT)
+    other.slots[0] = { primary: 'other.value', fallback: 'other.backup' }
+    const config = { ...saved, displayId: 'display-1', x: 17, y: 29, layouts: { ...saved.layouts, other } }
+    const api = bridge({
+      listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Player', account_name: '' }]),
+      fetchPresentation: vi.fn(async () => ({ status: 200 as const, body: preview })),
+      saveConfig: vi.fn(async () => {}), setAdjustmentMode: vi.fn(async () => {}),
+    })
+    render(<SettingsView bridge={api} initialConfig={config} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await screen.findByTestId('identity-header')
+    fireEvent.change(screen.getByLabelText('槽位 1 主字段'), { target: { value: 'activity.today' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    await waitFor(() => expect(api.saveConfig).toHaveBeenCalled())
+    const persisted = vi.mocked(api.saveConfig).mock.calls[0][0]
+    expect(persisted).toMatchObject({ schema: 2, displayId: 'display-1', x: 17, y: 29, layouts: { other } })
+    expect('layouts' in persisted && persisted.layouts.palworld.slots[0].primary).toBe('activity.today')
+  })
+
+  it('reset changes only the current game draft and preserves all connection and geometry values on save', async () => {
+    const custom = cloneLayoutProfile(PALWORLD_DEFAULT_LAYOUT)
+    custom.slots[0] = { primary: 'activity.today', fallback: 'activity.week' }
+    const config = { ...saved, scale: 1.25 as const, locked: false, displayId: 'screen', x: 9, y: 11, layouts: { palworld: custom } }
+    const api = bridge({
+      listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Player', account_name: '' }]),
+      fetchPresentation: vi.fn(async () => ({ status: 200 as const, body: preview })),
+      saveConfig: vi.fn(async () => {}), setAdjustmentMode: vi.fn(async () => {}),
+    })
+    render(<SettingsView bridge={api} initialConfig={config} />)
+    fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
+    await screen.findByTestId('identity-header')
+    fireEvent.click(screen.getByRole('button', { name: '恢复当前游戏默认布局' }))
+    expect(screen.getByLabelText('服务地址')).toHaveValue('https://palbox.test')
+    expect(screen.getByLabelText('玩家')).toHaveValue('uid-2')
+    expect(screen.getByLabelText('缩放')).toHaveValue('1.25')
+    expect(screen.getByLabelText('锁定并保持鼠标穿透')).not.toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    await waitFor(() => expect(api.saveConfig).toHaveBeenCalledWith({ ...config, layouts: { palworld: cloneLayoutProfile(PALWORLD_DEFAULT_LAYOUT) } }))
   })
 
   it('loads, deduplicates, and selects players only by exact UID', async () => {
@@ -117,6 +300,7 @@ describe('SettingsView', () => {
     render(<SettingsView bridge={api} initialConfig={saved} onSaved={onSaved} />)
     fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
     await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存设置' })).toBeEnabled())
     fireEvent.change(screen.getByLabelText('缩放'), { target: { value: '1.25' } })
     fireEvent.click(screen.getByRole('checkbox', { name: '锁定并保持鼠标穿透' }))
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
@@ -126,7 +310,7 @@ describe('SettingsView', () => {
     finish()
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
     expect(api.setAdjustmentMode).toHaveBeenCalledWith(true)
-    expect(screen.getByRole('status')).toHaveTextContent('设置已保存')
+    expect(screen.getByText('设置已保存')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '调整悬浮条位置' }))
     expect(api.setAdjustmentMode).toHaveBeenCalledWith(true)
@@ -141,6 +325,7 @@ describe('SettingsView', () => {
     render(<SettingsView bridge={api} initialConfig={saved} onSaved={onSaved} />)
     fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
     await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存设置' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
     await waitFor(() => expect(api.setAdjustmentMode).toHaveBeenCalledWith(false))
     expect(onSaved).toHaveBeenCalledTimes(1)
@@ -156,6 +341,7 @@ describe('SettingsView', () => {
     render(<SettingsView bridge={api} initialConfig={saved} onSaved={onSaved} />)
     fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
     await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存设置' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('设置已保存，但悬浮条状态同步失败')
     expect(onSaved).not.toHaveBeenCalled()
@@ -169,6 +355,7 @@ describe('SettingsView', () => {
     render(<SettingsView bridge={api} initialConfig={saved} />)
     fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
     await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存设置' })).toBeEnabled())
 
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
 
@@ -194,6 +381,7 @@ describe('SettingsView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
     await waitFor(() => expect(api.listPlayers).toHaveBeenLastCalledWith('https://other.test', expect.any(AbortSignal)))
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存设置' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
     await waitFor(() => expect(api.saveConfig).toHaveBeenCalledWith({ ...saved, baseUrl: 'https://other.test' }))
   })
@@ -220,6 +408,7 @@ describe('SettingsView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
     await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存设置' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
     await waitFor(() => expect(api.saveConfig).toHaveBeenCalledTimes(1))
   })

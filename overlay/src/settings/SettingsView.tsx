@@ -2,6 +2,10 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 
 import { configSaveWasPersisted, type DesktopBridge, type PlayerListItem } from '../core/bridge'
 import { buildOverlayConfig, normalizeBaseUrl, type OverlayConfigV1 } from '../core/config'
+import { parsePresentation, type Presentation } from '../contracts/presentation'
+import { cloneLayoutProfile, PALWORLD_DEFAULT_LAYOUT, type LayoutProfile } from '../core/layout'
+import { palworldAdapter } from '../games/palworld/adapter'
+import { HudLayoutEditor } from './HudLayoutEditor'
 import '../styles.css'
 
 export interface SettingsViewProps {
@@ -11,6 +15,21 @@ export interface SettingsViewProps {
   platform?: string
   reselectSignal?: number
   onSaved?: (config: OverlayConfigV1) => void
+}
+
+type PreviewState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'ready'; presentation: Presentation }
+  | { status: 'unsupported'; message: string }
+  | { status: 'error'; message: string }
+
+function initialLayout(config: OverlayConfigV1 | null): LayoutProfile {
+  if (config?.schema === 2) {
+    const stored = config.layouts[config.gameId]
+    if (stored) return cloneLayoutProfile(stored)
+  }
+  return palworldAdapter.defaultLayout
 }
 
 function uniquePlayers(value: unknown): PlayerListItem[] {
@@ -42,17 +61,27 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
   const [loadedBaseUrl, setLoadedBaseUrl] = useState<string | null>(null)
   const [scale, setScale] = useState(String(initialConfig?.scale ?? 1))
   const [locked, setLocked] = useState(initialConfig?.locked ?? true)
+  const [layout, setLayout] = useState(() => initialLayout(initialConfig))
+  const [preview, setPreview] = useState<PreviewState>({ status: 'idle' })
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ tone: 'status' | 'error'; text: string } | null>(null)
   const listController = useRef<AbortController | null>(null)
+  const previewController = useRef<AbortController | null>(null)
   const mounted = useRef(false)
   const listGeneration = useRef(0)
+  const previewGeneration = useRef(0)
   const saveGeneration = useRef(0)
   const adjustGeneration = useRef(0)
   const lastReselectSignal = useRef(0)
   const suppressKnownIdentity = useRef(false)
   const explicitlySelectedUserId = useRef<string | null>(null)
+  const previewSelectionIsExact = loadedBaseUrl !== null && userId !== '' &&
+    players.some((player) => player.user_id === userId)
+  const previewMatchesSelection = preview.status === 'ready' &&
+    preview.presentation.game_id === (initialConfig?.gameId ?? 'palworld') &&
+    preview.presentation.user_id === userId
+  const layoutSaveBlocked = previewSelectionIsExact && !previewMatchesSelection
 
   useEffect(() => {
     mounted.current = true
@@ -61,9 +90,11 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
     return () => {
       mounted.current = false
       listGeneration.current += 1
+      previewGeneration.current += 1
       saveGeneration.current += 1
       adjustGeneration.current += 1
       listController.current?.abort()
+      previewController.current?.abort()
       document.documentElement.classList.remove('settings-window')
       document.body.classList.remove('settings-window')
     }
@@ -80,12 +111,72 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
     if (normalized === loadedBaseUrl) return
     listGeneration.current += 1
     listController.current?.abort()
+    previewGeneration.current += 1
+    previewController.current?.abort()
+    previewController.current = null
+    setPreview({ status: 'idle' })
     listController.current = null
     setLoading(false)
     setPlayers([])
     setUserId('')
     setLoadedBaseUrl(null)
   }
+
+  useEffect(() => {
+    previewGeneration.current += 1
+    previewController.current?.abort()
+    previewController.current = null
+    if (!loadedBaseUrl || !userId || !players.some((player) => player.user_id === userId)) {
+      setPreview({ status: 'idle' })
+      return
+    }
+
+    const controller = new AbortController()
+    const generation = previewGeneration.current
+    previewController.current = controller
+    setPreview({ status: 'loading' })
+    void bridge.fetchPresentation({
+      baseUrl: loadedBaseUrl,
+      gameId: initialConfig?.gameId ?? 'palworld',
+      userId,
+    }, controller.signal).then((result) => {
+      if (!mounted.current || controller.signal.aborted || generation !== previewGeneration.current) return
+      if (result.status === 200) {
+        try {
+          const presentation = parsePresentation(result.body)
+          if (presentation.game_id !== (initialConfig?.gameId ?? 'palworld') || presentation.user_id !== userId) {
+            throw new Error('presentation identity mismatch')
+          }
+          if (presentation.fields.length === 0) {
+            setPreview({ status: 'unsupported', message: '当前游戏没有可配置字段' })
+            return
+          }
+          setPreview({ status: 'ready', presentation })
+        } catch {
+          setPreview({ status: 'error', message: 'HUD 预览数据不兼容，请更新应用或服务' })
+        }
+        return
+      }
+      if (result.status === 404 && result.code === 'presentation_unsupported') {
+        setPreview({ status: 'unsupported', message: '服务版本不支持可配置字段' })
+      } else if (result.status === 404 && result.code === 'game_not_supported') {
+        setPreview({ status: 'unsupported', message: '当前游戏不支持可配置字段' })
+      } else if (result.status === 404 && result.code === 'player_not_found') {
+        setPreview({ status: 'error', message: '所选玩家不存在，请重新加载玩家' })
+      } else if (result.status === 404) {
+        setPreview({ status: 'error', message: '当前游戏不支持可配置字段' })
+      } else {
+        setPreview({ status: 'error', message: '暂时无法加载 HUD 预览，请稍后重试' })
+      }
+    }).catch(() => {
+      if (mounted.current && !controller.signal.aborted && generation === previewGeneration.current) {
+        setPreview({ status: 'error', message: 'HUD 预览加载失败，请检查服务后重试' })
+      }
+    }).finally(() => {
+      if (previewController.current === controller) previewController.current = null
+    })
+    return () => controller.abort()
+  }, [bridge, initialConfig?.gameId, loadedBaseUrl, players, userId])
 
   async function loadPlayers() {
     listController.current?.abort()
@@ -143,6 +234,15 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
   async function save(event: FormEvent) {
     event.preventDefault()
     if (saving) return
+    if (layoutSaveBlocked) {
+      const text = preview.status === 'loading' || preview.status === 'idle'
+        ? '正在验证服务是否支持可配置字段，请稍候'
+        : preview.status === 'ready'
+          ? 'HUD 预览与当前选择不匹配，请稍候'
+          : preview.message
+      setMessage({ tone: 'error', text })
+      return
+    }
     let normalized: string
     try {
       normalized = normalizeBaseUrl(baseUrl)
@@ -160,6 +260,9 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
     }
     const config = buildOverlayConfig({
       baseUrl: normalized, userId, scale, locked,
+      gameId: initialConfig?.gameId ?? 'palworld',
+      layout,
+      layouts: initialConfig?.schema === 2 ? initialConfig.layouts : undefined,
       displayId: initialConfig?.displayId, x: initialConfig?.x, y: initialConfig?.y,
     })
     if (!config) {
@@ -262,13 +365,34 @@ export function SettingsView({ bridge, initialConfig, detectedUserId, platform, 
               <label className="settings-check"><input type="checkbox" checked={locked} onChange={(event) => setLocked(event.target.checked)} /><span>锁定并保持鼠标穿透</span></label>
             </div>
           </section>
+
+          <section className="settings-group settings-group--hud" aria-labelledby="hud-title">
+            <div className="settings-group__title">
+              <span>03</span><h2 id="hud-title">HUD 布局</h2>
+            </div>
+            {!userId ? <p className="hud-editor__state">选择精确玩家后即可加载字段目录和实时预览。</p> : null}
+            {preview.status === 'loading' ? <p className="hud-editor__state" role="status">正在加载 HUD 预览…</p> : null}
+            {preview.status === 'unsupported' ? (
+              <p className="hud-editor__state hud-editor__state--error" role="alert">{preview.message}</p>
+            ) : null}
+            {preview.status === 'error' ? (
+              <p className="hud-editor__state hud-editor__state--error" aria-live="polite">{preview.message}</p>
+            ) : null}
+            {preview.status === 'ready' ? <HudLayoutEditor
+              presentation={preview.presentation}
+              layout={layout}
+              defaultLayout={PALWORLD_DEFAULT_LAYOUT}
+              mapBaseUrl={loadedBaseUrl ?? undefined}
+              onChange={setLayout}
+            /> : null}
+          </section>
         </div>
 
         <footer className="settings-actions">
           {message ? <p role={message.tone === 'error' ? 'alert' : 'status'} className={`settings-message settings-message--${message.tone}`}>{message.text}</p> : <span />}
           <div>
             {initialConfig ? <button className="settings-button settings-button--ghost" type="button" onClick={adjustPosition}>调整悬浮条位置</button> : null}
-            <button className="settings-button settings-button--primary" type="submit" disabled={saving || loading}>{saving ? '正在保存…' : '保存设置'}</button>
+            <button className="settings-button settings-button--primary" type="submit" disabled={saving || loading || layoutSaveBlocked}>{saving ? '正在保存…' : '保存设置'}</button>
           </div>
         </footer>
       </form>

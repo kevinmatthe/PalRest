@@ -74,6 +74,7 @@ body.settings-window {
 
 .settings-form {
   display: grid;
+  height: 100%;
   min-height: 0;
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 0.7rem;
@@ -208,6 +209,7 @@ body.settings-window {
 
 .settings-actions {
   position: relative;
+  flex: none;
   z-index: 2;
   display: flex;
   flex-wrap: wrap;
@@ -222,6 +224,127 @@ body.settings-window {
 .settings-message { margin: 0; font-size: 0.875rem; }
 .settings-message--status { color: #8ce5c1; }
 .settings-message--error { color: #ff9a90; }
+
+.hud-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.hud-editor__preview {
+  order: -1;
+  min-width: 0;
+}
+
+.hud-editor__eyebrow {
+  display: block;
+  margin-bottom: 0.4rem;
+  color: var(--settings-cyan);
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.hud-editor__preview-stage {
+  min-width: 0;
+  padding: 0.3rem;
+  overflow-x: auto;
+  border: 1px solid rgba(115, 232, 234, 0.12);
+  border-radius: 0.7rem;
+  background: rgba(3, 11, 14, 0.6);
+  scrollbar-width: thin;
+}
+
+.hud-editor__preview-stage .overlay {
+  width: 30rem;
+  min-width: 30rem;
+  max-width: none;
+  height: 4.75rem;
+  min-height: 4.75rem;
+}
+
+.hud-editor__controls {
+  display: grid;
+  min-width: 0;
+  gap: 0.6rem;
+}
+
+.hud-editor fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0.55rem;
+  border: 1px solid rgba(159, 189, 187, 0.16);
+  border-radius: 0.4rem;
+}
+
+.hud-editor legend {
+  padding: 0 0.3rem;
+  color: #bdd0cf;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.hud-editor__left,
+.hud-editor__progress,
+.hud-editor__slot {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.hud-editor__slots {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.hud-editor label {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+}
+
+.hud-editor label > span {
+  color: #98abaa;
+  font-size: 0.75rem;
+}
+
+.hud-editor select {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0 0.55rem;
+  border: 1px solid rgba(159, 189, 187, 0.28);
+  border-radius: 0.35rem;
+  outline: none;
+  color: #edf8f7;
+  background: rgba(3, 11, 14, 0.78);
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.hud-editor select:focus-visible {
+  border-color: var(--settings-cyan);
+  outline: 2px solid rgba(115, 232, 234, 0.7);
+  box-shadow: 0 0 0 3px rgba(115, 232, 234, 0.16);
+}
+
+.hud-editor__hint,
+.hud-editor__state {
+  margin: 0;
+  color: var(--settings-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.hud-editor__state {
+  min-height: 2.75rem;
+  padding: 0.7rem;
+  border: 1px dashed rgba(159, 189, 187, 0.18);
+  border-radius: 0.4rem;
+}
+
+.hud-editor__state--error { color: #ff9a90; }
+.hud-editor__reset { justify-self: start; }
 
 .overlay-state {
   position: relative;
