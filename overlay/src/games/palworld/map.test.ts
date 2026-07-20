@@ -94,6 +94,23 @@ describe('private tile URL boundary', () => {
     expect(resolvePrivateTileUrl('/map/{z}/{x}/{y}.png', baseUrl)).toBeNull()
   })
 
+  it('rejects an HTTPS-to-HTTP tile downgrade even on the same host and port', () => {
+    expect(resolvePrivateTileUrl(
+      'http://palbox.tailnet.ts.net:9443/map/{z}/{x}/{y}.png',
+      serviceBaseUrl,
+    )).toBeNull()
+  })
+
+  it('requires exact origin for absolute upgrades while relative URLs inherit the configured scheme', () => {
+    const httpBase = 'http://palbox.tailnet.ts.net:9443/private/'
+    expect(resolvePrivateTileUrl(
+      'https://palbox.tailnet.ts.net:9443/map/{z}/{x}/{y}.png',
+      httpBase,
+    )).toBeNull()
+    expect(resolvePrivateTileUrl('/map/{z}/{x}/{y}.png', httpBase))
+      .toBe('http://palbox.tailnet.ts.net:9443/map/{z}/{x}/{y}.png')
+  })
+
   it('contains no public map fallback in new overlay map sources or resolved URLs', () => {
     const source = [
       readFileSync('src/games/palworld/map.ts', 'utf8'),

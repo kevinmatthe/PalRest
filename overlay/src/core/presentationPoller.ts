@@ -44,6 +44,7 @@ export class PresentationPoller {
   private config: PresentationPollerConfig
   private readonly now: () => number
   private running = false
+  private explicitlyStopped = true
   private generation = 0
   private failureCount = 0
   private retryDueAt: number | undefined
@@ -70,6 +71,7 @@ export class PresentationPoller {
 
   start(): void {
     if (this.running) return
+    this.explicitlyStopped = false
     this.running = true
     this.generation += 1
     this.failureCount = 0
@@ -90,8 +92,9 @@ export class PresentationPoller {
     this.lastPresentation = undefined
     this.failureCount = 0
     this.retryDueAt = undefined
-    if (!this.running) return
+    if (this.explicitlyStopped) return
 
+    this.running = true
     this.generation += 1
     this.clearAllTimers()
     this.controller?.abort()
@@ -105,6 +108,7 @@ export class PresentationPoller {
       this.controller === undefined && this.pollTimer === undefined &&
       this.freshnessTimer === undefined && this.requestTimer === undefined
     ) return
+    this.explicitlyStopped = true
     this.running = false
     this.generation += 1
     this.retryDueAt = undefined

@@ -591,4 +591,44 @@ describe('PresentationPoller', () => {
     expect(signal.aborted).toBe(false)
     expect(bridge.fetchPresentation).toHaveBeenCalledTimes(1)
   })
+
+  it.each([
+    ['player_not_found', 'needs-player'],
+    ['presentation_unsupported', 'incompatible'],
+  ] as const)('restarts a %s terminal poller when request identity changes', async (code, terminalStatus) => {
+    const replacement = { ...config, userId: 'replacement-user' }
+    const bridge = bridgeWith(vi.fn()
+      .mockResolvedValueOnce({ status: 404, code })
+      .mockResolvedValueOnce({ status: 200, body: {
+        ...presentation(),
+        user_id: replacement.userId,
+      } }))
+    const poller = new PresentationPoller({ bridge, config })
+    poller.start()
+    await settle()
+    expect(poller.getState().status).toBe(terminalStatus)
+
+    poller.updateConfig(replacement)
+    expect(poller.getState().status).toBe('loading')
+    await settle()
+
+    expect(bridge.fetchPresentation).toHaveBeenCalledTimes(2)
+    expect(bridge.fetchPresentation.mock.calls[1][0]).toEqual(replacement)
+    expect(poller.getState().status).toBe('ready')
+  })
+
+  it('does not revive after explicit stop even when request identity changes', async () => {
+    const bridge = bridgeWith(vi.fn().mockResolvedValue({ status: 404, code: 'player_not_found' }))
+    const poller = new PresentationPoller({ bridge, config })
+    poller.start()
+    await settle()
+    expect(poller.getState().status).toBe('needs-player')
+
+    poller.stop()
+    poller.updateConfig({ ...config, userId: 'replacement-user' })
+    await settle()
+
+    expect(poller.getState().status).toBe('idle')
+    expect(bridge.fetchPresentation).toHaveBeenCalledTimes(1)
+  })
 })

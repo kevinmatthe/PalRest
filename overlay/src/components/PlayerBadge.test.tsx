@@ -39,4 +39,30 @@ describe('PlayerBadge', () => {
     expect(within(badge).getByText('帕')).toBeInTheDocument()
     expect(within(badge).queryByText(/Lv\./)).not.toBeInTheDocument()
   })
+
+  it.each([
+    ['  👩‍🚀 Pilot', '👩‍🚀'],
+    ['🇨🇳 Keeper', '🇨🇳'],
+    ['e\u0301clair', 'e\u0301'],
+    ['  帕鲁朋友', '帕'],
+  ])('uses the first grapheme cluster from %s', (name, expected) => {
+    render(<PlayerBadge presentation={presentation(name)} />)
+    expect(within(screen.getByRole('group')).getByText(expected)).toBeInTheDocument()
+  })
+
+  it.each([
+    ['  👩‍🚀 Pilot', '👩‍🚀'],
+    ['🇨🇳 Keeper', '🇨🇳'],
+    ['e\u0301clair', 'e\u0301'],
+    ['  帕鲁朋友', '帕'],
+  ])('falls back to a complete common grapheme for %s without Intl.Segmenter', (name, expected) => {
+    const descriptor = Object.getOwnPropertyDescriptor(Intl, 'Segmenter')
+    Object.defineProperty(Intl, 'Segmenter', { configurable: true, value: undefined })
+    try {
+      render(<PlayerBadge presentation={presentation(name)} />)
+      expect(within(screen.getByRole('group')).getByText(expected)).toBeInTheDocument()
+    } finally {
+      if (descriptor) Object.defineProperty(Intl, 'Segmenter', descriptor)
+    }
+  })
 })

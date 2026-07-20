@@ -18,6 +18,7 @@ export interface PalworldMiniMapProps {
   map: PresentationMap
   serviceBaseUrl: string
   className?: string
+  onUnavailable?: () => void
 }
 
 function coordinateFor(map: PresentationMap): LeafletSimpleCoordinate | null {
@@ -32,6 +33,7 @@ export function PalworldMiniMap({
   map: mapPosition,
   serviceBaseUrl,
   className,
+  onUnavailable,
 }: PalworldMiniMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const leafletMapRef = useRef<L.Map | null>(null)
@@ -51,6 +53,7 @@ export function PalworldMiniMap({
   const mapReady = supported && resolvedTileUrl !== null && coordinate !== null
 
   useEffect(() => {
+    let active = true
     setTileUnavailable(false)
     const container = containerRef.current
     const initialCoordinate = desiredCoordinateRef.current
@@ -58,53 +61,74 @@ export function PalworldMiniMap({
       return
     }
 
-    const leafletMap = L.map(container, {
-      crs: L.CRS.Simple,
-      attributionControl: false,
-      zoomControl: false,
-      dragging: false,
-      doubleClickZoom: false,
-      scrollWheelZoom: false,
-      boxZoom: false,
-      keyboard: false,
-      touchZoom: false,
-    })
-    const tileLayer = L.tileLayer(resolvedTileUrl, {
-      bounds: PALWORLD_TILE_BOUNDS,
-      noWrap: true,
-      minZoom: FIXED_ZOOM,
-      maxZoom: FIXED_ZOOM,
-      minNativeZoom: FIXED_ZOOM,
-      maxNativeZoom: FIXED_ZOOM,
-    })
-    const marker = L.circleMarker(initialCoordinate, {
-      interactive: false,
-      radius: 3,
-      color: '#eef8f7',
-      weight: 1,
-      fillColor: '#55e6df',
-      fillOpacity: 1,
-    })
-    const handleTileError = () => setTileUnavailable(true)
+    let leafletMap: L.Map | null = null
+    let tileLayer: L.TileLayer | null = null
+    let marker: L.CircleMarker | null = null
+    const handleTileError = () => {
+      if (!active) return
+      setTileUnavailable(true)
+      onUnavailable?.()
+    }
 
-    tileLayer.on('tileerror', handleTileError)
-    tileLayer.addTo(leafletMap)
-    marker.addTo(leafletMap)
-    leafletMap.setView(initialCoordinate, FIXED_ZOOM, { animate: false })
-    leafletMapRef.current = leafletMap
-    markerRef.current = marker
-    currentCoordinateRef.current = initialCoordinate
+    try {
+      leafletMap = L.map(container, {
+        crs: L.CRS.Simple,
+        attributionControl: false,
+        zoomControl: false,
+        dragging: false,
+        doubleClickZoom: false,
+        scrollWheelZoom: false,
+        boxZoom: false,
+        keyboard: false,
+        touchZoom: false,
+      })
+      tileLayer = L.tileLayer(resolvedTileUrl, {
+        bounds: PALWORLD_TILE_BOUNDS,
+        noWrap: true,
+        minZoom: FIXED_ZOOM,
+        maxZoom: FIXED_ZOOM,
+        minNativeZoom: FIXED_ZOOM,
+        maxNativeZoom: FIXED_ZOOM,
+      })
+      marker = L.circleMarker(initialCoordinate, {
+        interactive: false,
+        radius: 3,
+        color: '#eef8f7',
+        weight: 1,
+        fillColor: '#55e6df',
+        fillOpacity: 1,
+      })
+
+      tileLayer.on('tileerror', handleTileError)
+      tileLayer.addTo(leafletMap)
+      marker.addTo(leafletMap)
+      leafletMap.setView(initialCoordinate, FIXED_ZOOM, { animate: false })
+      leafletMapRef.current = leafletMap
+      markerRef.current = marker
+      currentCoordinateRef.current = initialCoordinate
+    } catch {
+      if (active) {
+        setTileUnavailable(true)
+        onUnavailable?.()
+      }
+      tileLayer?.off('tileerror', handleTileError)
+      marker?.remove()
+      tileLayer?.remove()
+      leafletMap?.remove()
+      return () => { active = false }
+    }
 
     return () => {
-      tileLayer.off('tileerror', handleTileError)
-      marker.remove()
-      tileLayer.remove()
-      leafletMap.remove()
+      active = false
+      tileLayer?.off('tileerror', handleTileError)
+      marker?.remove()
+      tileLayer?.remove()
+      leafletMap?.remove()
       if (leafletMapRef.current === leafletMap) leafletMapRef.current = null
       if (markerRef.current === marker) markerRef.current = null
       currentCoordinateRef.current = null
     }
-  }, [mapReady, mapPosition.projection, mapPosition.tile_set, resolvedTileUrl, serviceBaseUrl])
+  }, [mapReady, mapPosition.projection, mapPosition.tile_set, onUnavailable, resolvedTileUrl, serviceBaseUrl])
 
   useEffect(() => {
     const leafletMap = leafletMapRef.current

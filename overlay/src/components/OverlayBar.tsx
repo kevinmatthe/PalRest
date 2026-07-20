@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { CSSProperties } from 'react'
+import { useCallback, useState, type CSSProperties } from 'react'
 
 import type { DisplayTone, Presentation, SourceStatus } from '../contracts/presentation'
 import { resolveProgress, resolveSlots, type LayoutProfile } from '../core/layout'
@@ -94,11 +94,24 @@ export function OverlayBar({
   scale,
   mapBaseUrl,
 }: OverlayBarProps) {
+  const [failedMapIdentity, setFailedMapIdentity] = useState<string | null>(null)
   const tone = overallTone(presentation)
   const fields = new Map(presentation.fields.map((field) => [field.id, field]))
   const slots = resolveSlots(fields, layout.slots)
   const progress = resolveProgress(presentation.fields, layout.progress)
-  const showMap = layout.left.primary === 'map' && usableMap(presentation, mapBaseUrl)
+  const mapUsable = usableMap(presentation, mapBaseUrl)
+  const mapIdentity = mapUsable ? JSON.stringify([
+    presentation.game_id,
+    presentation.user_id,
+    mapBaseUrl,
+    presentation.map!.projection,
+    presentation.map!.tile_set,
+    presentation.map!.tile_url,
+  ]) : null
+  const showMap = layout.left.primary === 'map' && mapUsable && failedMapIdentity !== mapIdentity
+  const handleMapUnavailable = useCallback(() => {
+    if (mapIdentity !== null) setFailedMapIdentity(mapIdentity)
+  }, [mapIdentity])
   const observedAt = formatObservedAt(presentation.observed_at)
   const rootClasses = [
     'overlay',
@@ -120,7 +133,12 @@ export function OverlayBar({
     >
       <div className="overlay__frame">
         {showMap ? (
-          <PalworldMiniMap map={presentation.map!} serviceBaseUrl={mapBaseUrl!} />
+          <PalworldMiniMap
+            key={mapIdentity}
+            map={presentation.map!}
+            serviceBaseUrl={mapBaseUrl!}
+            onUnavailable={handleMapUnavailable}
+          />
         ) : (
           <PlayerBadge presentation={presentation} />
         )}

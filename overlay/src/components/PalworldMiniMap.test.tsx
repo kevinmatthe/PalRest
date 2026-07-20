@@ -150,7 +150,8 @@ describe('PalworldMiniMap', () => {
   })
 
   it('contains tile failures locally and keeps an accessible unavailable status', () => {
-    render(<PalworldMiniMap map={position()} serviceBaseUrl={SERVICE_BASE} />)
+    const onUnavailable = vi.fn()
+    render(<PalworldMiniMap map={position()} serviceBaseUrl={SERVICE_BASE} onUnavailable={onUnavailable} />)
     const tileErrorHandler = leaflet.tileLayerInstance.on.mock.calls.find(
       ([event]) => event === 'tileerror',
     )?.[1] as (() => void) | undefined
@@ -167,13 +168,38 @@ describe('PalworldMiniMap', () => {
       background: '#040c0f',
     })
     expect(leaflet.mapInstance.remove).not.toHaveBeenCalled()
+    expect(onUnavailable).toHaveBeenCalledTimes(1)
   })
 
-  it('detaches tile listeners and removes Leaflet resources on unmount', () => {
-    const { unmount } = render(<PalworldMiniMap map={position()} serviceBaseUrl={SERVICE_BASE} />)
+  it('reports map initialization failures to the parent fallback', () => {
+    const onUnavailable = vi.fn()
+    leaflet.map.mockImplementationOnce(() => { throw new Error('container unavailable') })
+
+    render(<PalworldMiniMap map={position()} serviceBaseUrl={SERVICE_BASE} onUnavailable={onUnavailable} />)
+
+    expect(onUnavailable).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('status')).toHaveTextContent('地图不可用')
+  })
+
+  it('detaches a registered tile listener when later initialization fails', () => {
+    const onUnavailable = vi.fn()
+    leaflet.tileLayerInstance.addTo.mockImplementationOnce(() => { throw new Error('layer unavailable') })
+
+    render(<PalworldMiniMap map={position()} serviceBaseUrl={SERVICE_BASE} onUnavailable={onUnavailable} />)
+
     const tileErrorHandler = leaflet.tileLayerInstance.on.mock.calls.find(
       ([event]) => event === 'tileerror',
     )?.[1]
+    expect(leaflet.tileLayerInstance.off).toHaveBeenCalledWith('tileerror', tileErrorHandler)
+    expect(onUnavailable).toHaveBeenCalledTimes(1)
+  })
+
+  it('detaches tile listeners and removes Leaflet resources on unmount', () => {
+    const onUnavailable = vi.fn()
+    const { unmount } = render(<PalworldMiniMap map={position()} serviceBaseUrl={SERVICE_BASE} onUnavailable={onUnavailable} />)
+    const tileErrorHandler = leaflet.tileLayerInstance.on.mock.calls.find(
+      ([event]) => event === 'tileerror',
+    )?.[1] as (() => void) | undefined
 
     unmount()
 
@@ -181,5 +207,7 @@ describe('PalworldMiniMap', () => {
     expect(leaflet.markerInstance.remove).toHaveBeenCalledTimes(1)
     expect(leaflet.tileLayerInstance.remove).toHaveBeenCalledTimes(1)
     expect(leaflet.mapInstance.remove).toHaveBeenCalledTimes(1)
+    tileErrorHandler?.()
+    expect(onUnavailable).not.toHaveBeenCalled()
   })
 })

@@ -77,7 +77,7 @@ export function resolvePrivateTileUrl(tileUrl: string, serviceBaseUrl: string): 
   if (service === null) return null
 
   const resolved = parseHttpUrl(tileUrl, service)
-  if (resolved === null || resolved.host !== service.host) return null
+  if (resolved === null || resolved.origin !== service.origin) return null
 
   return resolved.href.replace(/%7B([zxy])%7D/gi, '{$1}')
 }
