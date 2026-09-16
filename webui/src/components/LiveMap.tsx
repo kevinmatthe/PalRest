@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
+import { disposeLeafletMap } from '../map/disposeLeafletMap';
 import 'leaflet/dist/leaflet.css';
 import { Map as MapIcon, Radio, RefreshCw, Users } from 'lucide-react';
 import {
@@ -143,7 +144,7 @@ export function LiveMap({ refreshKey = 0, onOpenPlayer }: LiveMapProps) {
     });
     return () => {
       ro?.disconnect();
-      map.remove();
+      disposeLeafletMap(map);
       leafletRef.current = null;
       markersLayerRef.current = null;
       landmarkLayerRef.current = null;
