@@ -34,7 +34,10 @@ it('collapses the roster and pauses follow when the map is dragged', async () =>
 
 it('adds only the selected player’s verified recent change and removes it before its historical endpoint', async () => {
   const checkpoints: api.ProgressCheckpoint[] = [0, 1].map(i => ({ id: i + 1, world_id: 'w', observed_at: new Date(now - 55000 + i * 10000).toISOString(), captured_at: new Date(now - 55000 + i * 10000).toISOString(), source: 'save_import', schema_version: 1, consistent: true, boundary: '', metrics: { owned_pals: { state: 'known', value: 5 + i * 2 }, capture_total: { state: 'unknown' }, paldeck: { state: 'unknown' }, fast_travel: { state: 'unknown' } } }));
-  vi.mocked(api.getPlayerProgress).mockResolvedValue({ user_id: 'u', status: 'available', baseline: null, checkpoints, changes: [{ id: 1, metric: 'owned_pals', before: 5, after: 7, delta: 2, added: [], removed: [], interval_start: checkpoints[0].observed_at, interval_end: checkpoints[1].observed_at, previous_checkpoint_id: 1, checkpoint_id: 2, rule_version: 1, confidence: 'observed', source: 'save_import' }], checkpoint_total: 2, change_total: 1 });
+  const progress: api.PlayerProgressResponse = { user_id: 'u', status: 'available', baseline: null, checkpoints, changes: [{ id: 1, metric: 'owned_pals', before: 5, after: 7, delta: 2, added: [], removed: [], interval_start: checkpoints[0].observed_at, interval_end: checkpoints[1].observed_at, previous_checkpoint_id: 1, checkpoint_id: 2, rule_version: 1, confidence: 'observed', source: 'save_import' }], checkpoint_total: 2, change_total: 1 };
+  let resolveHistoryProgress!: (data: api.PlayerProgressResponse) => void;
+  const historyProgress = new Promise<api.PlayerProgressResponse>(resolve => { resolveHistoryProgress = resolve; });
+  vi.mocked(api.getPlayerProgress).mockResolvedValueOnce(progress).mockReturnValueOnce(historyProgress);
   render(<MapWorkspace players={[player]} refreshKey={0} />);
   const map = screen.getByTestId('world-map');
   fireEvent.click(await screen.findByRole('button', { name: /选择玩家 测试玩家/ }));
@@ -44,6 +47,10 @@ it('adds only the selected player’s verified recent change and removes it befo
   const slider = screen.getByRole('slider', { name: '回放时间' });
   await waitFor(() => expect(slider).toBeEnabled());
   fireEvent.change(slider, { target: { value: String(now - 45000) } });
+  // Trajectory readiness does not imply that the separate progress request has resolved.
+  expect(api.getPlayerProgress).toHaveBeenCalledTimes(2);
+  expect(JSON.parse(map.dataset.points!)[0].recentProgress).toBeUndefined();
+  await act(async () => { resolveHistoryProgress(progress); });
   expect(JSON.parse(map.dataset.points!)[0].recentProgress).toContain('拥有帕鲁 5 → 7');
   fireEvent.change(slider, { target: { value: String(now - 50000) } });
   expect(JSON.parse(map.dataset.points!)[0].recentProgress).toBeUndefined();
