@@ -15,8 +15,8 @@ describe('behavior thresholds', () => {
     expect(D_IDLE).toBe(500);
     expect(V_IDLE).toBe(50);
     expect(V_TRAVEL).toBe(800);
-    expect(T_GAP_MS).toBe(5 * 60_000);
-    expect(T_ACTIVE_CAP_MS).toBe(T_GAP_MS);
+    expect(T_GAP_MS).toBe(5 * 60_000 + 30_000);
+    expect(T_ACTIVE_CAP_MS).toBe(5 * 60_000);
   });
 });
 

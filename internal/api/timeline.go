@@ -57,12 +57,19 @@ func (s *Server) getPlayerTimeline(w http.ResponseWriter, r *http.Request) {
 	for _, event := range timeline.Events {
 		events = append(events, safeEvent(event))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"user_id": userID, "events": events, "trajectories": timeline.Trajectories,
 		"private_samples": []store.PlayerPrivateSample{},
-		"event_total": timeline.EventTotal, "trajectory_total": timeline.TrajectoryTotal,
+		"event_total":     timeline.EventTotal, "trajectory_total": timeline.TrajectoryTotal,
 		"private_sample_total": 0,
-	})
+	}
+	if timeline.RangeStart != nil {
+		response["range_start"] = timeline.RangeStart
+	}
+	if timeline.RangeEnd != nil {
+		response["range_end"] = timeline.RangeEnd
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) getPlayerWorldPOIs(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +143,7 @@ func (s *Server) getAdminPlayerTimeline(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id": userID, "events": events, "trajectories": timeline.Trajectories,
 		"private_samples": timeline.PrivateSamples,
-		"event_total": timeline.EventTotal, "trajectory_total": timeline.TrajectoryTotal,
+		"event_total":     timeline.EventTotal, "trajectory_total": timeline.TrajectoryTotal,
 		"private_sample_total": timeline.PrivateSampleTotal,
 	})
 }

@@ -77,12 +77,33 @@ it('preserves the map and historical cursor through live refresh, then returns t
   expect(JSON.parse(map.dataset.points!)[0].x).toBe(9000);
 });
 
-it('shows truncated history even when the detail panel is closed', async () => {
-  vi.mocked(api.getPlayerTimeline).mockResolvedValue({ ...history, trajectory_total: 1000 });
+it('loads older positions on demand and treats an unloaded seek as buffering rather than a gap', async () => {
+  const observations = Array.from({ length: 830 }, (_, i) => ({ ...history.trajectories[0], observed_at: new Date(now - 830 * 5000 + i * 5000).toISOString(), x: 3000 + i, source_ref: String(i) }));
+  let held = false;
+  const pending: Array<() => void> = [];
+  vi.mocked(api.getPlayerTimeline).mockImplementation((_user, start, end, limit = 500) => {
+    const inRange = observations.filter(p => Date.parse(p.observed_at) >= Date.parse(start) && Date.parse(p.observed_at) < Date.parse(end));
+    const response = { ...history, trajectories: inRange.slice(-limit), trajectory_total: inRange.length, event_total: 0,
+      range_start: inRange[0]?.observed_at, range_end: inRange.at(-1)?.observed_at };
+    return held ? new Promise(resolve => pending.push(() => resolve(response))) : Promise.resolve(response);
+  });
   render(<MapWorkspace players={[player]} refreshKey={0} />);
   fireEvent.click(await screen.findByRole('button', { name: /选择玩家 测试玩家/ }));
   fireEvent.click(screen.getByRole('button', { name: '历史回放' }));
-  expect(await screen.findByText(/当前仅加载部分记录/)).toBeInTheDocument();
+  const map = screen.getByTestId('world-map');
+  await waitFor(() => expect(JSON.parse(map.dataset.points!)[0]?.x).toBe(3000));
+  const slider = screen.getByRole('slider', { name: '回放时间' });
+  expect(slider).toHaveAttribute('min', String(Date.parse(observations[0].observed_at)));
+  expect(slider).toHaveAttribute('max', String(Date.parse(observations.at(-1)!.observed_at)));
+  held = true;
+  fireEvent.change(slider, { target: { value: String(Date.parse(observations[600].observed_at)) } });
+  expect(await screen.findByText('正在缓冲此处的位置记录…')).toBeInTheDocument();
+  expect(screen.queryByText('这个时间段没有位置记录')).not.toBeInTheDocument();
+  expect(screen.queryByText(/观测缺口/)).not.toBeInTheDocument();
+  held = false;
+  await act(async () => { pending.splice(0).forEach(resolve => resolve()); });
+  await waitFor(() => expect(JSON.parse(map.dataset.points!)[0]?.x).toBe(3600));
+  expect(slider).toHaveValue(String(Date.parse(observations[600].observed_at)));
 });
 
 it('disables playback when the selected player has no history', async () => {
@@ -158,4 +179,28 @@ it('clears dwell heat when rewinding before completed observations without remou
   expect(screen.getByTestId('world-map')).toBe(map);
   fireEvent.click(screen.getByLabelText('停留热度'));
   expect(JSON.parse(map.dataset.heat!)).toEqual([]);
+});
+
+it('keeps a seek made as soon as asynchronously loaded playback becomes enabled', async () => {
+  let resolveHistory!: (data: api.PlayerTimelineResponse) => void;
+  vi.mocked(api.getPlayerTimeline).mockReturnValue(new Promise(resolve => { resolveHistory = resolve; }));
+  render(<MapWorkspace players={[player]} refreshKey={0} />);
+  fireEvent.click(await screen.findByRole('button', { name: /选择玩家 测试玩家/ }));
+  fireEvent.click(screen.getByRole('button', { name: '历史回放' }));
+  const slider = screen.getByRole('slider', { name: '回放时间' }) as HTMLInputElement;
+  // Observe readiness before passive effects flush, as waitFor can do.
+  // Resolving outside act deliberately exposes this input/reset ordering.
+  const sought = new Promise<void>(resolve => {
+    const observer = new MutationObserver(() => {
+      if (slider.disabled) return;
+      observer.disconnect();
+      fireEvent.change(slider, { target: { value: String(now - 45000) } });
+      resolve();
+    });
+    observer.observe(slider, { attributes: true });
+  });
+  resolveHistory(history);
+  await sought;
+  await act(async () => {});
+  expect(JSON.parse(screen.getByTestId('world-map').dataset.points!)[0].x).toBe(3500);
 });

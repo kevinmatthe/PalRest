@@ -1,0 +1,34 @@
+.team-map-shell { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto auto; height: 100%; overflow: hidden; color: #e2eeeb; background: #0b171b; font-family: "Microsoft YaHei UI", "PingFang SC", sans-serif; font-size: 13px; }
+.team-map-shell * { box-sizing: border-box; }
+.team-map-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px 8px; border-bottom: 1px solid #293b40; }
+.team-map-eyebrow { color: #70e2d2; font-size: 9px; font-weight: 700; letter-spacing: .17em; }
+.team-map-header h1 { font-size: 18px; font-weight: 600; margin: 5px 0 0; }
+.team-map-shell button { font: inherit; color: inherit; background: #13282e; border: 1px solid #31474e; border-radius: 5px; padding: 8px 12px; min-height: 36px; cursor: pointer; }
+.team-map-shell button:hover { background: #203a42; }
+.team-map-shell button:focus-visible { outline: 2px solid #70e2d2; outline-offset: 2px; }
+.team-map-shell button:disabled { opacity: .45; cursor: default; }
+.team-map-shell button[aria-pressed="true"] { border-color: #70e2d2; color: #70e2d2; }
+.team-map-close kbd { color: #94aaa9; margin-left: 8px; font-size: 10px; }
+.team-map-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 14px; }
+.team-map-toolbar > span { margin-left: auto; font-size: 11px; color: #9bafae; }
+.team-map-stage { position: relative; min-height: 0; background: #142629; }
+.team-map-canvas { position: absolute; inset: 0; background: #142629; }
+.team-map-notice { position: absolute; z-index: 500; top: 45%; left: 10%; right: 10%; margin: 0; text-align: center; padding: 14px; background: #0b171b; border: 1px solid #31474e; pointer-events: none; }
+.team-map-tile-error { position: absolute; bottom: 0; left: 0; z-index: 500; padding: 8px; margin: 0; background: #0b171b; color: #edbd73; font-size: 11px; pointer-events: none; }
+.team-map-roster { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 14px; max-height: 64px; overflow: auto; border-top: 1px solid #293b40; }
+.team-map-roster:empty { display: none; }
+.team-map-roster button { display: flex; align-items: center; gap: 6px; max-width: 100%; overflow-wrap: anywhere; font-size: 11px; padding: 4px 8px; min-height: 28px; }
+.team-map-roster i { width: 6px; height: 6px; flex: none; border-radius: 50%; background: #edbd73; }
+.team-map-roster .is-self i { background: #70e2d2; }
+.team-map-status { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; padding: 8px 14px; font-size: 11px; color: #94aaa9; border-top: 1px solid #293b40; }
+.team-map-status.is-stale { color: #edbd73; }
+.team-map-shell .team-map-label { color: #e2eeeb; background: #0b171b; border: 1px solid #31474e; box-shadow: none; font-size: 11px; max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.team-map-shell .leaflet-popup-content-wrapper, .team-map-shell .leaflet-popup-tip { color: #e2eeeb; background: #0b171b; box-shadow: none; }
+
+@media (min-height: 480px) {
+  .team-map-header { padding: 16px 18px 12px; }
+  .team-map-header h1 { font-size: 22px; }
+  .team-map-roster { max-height: 92px; }
+}
+
+.team-map-teleport-legend { position: absolute; top: 10px; right: 10px; z-index: 500; padding: 6px 8px; border: 1px dashed #c2b4ff; color: #c2b4ff; background: #0b171b; font-size: 11px; pointer-events: none; }

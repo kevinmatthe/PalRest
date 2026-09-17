@@ -30,6 +30,48 @@ describe('native HTTP invoke gate', () => {
     events.listen.mockReset()
   })
 
+  it('routes team map requests through the abortable native HTTP gate', async () => {
+    const bridge = createDesktopBridge()
+    expect(bridge.fetchLivePositions).toBeTypeOf('function')
+    tauri.invoke.mockResolvedValue({ as_of: '', online_count: 0, positioned: 0, players: [] })
+    await bridge.fetchLivePositions!('https://palbox.test', new AbortController().signal)
+    expect(tauri.invoke).toHaveBeenCalledWith('fetch_live_positions', { baseUrl: 'https://palbox.test' })
+    await bridge.openTeamMap!()
+    await bridge.closeTeamMap!()
+    expect(tauri.invoke).toHaveBeenCalledWith('open_team_map')
+    expect(tauri.invoke).toHaveBeenCalledWith('close_team_map')
+  })
+
+  it('validates visibility events and exposes native visibility state', async () => {
+    tauri.invoke.mockResolvedValue(false)
+    const unlisten = vi.fn()
+    events.listen.mockResolvedValue(unlisten)
+    const bridge = createDesktopBridge()
+    await expect(bridge.isOverlayVisible!()).resolves.toBe(false)
+    expect(tauri.invoke).toHaveBeenCalledWith('is_overlay_visible')
+    const changed = vi.fn()
+    await expect(bridge.onOverlayVisibilityChanged!(changed)).resolves.toBe(unlisten)
+    expect(events.listen).toHaveBeenCalledWith('overlay-visibility-changed', expect.any(Function))
+    events.listen.mock.calls[0][1]({ payload: false })
+    events.listen.mock.calls[0][1]({ payload: 'false' })
+    expect(changed.mock.calls).toEqual([[false]])
+  })
+
+  it('does not issue an aborted queued map request after the active request settles', async () => {
+    const active = deferred<unknown>()
+    tauri.invoke.mockReturnValue(active.promise)
+    const bridge = createDesktopBridge()
+    const first = bridge.listPlayers('https://palbox.test', new AbortController().signal)
+    const controller = new AbortController()
+    const queued = bridge.fetchLivePositions!('https://palbox.test', controller.signal)
+    controller.abort()
+    await expect(queued).rejects.toMatchObject({ name: 'AbortError' })
+    active.resolve([])
+    await first
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(tauri.invoke).toHaveBeenCalledTimes(1)
+  })
+
   it('subscribes to native lifecycle events and returns their cleanup handles', async () => {
     const unlistenAdjustment = vi.fn()
     const unlistenReselect = vi.fn()

@@ -4,6 +4,8 @@ pub mod lifecycle;
 mod platform;
 pub mod process;
 pub mod tray;
+#[cfg(feature = "native")]
+mod team_map;
 
 #[cfg(any(feature = "native", test))]
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -91,7 +93,7 @@ mod tests {
 mod native {
     use super::{
         SaveConfigError, SaveConfigSyncAction, config, http, lifecycle, platform,
-        save_config_sync_actions, tray,
+        save_config_sync_actions, tray, team_map,
     };
     use tauri::{AppHandle, Emitter, Manager, State, Window, WindowEvent};
 
@@ -120,9 +122,14 @@ mod native {
             .map_err(|_| SaveConfigError::persistence())?;
         for action in save_config_sync_actions(current_platform()) {
             match action {
-                SaveConfigSyncAction::EmitCanonicalConfig => app
-                    .emit_to("overlay", "overlay-config-changed", &saved)
-                    .map_err(|_| SaveConfigError::sync())?,
+                SaveConfigSyncAction::EmitCanonicalConfig => {
+                    app.emit_to("overlay", "overlay-config-changed", &saved)
+                        .map_err(|_| SaveConfigError::sync())?;
+                    if let Some(map) = app.get_webview_window(team_map::LABEL) {
+                        map.emit("overlay-config-changed", &saved)
+                            .map_err(|_| SaveConfigError::sync())?;
+                    }
+                },
                 SaveConfigSyncAction::ApplyVisibility(event) => app
                     .state::<lifecycle::LifecycleController>()
                     .transition(&app, event)
@@ -130,6 +137,23 @@ mod native {
             }
         }
         Ok(())
+    }
+
+    #[tauri::command]
+    async fn fetch_live_positions(bridge: State<'_, http::HttpBridge>, base_url: String) -> Result<http::LivePositions, String> {
+        bridge.fetch_live_positions(base_url).await
+    }
+
+    #[tauri::command]
+    async fn open_team_map(app: AppHandle) -> Result<(), String> { team_map::open(&app) }
+
+    #[tauri::command]
+    async fn close_team_map(app: AppHandle) -> Result<(), String> { team_map::close(&app) }
+
+    #[tauri::command]
+    fn is_overlay_visible(app: AppHandle) -> Result<bool, String> {
+        app.get_webview_window("overlay").ok_or_else(|| "overlay unavailable".to_string())?
+            .is_visible().map_err(|error| error.to_string())
     }
 
     #[tauri::command]
@@ -191,6 +215,7 @@ mod native {
     pub fn run() {
         let bridge = http::HttpBridge::new().expect("failed to create the restricted HTTP client");
         tauri::Builder::default()
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
             .manage(bridge)
             .manage(lifecycle::LifecycleController::default())
             .setup(|app| {
@@ -203,11 +228,15 @@ mod native {
                     .is_some();
                 lifecycle::initialise(app.handle()).map_err(std::io::Error::other)?;
                 tray::setup(app, tray::should_show_settings_on_launch(has_valid_config))?;
+                team_map::register_shortcut(app.handle());
                 lifecycle::start_monitor(app.handle().clone());
                 Ok(())
             })
             .on_window_event(|window, event| {
                 if let WindowEvent::CloseRequested { api, .. } = event {
+                    if lifecycle::close_action(window.label()) == lifecycle::CloseAction::Destroy {
+                        return;
+                    }
                     api.prevent_close();
                     if lifecycle::close_action(window.label()) == lifecycle::CloseAction::Hide {
                         let _ = window.hide();
@@ -215,6 +244,10 @@ mod native {
                 }
             })
             .invoke_handler(tauri::generate_handler![
+                fetch_live_positions,
+                open_team_map,
+                close_team_map,
+                is_overlay_visible,
                 load_config,
                 save_config,
                 fetch_snapshot,

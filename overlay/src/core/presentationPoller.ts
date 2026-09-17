@@ -32,7 +32,9 @@ interface PresentationBridge {
 type Listener = () => void
 type Timer = ReturnType<typeof setTimeout>
 
-const POLL_DELAY_MS = 2_000
+// Match the default server snapshot cadence; retries remain responsive.
+const POLL_DELAY_MS = 5_000
+const INITIAL_RETRY_DELAY_MS = 2_000
 const REQUEST_TIMEOUT_MS = 5_000
 const MAX_RETRY_DELAY_MS = 30_000
 const MAX_TIMER_DELAY_MS = 2_147_483_647
@@ -242,7 +244,7 @@ export class PresentationPoller {
 
   private handleTransientFailure(generation: number): void {
     if (!this.isCurrent(generation)) return
-    const delay = Math.min(POLL_DELAY_MS * (2 ** this.failureCount), MAX_RETRY_DELAY_MS)
+    const delay = Math.min(INITIAL_RETRY_DELAY_MS * (2 ** this.failureCount), MAX_RETRY_DELAY_MS)
     if (delay < MAX_RETRY_DELAY_MS) this.failureCount += 1
     this.retryDueAt = this.now() + delay
     this.publish(this.lastPresentation

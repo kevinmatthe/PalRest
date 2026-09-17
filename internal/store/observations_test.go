@@ -1643,3 +1643,62 @@ func TestObservationCleanupIsBoundedAndPreservesProtectedRows(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicTimelineBoundsCoverFullRangeWithoutPrivateSamples(t *testing.T) {
+	repo, _ := openTemp(t)
+	base := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	at := func(minute int) time.Time { return base.Add(time.Duration(minute) * time.Minute) }
+	write := PlayerObservationWrite{
+		Events: []ActivityEvent{
+			observationEvent("before", "player_joined", "u", at(-1)),
+			observationEvent("first", "player_joined", "u", at(0)),
+			observationEvent("last-event", "player_left", "u", at(3)),
+			observationEvent("unknown", "future_type", "u", at(4)),
+			observationEvent("end", "player_left", "u", at(10)),
+		},
+		Trajectories:   []TrajectorySample{observationTrajectory("u", at(1)), observationTrajectory("u", at(5)), observationTrajectory("u", at(10))},
+		PrivateSamples: []PlayerPrivateSample{{UserID: "u", ObservedAt: at(9), IP: "192.0.2.1", SourceRef: "poll"}},
+	}
+	// Event bounds follow occurred_at, not the later ingestion timestamp.
+	write.Events[1].ObservedAt = at(20)
+	if err := repo.RecordPlayerObservation(t.Context(), write); err != nil {
+		t.Fatal(err)
+	}
+	timeline, err := repo.ReadPlayerTimeline(t.Context(), "u", at(0), at(10), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timeline.RangeStart == nil || !timeline.RangeStart.Equal(at(0)) || timeline.RangeEnd == nil || !timeline.RangeEnd.Equal(at(5)) {
+		t.Fatalf("bounds=%v..%v, want full public range %v..%v", timeline.RangeStart, timeline.RangeEnd, at(0), at(5))
+	}
+	if timeline.EventTotal != 3 || timeline.TrajectoryTotal != 2 || len(timeline.Events) != 1 || timeline.Events[0].ID != "unknown" || len(timeline.Trajectories) != 1 {
+		t.Fatalf("unexpected limited timeline: %+v", timeline)
+	}
+	// Only private evidence exists in this requested window.
+	empty, err := repo.ReadPlayerTimeline(t.Context(), "u", at(6), at(10), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.RangeStart != nil || empty.RangeEnd != nil || strings.Contains(string(encoded), "range_start") || strings.Contains(string(encoded), "range_end") || empty.EventTotal != 0 || empty.TrajectoryTotal != 0 {
+		t.Fatalf("nonpublic evidence leaked into empty range: %s", encoded)
+	}
+	sampleOnly, err := repo.ReadPlayerTimeline(t.Context(), "u", at(1), at(3), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sampleOnly.EventTotal != 0 || sampleOnly.RangeStart == nil || !sampleOnly.RangeStart.Equal(at(1)) || sampleOnly.RangeEnd == nil || !sampleOnly.RangeEnd.Equal(at(1)) {
+		t.Fatalf("trajectory-only bounds: %+v", sampleOnly)
+	}
+	// The start is included; the end is excluded, even when both exist.
+	single, err := repo.ReadPlayerTimeline(t.Context(), "u", at(3), at(4), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if single.RangeStart == nil || !single.RangeStart.Equal(at(3)) || single.RangeEnd == nil || !single.RangeEnd.Equal(at(3)) {
+		t.Fatalf("half-open bounds: %+v", single)
+	}
+}

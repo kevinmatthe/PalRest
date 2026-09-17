@@ -38,7 +38,7 @@ export function WorkspacePlaybackBar(p: Props) {
           if (direction) { e.preventDefault(); p.onSeek(p.time + direction * (e.shiftKey ? 60000 : 1000)); }
           else if (e.key === 'Home' || e.key === 'End') { e.preventDefault(); p.onSeek(e.key === 'Home' ? p.start : p.end); }
         }} style={{ '--progress': `${progress}%` } as React.CSSProperties} />
-      <div className="world-scrubber-labels"><time>{workspaceTime(p.start)}</time><span>已加载区间</span><time>{workspaceTime(p.end)}</time></div>
+      <div className="world-scrubber-labels"><time>{workspaceTime(p.start)}</time><span>回放范围</span><time>{workspaceTime(p.end)}</time></div>
     </div> : null}
   </footer>;
 }

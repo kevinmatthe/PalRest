@@ -20,8 +20,13 @@ describe('position evidence', () => {
     [point(0), point(30, NaN), point(60)], [point(0), point(30, 100, { observed_at: 'bad' }), point(60)],
     [point(0), point(30), point(30), point(60)], [point(0), point(30, 100, { user_id: 'other' }), point(60)],
     [point(0), point(60, 100, { runtime_epoch: 2 })], [point(0), point(60, 100, { segment_id: 'other' })],
-    [point(0), point(301)], [point(0), point(60, 50100)],
+    [point(0), point(331)], [point(0), point(60, 50100)],
   ])('preserves barriers (%#)', (...samples) => { expect(summarize(samples).position.observedMs).toBe(0); });
+  it('counts delayed stationary heartbeats as observed time within the grace period', () => {
+    expect(summarize([point(0), point(305)], undefined, 305).position).toMatchObject({
+      observedMs: 305000, unknownMs: 0, stationaryMs: 305000, coverage: 1,
+    });
+  });
   it('does not use partial leading intervals or future invalid coordinates', () => {
     expect(summarize([point(-60), point(60), point(180, NaN)], undefined, 120).position.observedMs).toBe(0);
     expect(summarize([point(0), point(60), point(180, NaN)], undefined, 120).position.observedMs).toBe(60000);

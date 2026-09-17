@@ -76,6 +76,24 @@ describe('PresentationPoller', () => {
     expect(poller.getState()).toMatchObject({ status: 'ready', presentation: presentation() })
   })
 
+  it('waits five seconds between successful polls without republishing an unchanged 304', async () => {
+    const bridge = bridgeWith(vi.fn()
+      .mockResolvedValueOnce({ status: 200, etag: 'v1', body: presentation() })
+      .mockResolvedValue({ status: 304 }))
+    const poller = new PresentationPoller({ bridge, config })
+    const listener = vi.fn()
+    poller.subscribe(listener)
+    poller.start()
+    await settle()
+    listener.mockClear()
+
+    await vi.advanceTimersByTimeAsync(4_999)
+    expect(bridge.fetchPresentation).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(bridge.fetchPresentation).toHaveBeenCalledTimes(2)
+    expect(listener).not.toHaveBeenCalled()
+  })
+
   it('keeps the same presentation on 304 and reevaluates its freshness', async () => {
     const bridge = bridgeWith(vi.fn()
       .mockResolvedValueOnce({ status: 200, etag: 'v1', body: presentation() })
@@ -87,7 +105,7 @@ describe('PresentationPoller', () => {
     expect(first.status).toBe('ready')
     const firstPresentation = first.status === 'ready' ? first.presentation : undefined
 
-    await vi.advanceTimersByTimeAsync(2_000)
+    await vi.advanceTimersByTimeAsync(5_000)
     const afterNotModified = poller.getState()
     expect(afterNotModified).toEqual({ status: 'ready', presentation: firstPresentation })
     expect(afterNotModified.status === 'ready' && afterNotModified.presentation).toBe(firstPresentation)
@@ -104,11 +122,11 @@ describe('PresentationPoller', () => {
     const ready = poller.getState()
     const valid = ready.status === 'ready' ? ready.presentation : undefined
 
-    await vi.advanceTimersByTimeAsync(2_000)
+    await vi.advanceTimersByTimeAsync(5_000)
     expect(poller.getState()).toEqual({ status: 'disconnected', presentation: valid })
   })
 
-  it('recovers from disconnected and resets the polling delay to 2000ms', async () => {
+  it('recovers from disconnected and resets the polling delay to 5000ms', async () => {
     const bridge = bridgeWith(vi.fn()
       .mockRejectedValueOnce(new Error('offline'))
       .mockResolvedValueOnce({ status: 200, body: presentation() })
@@ -120,7 +138,7 @@ describe('PresentationPoller', () => {
 
     await vi.advanceTimersByTimeAsync(2_000)
     expect(poller.getState().status).toBe('ready')
-    await vi.advanceTimersByTimeAsync(1_999)
+    await vi.advanceTimersByTimeAsync(4_999)
     expect(bridge.fetchPresentation).toHaveBeenCalledTimes(2)
     await vi.advanceTimersByTimeAsync(1)
     expect(bridge.fetchPresentation).toHaveBeenCalledTimes(3)
@@ -148,13 +166,13 @@ describe('PresentationPoller', () => {
   it('marks a presentation stale at the freshness deadline while the next request is hung', async () => {
     const hung = deferred<FetchPresentationResult>()
     const bridge = bridgeWith(vi.fn()
-      .mockResolvedValueOnce({ status: 200, body: presentation('2026-07-16T12:00:02.000Z') })
+      .mockResolvedValueOnce({ status: 200, body: presentation('2026-07-16T12:00:05.000Z') })
       .mockImplementationOnce(() => hung.promise))
     const poller = new PresentationPoller({ bridge, config })
     poller.start()
     await settle()
 
-    await vi.advanceTimersByTimeAsync(2_000)
+    await vi.advanceTimersByTimeAsync(5_000)
     expect(bridge.fetchPresentation).toHaveBeenCalledTimes(2)
     expect(poller.getState().status).toBe('ready')
     await vi.advanceTimersByTimeAsync(1)
@@ -401,7 +419,7 @@ describe('PresentationPoller', () => {
     await settle()
     const trusted = poller.getState()
 
-    await vi.advanceTimersByTimeAsync(2_000)
+    await vi.advanceTimersByTimeAsync(5_000)
     expect(poller.getState()).toEqual({
       status: 'incompatible',
       reason: `${field} does not match request`,
@@ -423,7 +441,7 @@ describe('PresentationPoller', () => {
     const ready = poller.getState()
     const valid = ready.status === 'ready' ? ready.presentation : undefined
 
-    await vi.advanceTimersByTimeAsync(2_000)
+    await vi.advanceTimersByTimeAsync(5_000)
     expect(poller.getState()).toEqual({ status: 'disconnected', presentation: valid })
     await vi.advanceTimersByTimeAsync(2_000)
     expect(poller.getState().status).toBe('ready')
@@ -525,7 +543,7 @@ describe('PresentationPoller', () => {
     poller.start()
     await settle()
     for (let index = 0; index < 4; index += 1) {
-      await vi.advanceTimersByTimeAsync(2_000)
+      await vi.advanceTimersByTimeAsync(5_000)
     }
     expect(bridge.fetchPresentation.mock.calls.map(([request]) => request.etag))
       .toEqual([undefined, 'v1', 'v1', 'v2', undefined])
@@ -543,7 +561,7 @@ describe('PresentationPoller', () => {
     poller.start()
     await settle()
     expect(poller.getState().status).toBe('ready')
-    await vi.advanceTimersByTimeAsync(2_000)
+    await vi.advanceTimersByTimeAsync(5_000)
     expect(bridge.fetchPresentation).toHaveBeenCalledTimes(2)
   })
 

@@ -280,13 +280,16 @@ pub fn execute_effects(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseAction {
+    Destroy,
     Keep,
     Hide,
 }
 
 #[must_use]
 pub fn close_action(label: &str) -> CloseAction {
-    if label == "overlay" {
+    if label == "team-map" {
+        CloseAction::Destroy
+    } else if label == "overlay" {
         CloseAction::Keep
     } else {
         CloseAction::Hide
@@ -382,8 +385,8 @@ mod native {
                 LifecycleEffect::RestorePosition(x, y) => self
                     .overlay
                     .set_position(tauri::PhysicalPosition::new(x, y)),
-                LifecycleEffect::Show => self.overlay.show(),
-                LifecycleEffect::Hide => self.overlay.hide(),
+                LifecycleEffect::Show => self.set_visible(true),
+                LifecycleEffect::Hide => self.set_visible(false),
                 LifecycleEffect::SetClickThrough(value) => {
                     self.overlay.set_ignore_cursor_events(value)
                 }
@@ -405,10 +408,10 @@ mod native {
                 }
                 LifecycleEffect::RestorePosition(_, _) => {}
                 LifecycleEffect::Show => {
-                    let _ = self.overlay.hide();
+                    let _ = self.set_visible(false);
                 }
                 LifecycleEffect::Hide => {
-                    let _ = self.overlay.show();
+                    let _ = self.set_visible(true);
                 }
                 LifecycleEffect::SetClickThrough(value) => {
                     let _ = self.overlay.set_ignore_cursor_events(!value);
@@ -420,10 +423,10 @@ mod native {
                     for rollback in focus_rollback_effects(current_platform()) {
                         match rollback {
                             LifecycleEffect::Hide => {
-                                let _ = self.overlay.hide();
+                                let _ = self.set_visible(false);
                             }
                             LifecycleEffect::Show => {
-                                let _ = self.overlay.show();
+                                let _ = self.set_visible(true);
                             }
                             LifecycleEffect::SetFocusable(value) => {
                                 let _ = self.overlay.set_focusable(value);
@@ -440,6 +443,16 @@ mod native {
     }
 
     impl NativeExecutor<'_> {
+        fn set_visible(&self, visible: bool) -> tauri::Result<()> {
+            let previous = self.overlay.is_visible()?;
+            if visible { self.overlay.show()?; } else { self.overlay.hide()?; }
+            if previous != visible {
+                // A failed notification must not roll back a successful native visibility change.
+                let _ = self.overlay.emit("overlay-visibility-changed", visible);
+            }
+            Ok(())
+        }
+
         fn persist_geometry(&mut self) -> Result<(), String> {
             let config_dir =
                 self.app.path().app_config_dir().map_err(|_| {
@@ -661,6 +674,7 @@ mod tests {
     fn overlay_close_is_kept_in_sync_while_settings_close_hides() {
         assert_eq!(close_action("overlay"), CloseAction::Keep);
         assert_eq!(close_action("settings"), CloseAction::Hide);
+        assert_eq!(close_action("team-map"), CloseAction::Destroy);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use sysinfo::{ProcessesToUpdate, System};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 pub fn is_palworld_process(platform: &str, name: &str, executable_path: Option<&str>) -> bool {
     crate::platform::matches_palworld_process(platform, name, executable_path)
@@ -18,7 +18,13 @@ impl Default for ProcessMonitor {
 
 impl ProcessMonitor {
     pub fn palworld_is_running(&mut self, platform: &str) -> bool {
-        self.system.refresh_processes(ProcessesToUpdate::All, true);
+        // Only process identity is needed. CPU, memory, disk, environment and task
+        // refreshes cost work every poll without contributing to detection.
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().without_tasks().with_exe(UpdateKind::OnlyIfNotSet),
+        );
         self.system.processes().values().any(|process| {
             let name = process.name().to_string_lossy();
             let executable = process.exe().map(|path| path.to_string_lossy());

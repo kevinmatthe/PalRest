@@ -359,9 +359,8 @@ body.settings-window {
   border: 1px solid rgba(160, 230, 229, 0.3);
   border-radius: 0.875rem;
   color: #dce9e8;
-  background: rgba(8, 18, 22, 0.88);
+  background: #081216;
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.12), 0 0.75rem 1.75rem rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(1rem) saturate(115%);
   font: 700 0.8rem/1.4 "Microsoft YaHei UI", "PingFang SC", sans-serif;
 }
 
@@ -386,7 +385,7 @@ body.settings-window {
   --overlay-red: #ff6c66;
   --overlay-muted: #849295;
   --overlay-ink: #dce9e8;
-  --overlay-panel: rgba(8, 18, 22, 0.84);
+  --overlay-panel: #081216;
   --overlay-edge: rgba(160, 230, 229, 0.3);
   --overlay-accent: var(--overlay-cyan);
   box-sizing: border-box;
@@ -405,11 +404,9 @@ body.settings-window {
   box-shadow:
     inset 0 1px rgba(255, 255, 255, 0.12),
     0 0.75rem 1.75rem rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(1rem) saturate(115%);
   font-family: "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
   font-size: 1rem;
   font-variant-numeric: tabular-nums;
-  transition: border-color 160ms ease, box-shadow 160ms ease, filter 160ms ease;
 }
 
 .overlay *,
@@ -699,7 +696,10 @@ body.settings-window {
 .overlay--disconnected {
   --overlay-accent: var(--overlay-muted);
   --overlay-edge: rgba(132, 146, 149, 0.38);
-  filter: saturate(0.52);
+  --overlay-cyan: #849295;
+  --overlay-cyan-soft: #a0b0b0;
+  --overlay-amber: #b3a388;
+  --overlay-red: #b88f8d;
 }
 
 .overlay--adjusting {
