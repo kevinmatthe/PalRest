@@ -12,6 +12,38 @@ Palworld 防沉迷 sidecar。它通过 REST API 轮询在线玩家，按固定�
 - Docker 内网只读 API，为独立 WebUI 提供稳定的 `/api/v1` 契约。
 - 独立 React/Vite WebUI，可作为单独容器部署，并在容器内反代到 sidecar API。
 
+## 地图工作台
+
+WebUI 默认打开世界地图。浮动玩家列表支持搜索、仅在线筛选、定位与持续跟随；手动操作地图会停止跟随。手机默认收起列表，选择玩家后自动收起以让出地图空间。
+
+实时与历史共用一个地图实例。底部时间轴支持播放、暂停、拖动以及 1×/2×/4×/8× 速度（1× 每秒回看 1 分钟）；方向键每次调整 1 秒，Shift + 方向键调整 1 分钟。可选择最近 1/6/24 小时、7 天或指定日期。打开完整证据后再返回，保留视角、选择、时间和图层；离开地图或隐藏浏览器标签时暂停播放。
+
+实时请求串行轮询，标记平滑过渡到新的观测位置。界面显示实际观测年龄；请求失败或超过 60 秒没有新观测时标记陈旧。历史刷新由“重新加载历史”显式触发，不受后台实时更新影响。
+
+回放插值只用于画面，不产生新的事实记录。不同轨迹段、服务器重启、超过 5 分钟的缺口及至少 50,000 游戏单位的疑似跳跃均不连接，可跳到下一次观测。当前窗口每类最多加载 500 条记录，超出时显示提示；更早证据与行为统计仍从完整时间轴入口查看。
+
+选择玩家后，可展开「旅程进度」查看存档等级、经验、拥有帕鲁、累计捕获记录、图鉴解锁与传送点解锁。变化卡显示两次存档观测之间的原值、新值和净变化，点击后跳到回放区间终点；没有地点证据的变化不生成地图坐标。历史卡片只展示游标之前已知的数据，实时进度每分钟刷新，旧记录缺少字段时显示「未采集」。选中玩家的地图浮窗也显示最近已验证的变化及存档观测区间，明确该变化未关联此处地点；回退游标或跨比较边界会清除不适用的变化。
+
+切换到「游玩小结」可查看当前观察窗口的有效时长、覆盖率、未知时长、已观测路径、REST 等级变化及六项存档成长曲线。存档等级和经验保留各自观测时间，不与 REST 等级混用。数字可展开保存的快照或位置证据，并跳转到变化区间终点。图表实点表示观测，虚线只连接可比较记录，不表示变化的准确发生时间；缺失、回档与世界切换会断开比较。小结代表已加载的观察窗口，不是完整游玩会话。
+
+「成长里程碑」展示已验证的存档等级提升，以及图鉴、传送点集合中的新增 ID，可展开快照编号、变化区间和原始 ID 并回看终点。没有额外的任意奖励阈值；跨边界不能合并为整个窗口的净增长。parser v3 开始保存等级/经验指标，旧 checkpoint 不会用旧玩家默认值补齐；升级 parser 后首次重新建立可比较基线，经验真实零值仍有效。
+
+「停留热度」图层按有效观测时长加权：有效位置对的平均速度低于 50 游戏单位/秒时，将时长均分到两个端点所在的 10,000 单位网格。主要停留区域可定位到近似网格中心，不代表精确地点或挂机判断。断线、跳跃和未观测尾段不计入热度；回放时只累计游标之前已经结束的观测区间。
+
+只有位置和相关进度记录未截断、无比较边界，并同时满足有效观测至少 5 分钟、覆盖率至少 60%、移动至少 2 分钟、新增传送点至少 1 个时，才显示「可能有探索活动」，可展开规则和原始证据。拥有帕鲁数增加不会被直接解释为捕获。
+
+实时小结在打开小结或热度图层后读取位置历史，每分钟串行刷新，离开地图或隐藏标签页会暂停请求。历史小结复用已加载的数据；播放中按实际时间每秒更新统计，暂停或拖动立即更新，地图动画保持连续。位置窗口最多加载 500 条，进度各类最多加载 200 条；截断时明确提示，只汇总可验证的区间，不推断完整行程。
+
+## 玩家进度 Checkpoint
+
+启用 `save.enabled`，将 `save.path` 指向只读挂载的原始世界 `Level.sav`，并保留同级 `LevelMeta.sav`、`Players/` 与世界 GUID 目录。默认每 15 分钟导入，手动导入与定时导入共用单个解析队列。Worker 在独立进程中先复制稳定文件再解析，失败不会参与玩家计时或执法。
+
+存档内部时间戳用于核对各文件是否属于同一次保存；来源时间使用原始 Level 文件的 UTC 修改时间。只有身份、世界、口径、时间顺序和文件一致性均可确认时才比较。首次只建基线；重复导入去重；乱序快照留存但不回退当前基线；重现过往存档或乱序观察会中断下一次比较；未知值不补零；累计计数下降或解锁集合减少时建立回档边界。分类目录摘要变化也会中断比较。快照、基线和变化在同一 SQLite 事务内提交。
+
+拥有帕鲁按有效实例、归属及容器关系去重，不含人类 NPC；无个人归属的公会基地帕鲁单独提示，不分摊给成员，容器关系异常时显示未完整确认。累计捕获记录是游戏保存的计数，包含 Human 项，不能等同于帕鲁拥有数。图鉴和传送点只统计明确为 true 的解锁标志。拥有数增加不能单独证明捕获、孵化或交易。字段证据、世界身份、分类目录更新方法与独立运行命令见 [Save Worker 文档](tools/save_worker/README.md)。
+
+`GET /api/v1/players/{userID}/progress?start=...&end=...&limit=200` 返回时间窗前基线、窗内 checkpoint 和区间变化。时间使用 RFC3339，窗口最多 31 天，每类最多 500 条；截断时返回最新记录及总数。接口仅通过唯一且精确的 REST player ID 关联存档，不按名字匹配，也不返回存档路径或解析错误原文。
+
 ## 初次运行
 
 在父级 Palworld 栈目录执行：
@@ -94,7 +126,7 @@ Phase 1 使用同一个 correlation ID 把一次玩家观察写成统一业务�
 
 `/metrics` 的 uptime 明确下降会生成 `server_restarted`，并在同一 SQLite 事务中推进持久化 server runtime epoch。轨迹 API 同时返回 `runtime_epoch`，并以 `runtime:<epoch>:<base64url(raw_segment_id)>` 无歧义编码 `segment_id`；即使玩家边界样本先于异步 metrics 写入，restart 事务也会修正该时刻及之后已写样本的 epoch，因此前端不会跨服务器重启连线。epoch 在应用重启后恢复，重复提交和多写者 CAS 不会重复推进。
 
-当前只实现 REST 观察路径。Save Worker、存档/地图解析与历史地图回放属于后续阶段。
+REST 观察与存档进度是独立来源。地图回放使用位置观测；存档变化使用 checkpoint 区间，两者不会伪装成同一时刻的采样。
 
 ## Prometheus / VictoriaMetrics 抓取
 
@@ -274,6 +306,33 @@ docker run --rm -p 127.0.0.1:18081:8080 \
 地图瓦片存放在 `webui/public/map/tiles`（Git LFS）。构建阶段会尝试 `git lfs pull`；若工作区已是真实 PNG 则直接使用。若瓦片仍是 LFS pointer 文本，镜像仍可构建，运行时按瓦片回退到 `https://palworld.gg/images/tiles/...`。
 
 `PALREST_API_UPSTREAM` 是 WebUI 容器内 Caddy 访问 Go sidecar 的地址。默认值为 `http://palworld-playtime-guard:8080`，适合与 sidecar 位于同一 Docker 网络的部署。通常不需要设置 `PALREST_API_BASE_URL`；保持为空时浏览器只访问 WebUI 容器，由 Caddy 反代 API 请求。
+
+### GitHub 容器镜像
+
+[Containers 工作流](.github/workflows/containers.yml) 会运行 Go / WebUI 测试、构建并检查两个 `linux/amd64` 镜像，然后发布到 GitHub Container Registry：
+
+| 服务 | 镜像 |
+| --- | --- |
+| Go sidecar（含 Save Worker） | `ghcr.io/kevinmatthe/palrest` |
+| WebUI（含地图瓦片） | `ghcr.io/kevinmatthe/palrest-webui` |
+
+发布使用 GitHub 自动提供的 `GITHUB_TOKEN` 和 `packages: write` 权限，**无需配置 Docker Hub 账号或任何额外的发布密钥**。CI 自动检出存档解析子模块与 Git LFS 地图资源，并在推送镜像前运行容器内检查。
+
+- 分支 push：发布 `branch-<分支名>`（例如 `branch-codex-map-workspace`，斜线转为连字符）与 `sha-<完整提交 SHA>`。
+- 默认分支 push：同时更新 `latest`。其他分支不会覆盖 `latest`。
+- 版本 tag（例如 `v1.2.3`）：发布 `1.2.3` 与提交标签；预发布 tag 保留预发布后缀。
+- PR：只测试和构建，不登录或推送 GHCR。也支持手动运行工作流。
+
+例如拉取当前开发分支的镜像：
+
+```bash
+docker pull ghcr.io/kevinmatthe/palrest:branch-codex-map-workspace
+docker pull ghcr.io/kevinmatthe/palrest-webui:branch-codex-map-workspace
+```
+
+Compose 中可用上述 `image:` 替代对应服务的 `build:`，现有配置文件、存档、数据卷、网络及环境变量继续使用。需要固定版本时，两个服务使用同一个 `sha-<完整提交 SHA>` 标签。
+
+GHCR 首次创建的 package 默认为 private；若希望服务器匿名拉取，在 GitHub package 的 **Package settings → Change visibility → Public** 设置一次即可。发布本身无需新增密钥。参见 [GitHub Container Registry 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
 
 ## 桌面悬浮条
 

@@ -20,6 +20,9 @@ vi.mock('./components/PolicyManager', () => ({
 vi.mock('./components/PlayerTimeline', () => ({
   PlayerTimeline: ({ includePrivate, refreshKey }: { includePrivate?: boolean; refreshKey: number }) => <div>Player timeline token {refreshKey} private {String(Boolean(includePrivate))}</div>,
 }));
+vi.mock('./components/MapWorkspace', () => ({
+  MapWorkspace: () => <div>World map workspace</div>,
+}));
 
 const admin = { enabled: true, authenticated: true, passkey: false };
 const policies = {
@@ -45,10 +48,26 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('App analytics navigation and refresh ownership', () => {
+  it('opens the map workspace by default', async () => {
+    render(<App />);
+    expect(await screen.findByRole('button', { name: '世界地图' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByText('World map workspace')).toBeInTheDocument();
+  });
+  it('retains the workspace DOM when visiting evidence and returning to the map', async () => {
+    render(<App />);
+    const map = screen.getByText('World map workspace');
+    fireEvent.click(await screen.findByRole('button', { name: '时间轴' }));
+    expect(map).toBeInTheDocument();
+    expect(map).not.toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '世界地图' }));
+    expect(screen.getByText('World map workspace')).toBe(map);
+    expect(map).toBeVisible();
+  });
   it('switches Overview and Analytics with aria-current and policy back returns to Overview', async () => {
     render(<App />);
     const overview = await screen.findByRole('button', { name: '总览' });
     const analytics = screen.getByRole('button', { name: '分析' });
+    fireEvent.click(overview);
     expect(overview).toHaveAttribute('aria-current', 'page');
     fireEvent.click(analytics);
     expect(analytics).toHaveAttribute('aria-current', 'page');

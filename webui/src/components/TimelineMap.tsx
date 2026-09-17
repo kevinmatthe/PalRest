@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
+import { disposeLeafletMap } from '../map/disposeLeafletMap';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
@@ -306,10 +307,11 @@ export function TimelineMap({
     // Layout can change (toolbar / dock); keep tiles aligned to the container.
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => invalidate()) : null;
     ro?.observe(mapElementRef.current);
-    requestAnimationFrame(invalidate);
+    const initialFrame = requestAnimationFrame(invalidate);
     return () => {
+      cancelAnimationFrame(initialFrame);
       ro?.disconnect();
-      map.remove();
+      disposeLeafletMap(map);
       leafletRef.current = null;
       tileLayerRef.current = null;
       clusterGroupRef.current = null;

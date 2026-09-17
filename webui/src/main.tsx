@@ -36,9 +36,10 @@ import { PlayerUsage } from './components/PlayerUsage';
 import { PolicyManager } from './components/PolicyManager';
 import { AnalyticsDashboard } from './components/AnalyticsDashboard';
 import { PlayerTimeline } from './components/PlayerTimeline';
-import { LiveMap } from './components/LiveMap';
+import { MapWorkspace } from './components/MapWorkspace';
 import { policyCondition } from './policyCondition';
 import './styles.css';
+import './map-workspace.css';
 
 type DashboardData = {
   health: HealthStatus;
@@ -61,7 +62,7 @@ export function App() {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [manualRefreshKey, setManualRefreshKey] = useState(0);
   const [adminBusy, setAdminBusy] = useState(false);
-  const [view, setView] = useState<'dashboard' | 'analytics' | 'timeline' | 'live' | 'policy'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'analytics' | 'timeline' | 'live' | 'policy'>('live');
   const [analyticsCadenceKey, setAnalyticsCadenceKey] = useState(0);
   const [timelineRefreshKey, setTimelineRefreshKey] = useState(0);
   const [timelineSelectedID, setTimelineSelectedID] = useState('');
@@ -178,7 +179,7 @@ export function App() {
   };
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${view === 'live' ? ' app-shell--map' : ''}`}>
       <header className="topbar">
         <div>
           <p className="eyebrow">PalRest 控制台</p>
@@ -202,24 +203,30 @@ export function App() {
       )}
 
       {view !== 'policy' ? <nav className="view-tabs" aria-label="控制台视图">
+        <button type="button" aria-current={view === 'live' ? 'page' : undefined} onClick={() => setView('live')}>世界地图</button>
         <button type="button" aria-current={view === 'dashboard' ? 'page' : undefined} onClick={() => setView('dashboard')}>总览</button>
         <button type="button" aria-current={view === 'analytics' ? 'page' : undefined} onClick={() => setView('analytics')}>分析</button>
-        <button type="button" aria-current={view === 'live' ? 'page' : undefined} onClick={() => setView('live')}>实时地图</button>
         <button type="button" aria-current={view === 'timeline' ? 'page' : undefined} onClick={() => setView('timeline')}>时间轴</button>
       </nav> : null}
 
-      {view === 'policy' && data?.admin.authenticated ? (
-        <PolicyManager policies={data.policies} players={data.players} busy={adminBusy} onSave={onSavePolicies} onBack={() => setView('dashboard')} />
-      ) : view === 'analytics' ? <AnalyticsDashboard players={data?.players ?? []} refreshKey={manualRefreshKey + analyticsCadenceKey} />
-        : view === 'live' ? (
-          <LiveMap
+      <div className="map-workspace-host" hidden={view !== 'live'}>
+          <MapWorkspace
+            players={data?.players ?? []}
+            active={view === 'live'}
             refreshKey={manualRefreshKey}
+            initialSelectedID={timelineSelectedID}
+            onSelectPlayer={setTimelineSelectedID}
             onOpenPlayer={(userID) => {
               setTimelineSelectedID(userID);
               setView('timeline');
             }}
           />
-        )
+      </div>
+
+      {view === 'policy' && data?.admin.authenticated ? (
+        <PolicyManager policies={data.policies} players={data.players} busy={adminBusy} onSave={onSavePolicies} onBack={() => setView('dashboard')} />
+      ) : view === 'analytics' ? <AnalyticsDashboard players={data?.players ?? []} refreshKey={manualRefreshKey + analyticsCadenceKey} />
+        : view === 'live' ? null
         : view === 'timeline' ? (
           <PlayerTimeline
             includePrivate={data?.admin.authenticated ?? false}

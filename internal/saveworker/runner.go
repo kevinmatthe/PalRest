@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -54,7 +55,11 @@ func (r *Runner) Extract(ctx context.Context, levelPath string) (store.SaveSnaps
 	if err := decoder.Decode(&snapshot); err != nil {
 		return store.SaveSnapshot{}, fmt.Errorf("decode save worker output: %w", err)
 	}
-	if decoder.Decode(&struct{}{}) == nil {
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return store.SaveSnapshot{}, fmt.Errorf("decode save worker output: %w", err)
+		}
 		return store.SaveSnapshot{}, fmt.Errorf("decode save worker output: trailing JSON")
 	}
 	return snapshot, nil

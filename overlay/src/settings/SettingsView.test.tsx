@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopBridge } from '../core/bridge'
@@ -415,7 +415,9 @@ describe('SettingsView', () => {
 
   it('does not publish save completion after unmount', async () => {
     let finish!: () => void
+    let finishPreview!: (result: FetchPresentationResult) => void
     const api = bridge({
+      fetchPresentation: vi.fn(() => new Promise<FetchPresentationResult>((resolve) => { finishPreview = resolve })),
       listPlayers: vi.fn(async () => [{ user_id: 'uid-2', name: 'Player', account_name: '' }]),
       saveConfig: vi.fn(() => new Promise<void>((resolve) => { finish = resolve })),
     })
@@ -423,10 +425,15 @@ describe('SettingsView', () => {
     const { unmount } = render(<SettingsView bridge={api} initialConfig={saved} onSaved={onSaved} />)
     fireEvent.click(screen.getByRole('button', { name: '加载玩家' }))
     await waitFor(() => expect(screen.getByLabelText('玩家')).toHaveValue('uid-2'))
+    // Selecting a player starts a separate compatibility request; saving is still blocked.
+    await waitFor(() => expect(api.fetchPresentation).toHaveBeenCalledTimes(1))
+    expect(screen.getByRole('button', { name: '保存设置' })).toBeDisabled()
+    await act(async () => { finishPreview({ status: 200, body: preview }) })
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存设置' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    await waitFor(() => expect(api.saveConfig).toHaveBeenCalledTimes(1))
     unmount()
-    finish()
-    await Promise.resolve()
+    await act(async () => { finish() })
     expect(onSaved).not.toHaveBeenCalled()
     expect(api.setAdjustmentMode).not.toHaveBeenCalled()
   })

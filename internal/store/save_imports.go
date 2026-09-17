@@ -22,27 +22,35 @@ type SaveSnapshot struct {
 		Version int    `json:"version"`
 	} `json:"parser"`
 	Source struct {
-		LevelSAV        string `json:"level_sav"`
-		Fingerprint     string `json:"fingerprint"`
-		LevelSAVSize    int64  `json:"level_sav_size"`
-		LevelSAVMTime   string `json:"level_sav_mtime"`
-		CapturedAt      string `json:"captured_at"`
-		PlayerFileCount int    `json:"player_file_count"`
+		LevelSAV           string `json:"level_sav"`
+		Fingerprint        string `json:"fingerprint"`
+		LevelSAVSize       int64  `json:"level_sav_size"`
+		LevelSAVMTime      string `json:"level_sav_mtime"`
+		CapturedAt         string `json:"captured_at"`
+		PlayerFileCount    int    `json:"player_file_count"`
+		WorldID            string `json:"world_id,omitempty"`
+		WorldIDKind        string `json:"world_id_kind,omitempty"`
+		SourceTime         string `json:"source_time,omitempty"`
+		SourceTimeKind     string `json:"source_time_kind,omitempty"`
+		Consistent         bool   `json:"consistent,omitempty"`
+		ConsistencyReason  string `json:"consistency_reason,omitempty"`
+		ProgressDefinition string `json:"progress_definition,omitempty"`
 	} `json:"source"`
 	Players []SavePlayer `json:"players"`
 	Guilds  []SaveGuild  `json:"guilds"`
 }
 
 type SavePlayer struct {
-	SavePlayerUID  string  `json:"save_player_uid"`
-	SavePlayerHex  string  `json:"save_player_hex"`
-	Nickname       string  `json:"nickname"`
-	Level          int     `json:"level"`
-	Exp            int64   `json:"exp"`
-	HP             int64   `json:"hp"`
-	ShieldHP       int64   `json:"shield_hp"`
-	FullStomach    float64 `json:"full_stomach"`
-	SaveLastOnline string  `json:"save_last_online"`
+	SavePlayerUID  string        `json:"save_player_uid"`
+	SavePlayerHex  string        `json:"save_player_hex"`
+	Nickname       string        `json:"nickname"`
+	Level          int           `json:"level"`
+	Exp            int64         `json:"exp"`
+	HP             int64         `json:"hp"`
+	ShieldHP       int64         `json:"shield_hp"`
+	FullStomach    float64       `json:"full_stomach"`
+	SaveLastOnline string        `json:"save_last_online"`
+	Progress       *SaveProgress `json:"progress,omitempty"`
 }
 
 type SaveGuild struct {
@@ -168,6 +176,9 @@ func (r *Repository) migrateSaveModels(ctx context.Context) error {
 		&saveGuildMemberModel{},
 		&saveBaseCampModel{},
 		&saveIdentityMappingModel{},
+		&progressCheckpointModel{},
+		&progressHeadModel{},
+		&progressChangeModel{},
 	); err != nil {
 		return fmt.Errorf("migrate save models: %w", err)
 	}
@@ -187,7 +198,7 @@ func (r *Repository) ImportSaveSnapshot(ctx context.Context, snapshot SaveSnapsh
 		err := tx.Where("fingerprint = ?", snapshot.Source.Fingerprint).First(&existing).Error
 		if err == nil {
 			result = SaveImportResult{ImportID: int64(existing.ID), Fingerprint: snapshot.Source.Fingerprint, Inserted: false}
-			return nil
+			return markProgressReplay(tx, existing.ID)
 		}
 		if err != nil && err != gorm.ErrRecordNotFound {
 			return fmt.Errorf("read existing save import: %w", err)
@@ -215,6 +226,9 @@ func (r *Repository) ImportSaveSnapshot(ctx context.Context, snapshot SaveSnapsh
 			}
 			if err := upsertIdentityMapping(tx, importID, player.SavePlayerHex, importedAt); err != nil {
 				return err
+			}
+			if err := insertPlayerProgress(tx, importID, snapshot, player); err != nil {
+				return fmt.Errorf("insert player progress: %w", err)
 			}
 		}
 		for _, guild := range snapshot.Guilds {
@@ -254,17 +268,18 @@ func (r *Repository) ImportSaveSnapshot(ctx context.Context, snapshot SaveSnapsh
 }
 
 func upsertIdentityMapping(tx *gorm.DB, importID uint, savePlayerHex string, importedAt time.Time) error {
-	var player struct {
+	var players []struct {
 		UserID   string
 		PlayerID string
 	}
-	err := tx.Table("players").Select("user_id, player_id").Where("player_id = ?", savePlayerHex).Take(&player).Error
-	if err == gorm.ErrRecordNotFound {
-		return nil
-	}
+	err := tx.Table("players").Select("user_id, player_id").Where("player_id = ?", savePlayerHex).Limit(2).Find(&players).Error
 	if err != nil {
 		return fmt.Errorf("read player identity for save %q: %w", savePlayerHex, err)
 	}
+	if len(players) != 1 {
+		return tx.Where("save_player_hex = ?", savePlayerHex).Delete(&saveIdentityMappingModel{}).Error
+	}
+	player := players[0]
 	mapping := saveIdentityMappingModel{
 		SavePlayerHex: savePlayerHex,
 		UserID:        player.UserID,
@@ -306,6 +321,9 @@ func validateSaveSnapshot(snapshot SaveSnapshot) error {
 	seenPlayers := make(map[string]struct{}, len(snapshot.Players))
 	for _, player := range snapshot.Players {
 		if err := validateSavePlayer(player); err != nil {
+			return err
+		}
+		if err := validateSaveProgress(snapshot, player.Progress); err != nil {
 			return err
 		}
 		if _, exists := seenPlayers[player.SavePlayerUID]; exists {

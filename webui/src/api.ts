@@ -418,3 +418,27 @@ export function savePolicies(policy: PolicyDocument) {
     body: JSON.stringify(policy),
   });
 }
+
+export type LegacyProgressMetricName = 'owned_pals' | 'capture_total' | 'paldeck' | 'fast_travel';
+export type ProgressMetricName = LegacyProgressMetricName | 'level' | 'experience';
+export type ProgressMetrics<T> = Record<LegacyProgressMetricName, T> & Partial<Record<'level' | 'experience', T>>;
+export type ProgressMetric = { state: 'known' | 'unknown' | 'unsupported'; value?: number; ids?: string[]; reason?: string };
+export type ProgressCheckpoint = {
+  id: number; world_id: string; observed_at: string; captured_at: string; source: 'save_import';
+  schema_version: number; consistent: boolean; boundary: string;
+  metrics: ProgressMetrics<ProgressMetric>;
+  unattributed_pals?: ProgressMetric;
+};
+export type ProgressChange = {
+  id: number; metric: ProgressMetricName; before: number; after: number; delta: number;
+  added: string[]; removed: string[]; interval_start: string; interval_end: string;
+  previous_checkpoint_id: number; checkpoint_id: number; rule_version: 1; confidence: 'observed'; source: 'save_import';
+};
+export type PlayerProgressResponse = {
+  user_id: string; status: 'available' | 'not_collected' | 'identity_unknown'; baseline: ProgressCheckpoint | null;
+  checkpoints: ProgressCheckpoint[]; changes: ProgressChange[]; checkpoint_total: number; change_total: number;
+};
+export function getPlayerProgress(userID: string, start: string, end: string, limit = 200, signal?: AbortSignal) {
+  const params = new URLSearchParams({ start, end, limit: String(limit) });
+  return requestJSON<PlayerProgressResponse>(`/api/v1/players/${encodeURIComponent(userID)}/progress?${params}`, {}, signal);
+}
