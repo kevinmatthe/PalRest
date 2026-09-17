@@ -175,6 +175,9 @@ export type PlayerPrivateSample = {
 
 export type PlayerTimelineResponse = {
   user_id: string;
+  /** Full queried public record bounds, independent of the page limit. */
+  range_start?: string;
+  range_end?: string;
   events: TimelineEvent[];
   trajectories: TrajectorySample[];
   private_samples: PlayerPrivateSample[];

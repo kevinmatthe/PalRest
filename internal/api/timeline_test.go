@@ -182,12 +182,12 @@ func timelineServer(repo *observationQueriesFake) *Server {
 }
 
 type worldPOIQueriesFake struct {
-	result     store.PlayerWorldPOIs
-	allBases   store.GuildBasesCatalog
-	err        error
-	calls      int
-	allCalls   int
-	userID     string
+	result   store.PlayerWorldPOIs
+	allBases store.GuildBasesCatalog
+	err      error
+	calls    int
+	allCalls int
+	userID   string
 }
 
 func (f *worldPOIQueriesFake) ResetPlayerPolicyState(context.Context, string) error { return nil }
@@ -401,5 +401,34 @@ func TestAdminTimelineMapsNotFoundAndInternalErrors(t *testing.T) {
 	server.Handler().ServeHTTP(res, adminRequest(t, server, path))
 	if res.Code != http.StatusInternalServerError || strings.Contains(res.Body.String(), "password") {
 		t.Fatalf("code=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestPublicTimelineEmitsOptionalFullRangeBounds(t *testing.T) {
+	start := time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)
+	end := start.Add(30 * time.Minute)
+	for _, populated := range []bool{false, true} {
+		timeline := store.PlayerTimeline{Events: []store.ActivityEvent{}, Trajectories: []store.TrajectorySample{}}
+		if populated {
+			timeline.RangeStart, timeline.RangeEnd = &start, &end
+		}
+		server := timelineServer(&observationQueriesFake{publicTimeline: timeline})
+		res := httptest.NewRecorder()
+		server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/players/u/timeline?start=2026-07-13T08:00:00Z&end=2026-07-13T09:00:00Z&limit=1", nil))
+		if res.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+		}
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		_, hasStart := body["range_start"]
+		_, hasEnd := body["range_end"]
+		if hasStart != populated || hasEnd != populated {
+			t.Fatalf("unexpected bounds: %s", res.Body.String())
+		}
+		if populated && (string(body["range_start"]) != `"2026-07-13T08:00:00Z"` || string(body["range_end"]) != `"2026-07-13T08:30:00Z"`) {
+			t.Fatalf("bounds: %s", res.Body.String())
+		}
 	}
 }

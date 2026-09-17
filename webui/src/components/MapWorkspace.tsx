@@ -4,7 +4,8 @@ import { getGuildBases, type Player, type ProgressChange, type WorldPOI } from '
 import { WorldMap } from '../map/WorldMap';
 import type { MapDisplayPoint } from '../map/worldMapMarkers';
 import { BREAK_LABELS, playbackFrame, prepareTrajectory } from '../map/workspacePlayback';
-import { useLivePositions, useHistoryWindow } from '../map/useWorkspaceData';
+import { useLivePositions } from '../map/useWorkspaceData';
+import { useHistoryStream } from '../map/useHistoryStream';
 import { usePlaybackClock } from '../map/usePlaybackClock';
 import { WorkspaceRoster } from './WorkspaceRoster';
 import { WorkspacePlaybackBar, workspaceTime } from './WorkspacePlaybackBar';
@@ -21,7 +22,7 @@ import { eventLabel } from './timelineShared';
 
 type Props = { players: Player[]; refreshKey: number; active?: boolean; initialSelectedID?: string; onSelectPlayer?: (id: string) => void; onOpenPlayer?: (id: string) => void };
 const EMPTY_LIVE: NonNullable<ReturnType<typeof useLivePositions>['data']>['players'] = [];
-const EMPTY_EVENTS: NonNullable<ReturnType<typeof useHistoryWindow>['data']>['events'] = [];
+const EMPTY_EVENTS: NonNullable<ReturnType<typeof useHistoryStream>['data']>['events'] = [];
 const EMPTY_SAMPLES: ReturnType<typeof prepareTrajectory> = [];
 const EMPTY_HEAT: JourneyHeatCell[] = [];
 
@@ -48,18 +49,32 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   const progress = usePlayerProgress(active, selectedID, mode, windowRange.start, windowRange.end, progressRevision + historyRevision);
   const progressRange = useMemo(() => progressBounds(progress.data), [progress.data]);
   const live = useLivePositions(refreshKey + refresh, active);
-  const history = useHistoryWindow(mode === 'history' && active, selectedID, windowRange.start, windowRange.end, historyRevision);
+  const historyKey = `${selectedID}:${windowRange.start}:${windowRange.end}:${historyRevision}`;
+  const [streamCursor, setStreamCursor] = useState<{ key: string; time: number } | null>(null);
+  const requestedCursor = pendingProgressSeek?.userID === selectedID ? pendingProgressSeek.time : streamCursor?.key === historyKey ? streamCursor.time : null;
+  const history = useHistoryStream(mode === 'history' && active, selectedID, windowRange.start, windowRange.end, requestedCursor, historyRevision);
   const journeyLive = useJourneyTimeline(active && mode === 'live' && (detailTab === 'journey' || showHeat), selectedID, windowRange.end - windowRange.start, journeyRevision + refreshKey);
   const livePlayers = live.data?.players ?? EMPTY_LIVE;
   const samples = useMemo(() => prepareTrajectory(history.data?.trajectories ?? []), [history.data]);
   const events = useMemo(() => [...(history.data?.events ?? EMPTY_EVENTS)].filter(e => Number.isFinite(Date.parse(e.occurred_at))).sort((a, b) => Date.parse(a.occurred_at) - Date.parse(b.occurred_at)), [history.data]);
-  const start = Math.max(windowRange.start, Math.min(progressRange.start, samples[0]?.time ?? Infinity, events.length ? Date.parse(events[0].occurred_at) : Infinity));
-  const end = Math.min(windowRange.end, Date.now(), Math.max(progressRange.end, samples.at(-1)?.time ?? -Infinity, events.length ? Date.parse(events.at(-1)!.occurred_at) : -Infinity));
-  const clock = usePlaybackClock(Number.isFinite(start) ? start : windowRange.start, Number.isFinite(end) ? end : windowRange.end, `${selectedID}:${windowRange.start}:${windowRange.end}`);
+  const start = Math.max(windowRange.start, Math.min(progressRange.start, history.rangeStart ?? Infinity));
+  const end = Math.min(windowRange.end, Date.now(), Math.max(progressRange.end, history.rangeEnd ?? -Infinity));
+  const clock = usePlaybackClock(Number.isFinite(start) ? start : windowRange.start, Number.isFinite(end) ? end : windowRange.end, historyKey,
+    { buffering: history.buffering, bufferedUntil: history.loadedEnd });
+  const seekHistory = useCallback((time: number) => {
+    setStreamCursor({ key: historyKey, time });
+    clock.seek(time);
+  }, [historyKey, clock.seek]);
+  useEffect(() => {
+    if (mode !== 'history' || history.loading || !Number.isFinite(start) || pendingProgressSeek) return;
+    if (streamCursor?.key !== historyKey || Math.floor(streamCursor.time / 600000) !== Math.floor(clock.time / 600000)) {
+      setStreamCursor({ key: historyKey, time: clock.time });
+    }
+  }, [mode, history.loading, start, pendingProgressSeek, streamCursor, historyKey, clock.time]);
   const frame = useMemo(() => playbackFrame(samples, clock.time), [samples, clock.time]);
   const journeyCursor = useJourneyCursor(clock.time, active && mode === 'history' && clock.playing && (detailTab === 'journey' || showHeat), `${selectedID}:${windowRange.start}:${windowRange.end}`);
-  const journeyStart = mode === 'history' ? windowRange.start : journeyLive.start ?? windowRange.start;
-  const journeyEnd = Math.min(Date.now(), mode === 'history' ? journeyCursor : Math.floor(Date.now() / 1000) * 1000);
+  const journeyStart = mode === 'history' ? history.loadedStart ?? windowRange.start : journeyLive.start ?? windowRange.start;
+  const journeyEnd = Math.min(Date.now(), mode === 'history' ? Math.min(journeyCursor, history.loadedEnd ?? journeyCursor) : Math.floor(Date.now() / 1000) * 1000);
   const journeyTimeline = mode === 'history' ? history.data : journeyLive.data;
   const journeyError = (mode === 'history' ? history.error : journeyLive.error) || progress.error;
   const journeyNeeded = Boolean(selectedID) && (detailTab === 'journey' || showHeat);
@@ -73,9 +88,9 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
     if (!pendingProgressSeek || mode !== 'history') return;
     if (pendingProgressSeek.userID !== selectedID) { setPendingProgressSeek(null); return; }
     if (history.loading || progress.loading || (!history.data && !history.error) || (!progress.data && !progress.error)) return;
-    clock.seek(pendingProgressSeek.time);
+    seekHistory(pendingProgressSeek.time);
     setPendingProgressSeek(null);
-  }, [pendingProgressSeek, mode, selectedID, history.loading, history.data, history.error, progress.loading, progress.data, progress.error, clock.seek]);
+  }, [pendingProgressSeek, mode, selectedID, history.loading, history.data, history.error, progress.loading, progress.data, progress.error, seekHistory]);
   const selected = players.find(p => p.user_id === selectedID);
   const selectedLive = livePlayers.find(p => p.user_id === selectedID);
   const selectedName = selected?.name || selectedLive?.name || selected?.account_name || selectedID;
@@ -105,7 +120,6 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
     : frame ? [{ user_id: selectedID, name: selectedName, x: frame.x, y: frame.y, level: frame.sample.level, observedAt: frame.sample.observed_at, continuity: `history:${frame.sample.segment_id}:${frame.sample.runtime_epoch}`, state: frame.status === 'gap' ? '观测缺口' : frame.status === 'last-known' ? '最后观测' : frame.interpolated ? '回放位置 · 插值' : '回放位置', recentProgress: recentText }] : [],
   [mode, livePlayers, live.data?.as_of, frame, selectedID, selectedName, recentText]);
 
-  const truncated = Boolean(history.data && ((history.data.trajectory_total ?? 0) > samples.length || (history.data.event_total ?? 0) > events.length || history.data.trajectories.length >= 500 || events.length >= 500));
   const historical = mode === 'history';
   const selectedPoint = points.find(p => p.user_id === selectedID);
   const disabled = history.loading || !Number.isFinite(start) || !Number.isFinite(end) || end <= start;
@@ -119,12 +133,12 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   const seekJourney = useCallback((time: number) => {
     if (!Number.isFinite(time) || time > Date.now()) return;
     clock.setPlaying(false);
-    if (mode === 'history') { clock.seek(time); return; }
+    if (mode === 'history') { seekHistory(time); return; }
     const now = Date.now();
     setWindowRange({ start: now - (windowRange.end - windowRange.start), end: now, label: windowRange.label });
     setPendingProgressSeek({ userID: selectedID, time });
     setMode('history'); setFollow(false);
-  }, [clock.setPlaying, clock.seek, mode, windowRange, selectedID]);
+  }, [clock.setPlaying, seekHistory, mode, windowRange, selectedID]);
   const focusDwell = useCallback((cell: JourneyHeatCell) => {
     setFollow(false); setShowHeat(true);
     setFocusArea(previous => ({ x: cell.x, y: cell.y, request: (previous?.request ?? 0) + 1 }));
@@ -143,7 +157,8 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
     <div className="world-detail-tabs" aria-label="玩家详情"><button type="button" aria-pressed={detailTab === 'progress'} onClick={() => setDetailTab('progress')}>进度变化</button><button type="button" aria-pressed={detailTab === 'journey'} onClick={() => setDetailTab('journey')}>游玩小结</button></div>
     {detailTab === 'progress' ? <WorkspaceProgress key={selectedID} name={selectedName} usedMs={selected?.used_ms} data={progress.data} mode={mode} cursor={mode === 'history' ? clock.time : Date.now()} loading={progress.loading} error={progress.error} onChange={seekProgress} onRetry={() => setProgressRevision(v => v + 1)} /> : <>
       {!historical ? <label className="world-journey-window">观察窗口<select aria-label="小结观察范围" value={windowRange.label.endsWith('h') ? windowRange.label : '24h'} onChange={e => changeRange(Number(e.target.value.slice(0, -1)))}><option value="1h">最近 1 小时</option><option value="6h">最近 6 小时</option><option value="24h">最近 24 小时</option><option value="168h">最近 7 天</option></select></label> : null}
-      <WorkspaceJourney key={selectedID} name={selectedName} summary={journey!} loading={(historical ? history.loading : journeyLive.loading) || progress.loading} error={journeyError}
+      {historical ? <p>小结仅统计当前已缓冲区间</p> : null}
+      <WorkspaceJourney key={selectedID} name={selectedName} summary={journey!} loading={(historical ? history.loading || history.buffering : journeyLive.loading) || progress.loading} error={journeyError}
         onSeek={seekJourney} onFocus={focusDwell} onRetry={retryJourney} />
     </>}
   </> : null;
@@ -171,8 +186,8 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
         <div className="world-selected-actions"><button type="button" disabled={!selectedPoint} onClick={() => setFocusRequest(v => v + 1)}><Crosshair size={15} />定位</button><button type="button" aria-label={follow ? '停止跟随' : '跟随玩家'} aria-pressed={follow} disabled={!selectedPoint} onClick={() => { setFollow(v => !v); if (!follow) setFocusRequest(v => v + 1); }}><LocateFixed size={15} />{follow ? '跟随中' : '跟随'}</button></div>
         {progressCard}
         {!historical ? <button className="world-detail-link" type="button" onClick={enterHistory}>回看这位玩家<ArrowUpRight size={15} /></button> : <>
-          <div className="world-history-numbers"><div><strong>{samples.length}</strong><span>位置观测</span></div><div><strong>{events.length}</strong><span>事件记录</span></div></div>
-          <details className="world-events"><summary>事件记录<ChevronDown size={14} /></summary><ol>{events.map(event => <li key={event.id}><button type="button" onClick={() => clock.seek(Date.parse(event.occurred_at))}><time>{workspaceTime(Date.parse(event.occurred_at))}</time><strong>{eventLabel(event.event_type)}</strong><small>{event.confidence === 'snapshot_derived' ? '存档推导' : '已观测'}</small></button></li>)}</ol>{!events.length ? <p>当前区间没有事件记录</p> : null}</details>
+          <div className="world-history-numbers"><div><strong>{history.buffering ? '—' : samples.length}</strong><span>已缓冲位置</span></div><div><strong>{history.buffering ? '—' : events.length}</strong><span>已缓冲事件</span></div></div>
+          <details className="world-events"><summary>事件记录<ChevronDown size={14} /></summary><ol>{events.map(event => <li key={event.id}><button type="button" onClick={() => seekHistory(Date.parse(event.occurred_at))}><time>{workspaceTime(Date.parse(event.occurred_at))}</time><strong>{eventLabel(event.event_type)}</strong><small>{event.confidence === 'snapshot_derived' ? '存档推导' : '已观测'}</small></button></li>)}</ol>{history.buffering ? <p>正在加载此处的事件记录…</p> : !events.length ? <p>已缓冲区间没有事件记录</p> : null}</details>
         </>}
         {onOpenPlayer ? <button className="world-detail-link" type="button" onClick={() => onOpenPlayer(selectedID)}>完整证据与行为分析<ArrowUpRight size={15} /></button> : null}
       </div> : <p className="world-roster-tip">选择一位玩家，定位或回看旅程。</p>}
@@ -181,16 +196,16 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
     {historical ? <div className="world-history-tools world-glass"><Route size={15} /><span>观察窗口</span><select aria-label="历史时间范围" value={windowRange.label} onChange={e => changeRange(Number(e.target.value.replace('h', '')))}><option value="1h">最近 1 小时</option><option value="6h">最近 6 小时</option><option value="24h">最近 24 小时</option><option value="168h">最近 7 天</option>{windowRange.label === 'day' ? <option value="day">指定日期</option> : null}</select><input type="date" aria-label="回看指定日期" onChange={e => { if (!e.target.value) return; const begin = new Date(`${e.target.value}T00:00:00`); const end = new Date(begin); end.setDate(end.getDate() + 1); if (Number.isFinite(begin.getTime())) setWindowRange({ start: begin.getTime(), end: end.getTime(), label: 'day' }); }} /></div> : null}
     <div className="world-messages" aria-live="polite">
       {historical && !selectedID ? <p>选择玩家，开始回看旅程</p> : null}
-      {historical && history.loading ? <p>正在寻找过去的足迹…</p> : null}
+      {historical && history.loading ? <p>正在寻找过去的足迹…</p> : historical && history.buffering ? <p>正在缓冲此处的位置记录…</p> : null}
       {historical && history.error ? <p role="alert">{history.error}<button type="button" onClick={reloadHistory}>重试</button></p> : null}
-      {historical && history.data && !samples.length ? <p>这个时间段没有位置记录</p> : null}
-      {historical && truncated ? <p>当前仅加载部分记录 · 位置 {samples.length}/{history.data?.trajectory_total ?? '更多'} · 事件 {events.length}/{history.data?.event_total ?? '更多'}</p> : null}
-      {historical && frame?.status === 'gap' ? <p>{frame.reason ? BREAK_LABELS[frame.reason] : '观测缺口'} · 保留上次位置{frame.nextAt ? <button type="button" onClick={() => clock.seek(frame.nextAt!)}>跳到下一次观测</button> : null}</p> : null}
-      {historical && frame?.status === 'last-known' ? <p>此刻没有新的位置观测</p> : null}
+      {historical && !history.buffering && history.data && !samples.length ? <p>这个时间段没有位置记录</p> : null}
+      {historical && history.data && history.loadedStart !== undefined && history.loadedEnd !== undefined ? <p>按需加载 · 已缓冲 {workspaceTime(history.loadedStart)} — {workspaceTime(history.loadedEnd)}</p> : null}
+      {historical && !history.buffering && frame?.status === 'gap' ? <p>{frame.reason ? BREAK_LABELS[frame.reason] : '观测缺口'} · 保留上次位置{frame.nextAt ? <button type="button" onClick={() => seekHistory(frame.nextAt!)}>跳到下一次观测</button> : null}</p> : null}
+      {historical && !history.buffering && frame?.status === 'last-known' ? <p>此刻没有新的位置观测</p> : null}
       {!historical && live.data && !livePlayers.length ? <p>{live.data.online_count ? '在线玩家暂时没有位置观测' : '此刻世界很安静，等待玩家上线。'}</p> : null}
       {!historical && selectedID && !selectedLive ? <p>这位玩家暂无实时位置，可以回看历史足迹。</p> : null}
     </div>
     <WorkspacePlaybackBar mode={mode} start={Number.isFinite(start) ? start : windowRange.start} end={Number.isFinite(end) ? end : windowRange.end}
-      time={clock.time} playing={clock.playing} speed={clock.speed} disabled={disabled} events={events} onSeek={clock.seek} onPlaying={clock.setPlaying} onSpeed={clock.setSpeed} onLive={() => setMode('live')} onHistory={enterHistory} />
+      time={clock.time} playing={clock.playing} speed={clock.speed} disabled={disabled} events={events} onSeek={seekHistory} onPlaying={clock.setPlaying} onSpeed={clock.setSpeed} onLive={() => setMode('live')} onHistory={enterHistory} />
   </section>;
 }

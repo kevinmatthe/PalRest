@@ -55,15 +55,19 @@ type PlayerPrivateSample struct {
 }
 
 type SensitivePlayerTimeline struct {
-	Events              []ActivityEvent       `json:"events"`
-	Trajectories        []TrajectorySample    `json:"trajectories"`
-	PrivateSamples      []PlayerPrivateSample `json:"private_samples"`
-	EventTotal          int                   `json:"event_total"`
-	TrajectoryTotal     int                   `json:"trajectory_total"`
-	PrivateSampleTotal  int                   `json:"private_sample_total"`
+	Events             []ActivityEvent       `json:"events"`
+	Trajectories       []TrajectorySample    `json:"trajectories"`
+	PrivateSamples     []PlayerPrivateSample `json:"private_samples"`
+	EventTotal         int                   `json:"event_total"`
+	TrajectoryTotal    int                   `json:"trajectory_total"`
+	PrivateSampleTotal int                   `json:"private_sample_total"`
 }
 
 type PlayerTimeline struct {
+	// Inclusive evidence bounds across the full requested half-open window,
+	// before row limits. Private samples never contribute to these bounds.
+	RangeStart      *time.Time         `json:"range_start,omitempty"`
+	RangeEnd        *time.Time         `json:"range_end,omitempty"`
 	Events          []ActivityEvent    `json:"events"`
 	Trajectories    []TrajectorySample `json:"trajectories"`
 	EventTotal      int                `json:"event_total"`
@@ -419,13 +423,9 @@ func (r *Repository) ReadPlayerTimeline(ctx context.Context, userID string, star
 	if err != nil {
 		return empty, fmt.Errorf("query player timeline samples: %w", err)
 	}
-	eventTotal, err := countTimelineEvents(ctx, tx, userID, start, end)
+	eventTotal, trajectoryTotal, rangeStart, rangeEnd, err := publicTimelineRangeStats(ctx, tx, userID, start, end)
 	if err != nil {
-		return empty, fmt.Errorf("count player timeline events: %w", err)
-	}
-	trajectoryTotal, err := countTimelineSamples(ctx, tx, userID, start, end)
-	if err != nil {
-		return empty, fmt.Errorf("count player timeline samples: %w", err)
+		return empty, fmt.Errorf("query player timeline range statistics: %w", err)
 	}
 	if len(events) == 0 && len(samples) == 0 {
 		known, knownErr := knownPublicPlayerTx(ctx, tx, userID)
@@ -439,7 +439,7 @@ func (r *Repository) ReadPlayerTimeline(ctx context.Context, userID string, star
 	if err := tx.Commit(); err != nil {
 		return empty, fmt.Errorf("commit player timeline transaction: %w", err)
 	}
-	return PlayerTimeline{Events: events, Trajectories: samples, EventTotal: eventTotal, TrajectoryTotal: trajectoryTotal}, nil
+	return PlayerTimeline{Events: events, Trajectories: samples, EventTotal: eventTotal, TrajectoryTotal: trajectoryTotal, RangeStart: rangeStart, RangeEnd: rangeEnd}, nil
 }
 
 func (r *Repository) ReadSensitivePlayerTimeline(ctx context.Context, actor, userID string, start, end time.Time, limit int) (SensitivePlayerTimeline, error) {
@@ -582,6 +582,46 @@ SELECT 1 FROM player_sessions WHERE user_id=? UNION ALL
 SELECT 1 FROM activity_events WHERE subject_type='player' AND subject_id=? UNION ALL
 SELECT 1 FROM trajectory_samples WHERE user_id=?)`, userID, userID, userID, userID).Scan(&exists)
 	return exists == 1, err
+}
+
+// Keep these predicates identical to queryTimelineEvents/queryTimelineSamples.
+// Aggregate each table once for both its full count and bounds in the same read
+// transaction as the limited rows. Private samples are deliberately absent.
+func publicTimelineRangeStats(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time) (eventTotal, trajectoryTotal int, rangeStart, rangeEnd *time.Time, err error) {
+	var first, last sql.NullString
+	err = tx.QueryRowContext(ctx, `
+SELECT SUM(event_total), SUM(trajectory_total), MIN(first_at), MAX(last_at) FROM (
+  SELECT COUNT(*) AS event_total, 0 AS trajectory_total,
+         MIN(occurred_at) AS first_at, MAX(occurred_at) AS last_at
+  FROM activity_events
+  WHERE subject_type='player' AND subject_id=? AND occurred_at>=? AND occurred_at<?
+  UNION ALL
+  SELECT 0 AS event_total, COUNT(*) AS trajectory_total,
+         MIN(observed_at) AS first_at, MAX(observed_at) AS last_at
+  FROM trajectory_samples
+  WHERE user_id=? AND observed_at>=? AND observed_at<?
+)`, userID, formatObservationTime(start), formatObservationTime(end),
+		userID, formatObservationTime(start), formatObservationTime(end)).Scan(&eventTotal, &trajectoryTotal, &first, &last)
+	if err != nil {
+		return
+	}
+	if first.Valid {
+		var parsed time.Time
+		parsed, err = parseTime(first.String)
+		if err != nil {
+			return
+		}
+		rangeStart = &parsed
+	}
+	if last.Valid {
+		var parsed time.Time
+		parsed, err = parseTime(last.String)
+		if err != nil {
+			return
+		}
+		rangeEnd = &parsed
+	}
+	return
 }
 
 func countTimelineEvents(ctx context.Context, tx *sql.Tx, userID string, start, end time.Time) (int, error) {
