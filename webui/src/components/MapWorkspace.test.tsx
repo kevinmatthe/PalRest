@@ -159,3 +159,27 @@ it('clears dwell heat when rewinding before completed observations without remou
   fireEvent.click(screen.getByLabelText('停留热度'));
   expect(JSON.parse(map.dataset.heat!)).toEqual([]);
 });
+
+it('keeps a seek made as soon as asynchronously loaded playback becomes enabled', async () => {
+  let resolveHistory!: (data: api.PlayerTimelineResponse) => void;
+  vi.mocked(api.getPlayerTimeline).mockReturnValue(new Promise(resolve => { resolveHistory = resolve; }));
+  render(<MapWorkspace players={[player]} refreshKey={0} />);
+  fireEvent.click(await screen.findByRole('button', { name: /选择玩家 测试玩家/ }));
+  fireEvent.click(screen.getByRole('button', { name: '历史回放' }));
+  const slider = screen.getByRole('slider', { name: '回放时间' }) as HTMLInputElement;
+  // Observe readiness before passive effects flush, as waitFor can do.
+  // Resolving outside act deliberately exposes this input/reset ordering.
+  const sought = new Promise<void>(resolve => {
+    const observer = new MutationObserver(() => {
+      if (slider.disabled) return;
+      observer.disconnect();
+      fireEvent.change(slider, { target: { value: String(now - 45000) } });
+      resolve();
+    });
+    observer.observe(slider, { attributes: true });
+  });
+  resolveHistory(history);
+  await sought;
+  await act(async () => {});
+  expect(JSON.parse(screen.getByTestId('world-map').dataset.points!)[0].x).toBe(3500);
+});

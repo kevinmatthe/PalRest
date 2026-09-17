@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 export const HISTORY_SECONDS_PER_SECOND = 60;
 export const WORKSPACE_SPEEDS = [1, 2, 4, 8] as const;
@@ -9,7 +9,9 @@ export function usePlaybackClock(start: number, end: number, resetKey: string) {
   const timeRef = useRef(start);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<WorkspaceSpeed>(1);
-  useEffect(() => { timeRef.current = start; setTime(start); setPlaying(false); }, [start, end, resetKey]);
+  // Reset before the newly enabled scrubber can accept input; a passive effect
+  // could otherwise overwrite a seek made immediately after history resolves.
+  useLayoutEffect(() => { timeRef.current = start; setTime(start); setPlaying(false); }, [start, end, resetKey]);
   useEffect(() => {
     if (!playing || end <= start) return;
     if (timeRef.current >= end) { timeRef.current = start; setTime(start); }
