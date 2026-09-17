@@ -105,7 +105,39 @@ struct PlayerList {
     players: Vec<PlayerListItem>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LivePositions {
+    pub as_of: String,
+    pub online_count: u64,
+    pub positioned: u64,
+    pub players: Vec<LivePlayerPosition>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LivePlayerPosition {
+    pub user_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_name: Option<String>,
+    pub x: f64,
+    pub y: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<u32>,
+}
+
 impl HttpBridge {
+    pub async fn fetch_live_positions(&self, base_url: String) -> Result<LivePositions, String> {
+        let response = self.presentation_client
+            .get(endpoint(&base_url, "/api/v1/live/positions")?)
+            .send().await.map_err(|_| "live positions request failed".to_string())?;
+        if response.status() != StatusCode::OK {
+            return Err(format!("live positions returned HTTP {}", response.status().as_u16()));
+        }
+        let body = read_json(response, self.max_body_bytes).await?;
+        serde_json::from_value(body).map_err(|_| "live positions response was invalid".to_string())
+    }
+
     pub fn new() -> Result<Self, String> {
         Self::new_with_policy(HttpPolicy::default())
     }
@@ -388,6 +420,46 @@ mod tests {
             user_id: "steam id?&=".into(),
             etag: Some("\"presentation-v1\"".into()),
         }
+    }
+
+    #[tokio::test]
+    async fn live_positions_request_uses_registered_read_only_route() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = [0; 4096];
+            let length = stream.read(&mut bytes).unwrap();
+            let request = String::from_utf8_lossy(&bytes[..length]);
+            assert!(request.starts_with("GET /api/v1/live/positions HTTP/1.1"));
+            stream.write_all(&response("200 OK", "", r#"{"as_of":"","online_count":0,"positioned":0,"players":[]}"#)).unwrap();
+        });
+        HttpBridge::new_with_policy(policy(1024)).unwrap().fetch_live_positions(url).await.unwrap();
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn live_positions_requests_time_out() {
+        let (url, server) = serve(vec![Reply { bytes: vec![], hold_open: Duration::from_millis(250) }]);
+        assert!(HttpBridge::new_with_policy(timeout_policy()).unwrap().fetch_live_positions(url).await.is_err());
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn live_positions_validate_shape_and_enforce_body_limit_and_origin() {
+        for (body, limit, valid) in [
+            (r#"{"as_of":"","online_count":1,"positioned":1,"players":[{"user_id":"u","x":0,"y":2}]}"#, 1024, true),
+            (r#"{"as_of":"","online_count":1,"positioned":1,"players":[{"user_id":"u","x":"bad","y":2}]}"#, 1024, false),
+            (r#"{"as_of":"","online_count":0,"positioned":0,"players":[]}"#, 16, false),
+        ] {
+            let (url, server) = serve(vec![Reply { bytes: response("200 OK", "", body), hold_open: Duration::ZERO }]);
+            let result = HttpBridge::new_with_policy(policy(limit)).unwrap().fetch_live_positions(url).await;
+            assert_eq!(result.is_ok(), valid);
+            server.join().unwrap();
+        }
+        let (url, server) = serve(vec![Reply { bytes: response("302 Found", "Location: http://localhost:1/private\r\n", ""), hold_open: Duration::ZERO }]);
+        assert!(HttpBridge::new_with_policy(policy(1024)).unwrap().fetch_live_positions(url).await.is_err());
+        server.join().unwrap();
     }
 
     #[test]

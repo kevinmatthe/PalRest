@@ -73,6 +73,9 @@ describe('PalworldMiniMap', () => {
       boxZoom: false,
       keyboard: false,
       touchZoom: false,
+      zoomAnimation: false,
+      fadeAnimation: false,
+      markerZoomAnimation: false,
     })
     expect(leaflet.tileLayer).toHaveBeenCalledTimes(1)
     expect(leaflet.tileLayer).toHaveBeenCalledWith(
@@ -80,6 +83,7 @@ describe('PalworldMiniMap', () => {
       {
         bounds: PALWORLD_TILE_BOUNDS,
         noWrap: true,
+        updateWhenIdle: true,
         minZoom: 0,
         maxZoom: 0,
         minNativeZoom: 0,
@@ -117,6 +121,22 @@ describe('PalworldMiniMap', () => {
     expect(leaflet.tileLayer).not.toHaveBeenCalled()
     expect(leaflet.markerInstance.setLatLng).toHaveBeenCalledWith([-256, 42])
     expect(leaflet.mapInstance.setView).toHaveBeenCalledWith([-256, 42], 0, { animate: false })
+  })
+
+  it('keeps Leaflet resources when the callback changes and reports failures to the latest callback', () => {
+    const first = vi.fn()
+    const latest = vi.fn()
+    const { rerender } = render(
+      <PalworldMiniMap map={position()} serviceBaseUrl={SERVICE_BASE} onUnavailable={first} />,
+    )
+    const handler = leaflet.tileLayerInstance.on.mock.calls[0][1] as () => void
+    rerender(<PalworldMiniMap map={position()} serviceBaseUrl={SERVICE_BASE} onUnavailable={latest} />)
+
+    expect(leaflet.map).toHaveBeenCalledTimes(1)
+    expect(leaflet.mapInstance.remove).not.toHaveBeenCalled()
+    act(() => handler())
+    expect(first).not.toHaveBeenCalled()
+    expect(latest).toHaveBeenCalledTimes(1)
   })
 
   it('rebuilds the map and tile layer when the private tile URL changes', () => {

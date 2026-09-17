@@ -43,11 +43,23 @@ export function configSaveWasPersisted(error: unknown): boolean {
     'persisted' in error && error.persisted === true
 }
 
+export type LivePositionsResult = {
+  as_of: string
+  online_count: number
+  positioned: number
+  players: Array<{ user_id: string; name?: string; account_name?: string; x: number; y: number; level?: number }>
+}
+
 export interface DesktopBridge extends OverlayBridge {
+  fetchLivePositions?(baseUrl: string, signal: AbortSignal): Promise<LivePositionsResult>
+  openTeamMap?(): Promise<void>
+  closeTeamMap?(): Promise<void>
+  isOverlayVisible?(): Promise<boolean>
+  onOverlayVisibilityChanged?(handler: (visible: boolean) => void): Promise<() => void>
   loadConfig(): Promise<OverlayConfigV1 | null>
   saveConfig(config: OverlayConfigV1): Promise<void>
   listPlayers(baseUrl: string, signal: AbortSignal): Promise<PlayerListItem[]>
-  currentWindowLabel(): Promise<'overlay' | 'settings'>
+  currentWindowLabel(): Promise<'overlay' | 'settings' | 'team-map'>
   setAdjustmentMode(enabled: boolean): Promise<void>
   openSettings?(): Promise<void>
   currentPlatform?(): Promise<'windows' | 'macos' | string>
@@ -120,6 +132,13 @@ function createTauriBridge(): PresentationDesktopBridge {
   const invokeHttp = createHttpInvokeGate()
   return {
     currentWindowLabel: () => invoke('current_window_label'),
+    fetchLivePositions: (baseUrl, signal) => invokeHttp('fetch_live_positions', { baseUrl }, signal),
+    openTeamMap: () => invoke('open_team_map'),
+    closeTeamMap: () => invoke('close_team_map'),
+    isOverlayVisible: () => invoke('is_overlay_visible'),
+    onOverlayVisibilityChanged: (handler) => listen<unknown>('overlay-visibility-changed', (event) => {
+      if (typeof event.payload === 'boolean') handler(event.payload)
+    }),
     loadConfig: () => invoke('load_config'),
     saveConfig: async (config) => {
       try {

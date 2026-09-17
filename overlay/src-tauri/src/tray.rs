@@ -7,7 +7,7 @@ struct MenuItemSpec {
 }
 
 #[cfg(any(feature = "native", test))]
-const MENU_ITEMS: [MenuItemSpec; 6] = [
+const MENU_ITEMS: [MenuItemSpec; 7] = [
     MenuItemSpec {
         id: "status",
         label: "Status: monitoring",
@@ -31,6 +31,11 @@ const MENU_ITEMS: [MenuItemSpec; 6] = [
     MenuItemSpec {
         id: "reselect",
         label: "Reselect player",
+        enabled: true,
+    },
+    MenuItemSpec {
+        id: "team-map",
+        label: "Toggle online players map",
         enabled: true,
     },
     MenuItemSpec {
@@ -67,6 +72,7 @@ mod native {
             lock_spec,
             settings_spec,
             reselect_spec,
+            map_spec,
             quit_spec,
         ] = MENU_ITEMS;
         let status = menu_item(app, status_spec)?;
@@ -74,8 +80,9 @@ mod native {
         let lock = menu_item(app, lock_spec)?;
         let settings = menu_item(app, settings_spec)?;
         let reselect = menu_item(app, reselect_spec)?;
+        let map = menu_item(app, map_spec)?;
         let quit = menu_item(app, quit_spec)?;
-        let menu = Menu::with_items(app, &[&status, &adjust, &lock, &settings, &reselect, &quit])?;
+        let menu = Menu::with_items(app, &[&status, &adjust, &lock, &settings, &reselect, &map, &quit])?;
 
         TrayIconBuilder::new()
             .icon(
@@ -99,6 +106,7 @@ mod native {
                         .transition(app, LifecycleEvent::Lock);
                 }
                 "settings" => show_settings(app),
+                "team-map" => crate::team_map::request_toggle(app),
                 "reselect" => {
                     show_settings(app);
                     let _ = app.emit("reselect-player", ());
@@ -138,11 +146,11 @@ mod tests {
     use super::{MENU_ITEMS, should_show_settings_on_launch, tray_icon_is_template};
 
     #[test]
-    fn tray_contract_contains_only_the_six_requested_items() {
+    fn tray_contract_includes_map_fallback() {
         let ids = MENU_ITEMS.map(|item| item.id);
         assert_eq!(
             ids,
-            ["status", "adjust", "lock", "settings", "reselect", "quit"]
+            ["status", "adjust", "lock", "settings", "reselect", "team-map", "quit"]
         );
         assert!(!MENU_ITEMS[0].enabled);
         assert_eq!(MENU_ITEMS[0].label, "Status: monitoring");

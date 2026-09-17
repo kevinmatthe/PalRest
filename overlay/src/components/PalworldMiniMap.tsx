@@ -41,6 +41,8 @@ export function PalworldMiniMap({
   const currentCoordinateRef = useRef<LeafletSimpleCoordinate | null>(null)
   const desiredCoordinateRef = useRef<LeafletSimpleCoordinate | null>(null)
   const [tileUnavailable, setTileUnavailable] = useState(false)
+  const onUnavailableRef = useRef(onUnavailable)
+  useEffect(() => { onUnavailableRef.current = onUnavailable }, [onUnavailable])
 
   const coordinate = coordinateFor(mapPosition)
   desiredCoordinateRef.current = coordinate
@@ -67,7 +69,7 @@ export function PalworldMiniMap({
     const handleTileError = () => {
       if (!active) return
       setTileUnavailable(true)
-      onUnavailable?.()
+      onUnavailableRef.current?.()
     }
 
     try {
@@ -81,10 +83,14 @@ export function PalworldMiniMap({
         boxZoom: false,
         keyboard: false,
         touchZoom: false,
+        zoomAnimation: false,
+        fadeAnimation: false,
+        markerZoomAnimation: false,
       })
       tileLayer = L.tileLayer(resolvedTileUrl, {
         bounds: PALWORLD_TILE_BOUNDS,
         noWrap: true,
+        updateWhenIdle: true,
         minZoom: FIXED_ZOOM,
         maxZoom: FIXED_ZOOM,
         minNativeZoom: FIXED_ZOOM,
@@ -109,7 +115,7 @@ export function PalworldMiniMap({
     } catch {
       if (active) {
         setTileUnavailable(true)
-        onUnavailable?.()
+        onUnavailableRef.current?.()
       }
       tileLayer?.off('tileerror', handleTileError)
       marker?.remove()
@@ -128,7 +134,7 @@ export function PalworldMiniMap({
       if (markerRef.current === marker) markerRef.current = null
       currentCoordinateRef.current = null
     }
-  }, [mapReady, mapPosition.projection, mapPosition.tile_set, onUnavailable, resolvedTileUrl, serviceBaseUrl])
+  }, [mapReady, resolvedTileUrl])
 
   useEffect(() => {
     const leafletMap = leafletMapRef.current

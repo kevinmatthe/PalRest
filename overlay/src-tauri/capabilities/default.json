@@ -3,7 +3,7 @@
   "identifier": "default",
   "description": "Allow local overlay windows to subscribe to native lifecycle events.",
   "local": true,
-  "windows": ["overlay", "settings"],
+  "windows": ["overlay", "settings", "team-map"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",

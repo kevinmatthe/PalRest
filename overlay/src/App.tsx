@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 import { OverlayBar } from './components/OverlayBar'
 import type { DesktopBridge } from './core/bridge'
@@ -6,7 +6,10 @@ import { parseOverlayConfig, type OverlayConfigV1 } from './core/config'
 import { PresentationPoller } from './core/presentationPoller'
 import { palworldAdapter } from './games/palworld/adapter'
 import { SettingsView } from './settings/SettingsView'
+import { useWindowVisibility } from './core/useWindowVisibility'
 import './styles.css'
+
+const TeamMap = lazy(() => import('./components/TeamMap'))
 
 export interface AppProps { bridge: DesktopBridge }
 
@@ -15,7 +18,7 @@ type Bootstrap =
   | { status: 'error' }
   | {
       status: 'ready'
-      label: 'overlay' | 'settings'
+      label: 'overlay' | 'settings' | 'team-map'
       config: OverlayConfigV1 | null
       platform?: string
       detectedUserId?: string | null
@@ -35,15 +38,17 @@ function LiveOverlay({ bridge, config, adjustMode }: { bridge: DesktopBridge; co
     config: { baseUrl: config.baseUrl, gameId: config.gameId, userId: config.userId },
   }), [bridge])
   const state = useSyncExternalStore(poller.subscribe, poller.getState, poller.getState)
+  const visible = useWindowVisibility(bridge)
 
   useEffect(() => {
     poller.updateConfig({ baseUrl: config.baseUrl, gameId: config.gameId, userId: config.userId })
   }, [config.baseUrl, config.gameId, config.userId, poller])
 
   useEffect(() => {
-    poller.start()
+    if (visible) poller.start()
+    else poller.stop()
     return () => poller.stop()
-  }, [poller])
+  }, [poller, visible])
 
   useEffect(() => {
     if (state.status === 'needs-player' && bridge.openSettings) {
@@ -55,6 +60,7 @@ function LiveOverlay({ bridge, config, adjustMode }: { bridge: DesktopBridge; co
     ? (config.layouts[config.gameId] ?? palworldAdapter.defaultLayout)
     : palworldAdapter.defaultLayout
 
+  if (!visible) return null
   if (state.status === 'ready' || state.status === 'stale') {
     return <OverlayBar presentation={state.presentation} layout={layout} status={state.status} mapBaseUrl={config.baseUrl} scale={config.scale} adjustMode={adjustMode} />
   }
@@ -98,7 +104,7 @@ export default function App({ bridge }: AppProps) {
         const config = parseOverlayConfig(rawConfig)
         if (!config) return
         latestConfig.current = config
-        setBootstrap((current) => current.status === 'ready' && current.label === 'overlay'
+        setBootstrap((current) => current.status === 'ready' && current.label !== 'settings'
           ? { ...current, config }
           : current)
       })
@@ -126,12 +132,12 @@ export default function App({ bridge }: AppProps) {
           bridge.loadConfig(),
         ])
         if (!active) return
-        if (label !== 'overlay' && label !== 'settings') {
+        if (label !== 'overlay' && label !== 'settings' && label !== 'team-map') {
           setBootstrap({ status: 'error' })
           return
         }
         const loadedConfig = rawConfig === null ? null : parseOverlayConfig(rawConfig)
-        const config = label === 'overlay' && latestConfig.current
+        const config = label !== 'settings' && latestConfig.current
           ? latestConfig.current
           : loadedConfig
         if (rawConfig !== null && !loadedConfig && !config) {
@@ -184,6 +190,7 @@ export default function App({ bridge }: AppProps) {
       onSaved={(config) => setBootstrap({ ...bootstrap, config })}
     />
   }
+  if (bootstrap.label === 'team-map' && bootstrap.config) return <Suspense fallback={<CompactState>正在打开全员地图…</CompactState>}><TeamMap bridge={bridge} config={bootstrap.config} /></Suspense>
   if (!bootstrap.config) return <CompactState adjustMode={adjustMode}>需要先完成设置</CompactState>
   return <LiveOverlay bridge={bridge} config={bootstrap.config} adjustMode={adjustMode} />
 }

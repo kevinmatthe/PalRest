@@ -404,3 +404,32 @@ describe('App presentation overlay', () => {
     expect(await screen.findByText('拖动调整位置')).toBeInTheDocument()
   })
 })
+
+describe('native visibility and team map routing', () => {
+  it('does not poll a hidden HUD and resumes on the native visibility event', async () => {
+    let visibility!: (visible: boolean) => void
+    const api = bridge({
+      isOverlayVisible: vi.fn(async () => false),
+      onOverlayVisibilityChanged: vi.fn(async handler => { visibility = handler; return () => {} }),
+      fetchPresentation: vi.fn(async () => ({ status: 200 as const, body: presentation() })),
+    })
+    const { unmount } = render(<App bridge={api} />)
+    await waitFor(() => expect(api.isOverlayVisible).toHaveBeenCalled())
+    expect(api.fetchPresentation).not.toHaveBeenCalled()
+    await act(async () => { visibility(true) })
+    await screen.findByRole('region', { name: '幻兽帕鲁玩家状态悬浮条' })
+    await act(async () => { visibility(false) })
+    expect(screen.queryByText('Player uid')).not.toBeInTheDocument()
+    unmount()
+  })
+  it('routes team-map without starting the personal presentation poller', async () => {
+    const api = bridge({
+      currentWindowLabel: vi.fn(async () => 'team-map' as const),
+      fetchLivePositions: vi.fn(async () => ({ as_of: new Date().toISOString(), online_count: 0, positioned: 0, players: [] })),
+    })
+    render(<App bridge={api} />)
+    await screen.findByRole('heading', { name: '全员地图' })
+    expect(api.fetchPresentation).not.toHaveBeenCalled()
+    await waitFor(() => expect(api.fetchLivePositions).toHaveBeenCalledTimes(1))
+  })
+})
