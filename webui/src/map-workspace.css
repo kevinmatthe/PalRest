@@ -30,7 +30,6 @@
 .world-workspace h2 { color: inherit; }
 .world-glass { background: rgba(17, 38, 34, .92); border: 1px solid var(--world-border); box-shadow: 0 .7rem 2.3rem #06181635; border-radius: 1rem; backdrop-filter: blur(18px); }
 .world-map-canvas { position: absolute; inset: 0; z-index: 0; background: #173a45; }
-.world-vignette { position: absolute; inset: 0; z-index: 1; pointer-events: none; background: linear-gradient(180deg, #0d25243b, transparent 32%, transparent 75%, #0d252470); }
 .world-heading { position: absolute; top: 1rem; left: 1rem; z-index: 2; pointer-events: none; text-shadow: 0 2px 10px #081e27; }
 .world-eyebrow { display: flex; align-items: center; gap: .45rem; font-size: .65rem; letter-spacing: .18em; color: #d0e4d6; }
 .world-heading h2 { margin-top: .45rem; font-family: "Songti SC", "Noto Serif CJK SC", "STSong", serif; font-size: clamp(1.4rem, 2.4vw, 2.4rem); letter-spacing: .04em; font-weight: 500; }

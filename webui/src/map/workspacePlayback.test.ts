@@ -46,3 +46,20 @@ describe('continuous map playback', () => {
     expect(playbackFrame(samples, start + 5000)?.status).toBe('gap');
   });
 });
+
+it.each([undefined, NaN, -1, 1.5])('keeps legacy positions with epoch %s as observations without inventing continuity', runtime_epoch => {
+  const samples = prepareTrajectory([point(0, 1000, { runtime_epoch }), point(30, 4000, { runtime_epoch })]);
+  expect(playbackFrame(samples, start)?.status).toBe('observed');
+  expect(playbackFrame(samples, start + 15000)).toMatchObject({ x: 1000, interpolated: false, status: 'gap', reason: 'continuity' });
+  expect(playbackFrame(samples, start + 40000)).toMatchObject({ x: 4000, status: 'last-known' });
+  expect(trajectoryRuns(samples).map(run => run.length)).toEqual([1, 1]);
+});
+it('keeps points without a legacy segment isolated', () => {
+  const samples = prepareTrajectory([point(0, 1000, { segment_id: undefined }), point(30, 4000, { segment_id: undefined })]);
+  expect(trajectoryRuns(samples).map(run => run.length)).toEqual([1, 1]);
+});
+
+it('preserves the valid initial runtime epoch zero when segment evidence is present', () => {
+  const samples = prepareTrajectory([point(0, 1000, { runtime_epoch: 0 }), point(30, 4000, { runtime_epoch: 0 })]);
+  expect(playbackFrame(samples, start + 15000)).toMatchObject({ x: 2500, interpolated: true });
+});

@@ -164,3 +164,13 @@ it('reveals the exact saved unlock IDs only when milestone evidence is expanded'
   fireEvent.click(within(milestones).getByRole('button', { name: /回看变化 #100/ }));
   expect(onSeek).toHaveBeenCalledWith(end);
 });
+
+it('shows legacy point counts and last coordinates while explaining missing continuity', () => {
+  const data = summary();
+  Object.assign(data.position, { observedMs: 0, coverage: 0, movingMs: 0, stationaryMs: 0, pathLength: 0, edges: [], level: null, lastObservation: { x: 13000, y: 100 } });
+  data.warnings = ['position_continuity_unknown'];
+  mount(data);
+  expect(screen.getByText('已加载位置观测 3 个')).toBeInTheDocument();
+  expect(screen.getByText('最后观测坐标 (13,000, 100)')).toBeInTheDocument();
+  expect(screen.getByText(/连续性信息不足/)).toBeInTheDocument();
+});

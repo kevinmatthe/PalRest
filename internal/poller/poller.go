@@ -154,12 +154,27 @@ func (p *Poller) runScheduledCycle() {
 // RunOnce executes the critical player path. A standalone call does not start
 // optional server sampling; it only dispatches a sample when Run (or the
 // package-private test lifecycle) already owns an active sampler worker.
-func (p *Poller) RunOnce(ctx context.Context) error {
+func (p *Poller) RunOnce(ctx context.Context) (cycleErr error) {
 	// cycleMu is exclusive so direct callers cannot overlap player observation,
 	// Guard state transitions, or enforcement side effects.
 	p.cycleMu.Lock()
+	// Use the monotonic wall clock for performance, independently of the
+	// observation clock. Exclude time waiting for another cycle's lock.
+	started := time.Now()
 	now := p.now().UTC()
 	defer func() {
+		elapsed := time.Since(started)
+		exceeded := elapsed > p.interval
+		level := slog.LevelInfo
+		if exceeded || cycleErr != nil {
+			level = slog.LevelWarn
+		}
+		slog.Log(context.Background(), level, "poll cycle finished",
+			"duration_ms", float64(elapsed)/float64(time.Millisecond),
+			"interval_ms", p.interval.Milliseconds(),
+			"interval_exceeded", exceeded,
+			"success", cycleErr == nil,
+		)
 		p.cycleMu.Unlock()
 		p.enqueueServerSample(now)
 	}()

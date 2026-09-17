@@ -309,7 +309,7 @@ func defaults() Config {
 	return Config{
 		Version: 1,
 		Server: Server{
-			PollInterval:      Duration{30 * time.Second},
+			PollInterval:      Duration{5 * time.Second},
 			RequestTimeout:    Duration{5 * time.Second},
 			MaxObservationGap: Duration{75 * time.Second},
 		},

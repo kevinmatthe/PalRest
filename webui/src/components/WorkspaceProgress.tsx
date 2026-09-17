@@ -3,11 +3,16 @@ import { ArrowUpRight, ChevronDown, Sprout } from 'lucide-react';
 import type { PlayerProgressResponse, ProgressChange } from '../api';
 import { PROGRESS_METRICS, progressAt, progressMetricValue } from '../map/workspaceProgress';
 import { workspaceTime } from './WorkspacePlaybackBar';
-type Props = { name: string; data?: PlayerProgressResponse; mode: 'live' | 'history'; cursor: number; loading: boolean; error?: string; onChange: (change: ProgressChange) => void; onRetry: () => void };
+type Props = { name: string; usedMs?: number; data?: PlayerProgressResponse; mode: 'live' | 'history'; cursor: number; loading: boolean; error?: string; onChange: (change: ProgressChange) => void; onRetry: () => void };
 const BOUNDARIES: Record<string, string> = { replayed_snapshot: '出现过往存档，重新建立比较基线', after_out_of_order: '观测顺序中断，重新建立比较基线', rollback: '检测到存档回档，已重新建立基线', counter_reset: '计数回退或存档回档，已重新建立基线', inconsistent: '文件一致性未确认，暂停变化比较', after_inconsistent: '一致性恢复，重新建立基线', world_unknown: '世界身份未确认，暂停变化比较', world_changed: '世界已变更，已重新建立基线', schema_changed: '采集口径变更，已重新建立基线', baseline: '首次观测，仅建立基线' };
-export function WorkspaceProgress({ name, data, mode, cursor, loading, error, onChange, onRetry }: Props) {
+export function WorkspaceProgress({ name, data, usedMs, mode, cursor, loading, error, onChange, onRetry }: Props) {
   const [open, setOpen] = useState(true);
   const { checkpoint, changes } = useMemo(() => progressAt(data, Math.min(cursor, Date.now())), [data, cursor]);
+  const usedMinutes = typeof usedMs === 'number' && Number.isFinite(usedMs) && usedMs >= 0 ? Math.floor(usedMs / 60000) : null;
+  const missingDetails = (['owned_pals', 'paldeck', 'fast_travel'] as const).some(key => {
+    const metric = checkpoint?.metrics[key];
+    return metric?.state === 'known' && typeof metric.value === 'number' && metric.value > 0 && (!metric.ids || metric.ids.length !== metric.value);
+  });
   const unattributed = checkpoint?.unattributed_pals;
   const unattributedCount = unattributed?.state === 'known' && Number.isFinite(unattributed.value) ? unattributed.value : undefined;
   const empty = data?.status === 'identity_unknown' ? '玩家身份尚未确认，暂时无法关联存档进度'
@@ -18,11 +23,13 @@ export function WorkspaceProgress({ name, data, mode, cursor, loading, error, on
       <span><Sprout size={17} /><span><strong>旅程进度</strong><small>{name} · {mode === 'history' ? '回放时刻' : '最近存档观测'}</small></span></span><ChevronDown size={16} className={open ? 'is-open' : ''} />
     </button>
     {open ? <div className="world-progress-body">
+      {usedMinutes !== null ? <><dl className="world-progress-metrics"><div><dt>当前已用游戏时长</dt><dd>{usedMinutes >= 60 ? `${Math.floor(usedMinutes / 60)} 小时 ${usedMinutes % 60} 分钟` : `${usedMinutes} 分钟`}</dd></div></dl><p>来自现有时长统计；不代表所选历史窗口时长。</p></> : null}
       {loading ? <p role="status">正在读取旅程进度…</p> : null}
       {error ? <p className="world-progress-warning" role="alert">{error}{data ? ' · 保留上次观测' : ''}<button type="button" onClick={onRetry}>重试</button></p> : null}
       {!loading && empty ? <p>{empty}</p> : null}
       {checkpoint ? <>
         <dl className="world-progress-metrics">{PROGRESS_METRICS.map(metric => <div key={metric.key}><dt>{metric.label}</dt><dd className={checkpoint.metrics?.[metric.key]?.state === 'known' ? 'is-known' : ''}>{progressMetricValue(checkpoint.metrics?.[metric.key])}</dd></div>)}</dl>
+        {missingDetails ? <p className="world-progress-warning">部分数量观测未保存明细；保留已有计数，仅比较有保存证据的变化。</p> : null}
         <p>拥有数仅统计已确认个人归属的帕鲁。</p>
         {unattributedCount !== undefined ? unattributedCount > 0 ? <p className="world-progress-warning">另有 {unattributedCount} 只公会帕鲁未确认个人归属，未计入拥有数。</p> : null : <p className="world-progress-warning">个人归属统计尚未完整，公会中未确认归属的帕鲁未计入拥有数。</p>}
         <p className="world-progress-source">来源：存档导入<br />观测 <time dateTime={checkpoint.observed_at}>{workspaceTime(Date.parse(checkpoint.observed_at))}</time><br />采集 <time dateTime={checkpoint.captured_at}>{workspaceTime(Date.parse(checkpoint.captured_at))}</time></p>
@@ -35,6 +42,7 @@ export function WorkspaceProgress({ name, data, mode, cursor, loading, error, on
           <span><time>{workspaceTime(Date.parse(change.interval_start))} – {workspaceTime(Date.parse(change.interval_end))}</time><ArrowUpRight size={14} /></span>
           <strong>{PROGRESS_METRICS.find(metric => metric.key === change.metric)?.label ?? '进度'} {change.before} → {change.after}<em>{change.delta > 0 ? '+' : ''}{change.delta}</em></strong>
           {(change.added?.length || change.removed?.length) ? <small>新增 {change.added?.length ?? 0} 项 · 移除 {change.removed?.length ?? 0} 项</small> : null}
+          {!Array.isArray(change.added) || !Array.isArray(change.removed) ? <small>增减明细未采集，仅展示已保存的数量变化</small> : null}
           <small>存档观测 · 点击回看区间终点</small>
         </button></li>)}</ol> : <p>{checkpoint ? '此刻之前暂无可比较的变化；首次观测仅建立基线。' : '等待更早的进度观测。'}</p>}
         <p className="world-progress-footnote">变化发生于两次观测之间，未关联具体地点。拥有数量变化不等于捕获。</p>

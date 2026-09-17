@@ -340,3 +340,26 @@ func TestExampleConfigIsValidAndDisabled(t *testing.T) {
 		t.Fatalf("sample observation=%+v", cfg.Observation)
 	}
 }
+
+func TestPollIntervalDefaultAndExplicitConfiguration(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		setting string
+		want    time.Duration
+	}{
+		{"omitted defaults to five seconds", "", 5 * time.Second},
+		{"explicit existing interval is preserved", "  poll_interval: 30s\n", 30 * time.Second},
+		{"custom performance interval", "  poll_interval: 2s\n", 2 * time.Second},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data := strings.Replace(validConfig, "  poll_interval: 30s\n", tt.setting, 1)
+			cfg, err := Parse([]byte(data), env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Server.PollInterval.Duration != tt.want {
+				t.Fatalf("poll interval=%s want=%s", cfg.Server.PollInterval.Duration, tt.want)
+			}
+		})
+	}
+}

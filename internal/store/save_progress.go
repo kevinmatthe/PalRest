@@ -301,10 +301,19 @@ func insertPlayerProgress(tx *gorm.DB, importID uint, s SaveSnapshot, player Sav
 	if current.Boundary == "" {
 		for _, name := range progressMetricNames {
 			before, after := old[name], metrics[name]
-			if before.State != "known" || after.State != "known" {
+			if before.State != "known" || after.State != "known" || before.Value == nil || after.Value == nil {
 				continue
 			}
-			added, removed := progressSetDiff(before.IDs, after.IDs)
+			added, removed := []string{}, []string{}
+			if isProgressSet(name) {
+				// Legacy checkpoints can retain counts without complete membership.
+				// Preserve numeric deltas, but null details must remain unknown.
+				if completeProgressSet(before) && completeProgressSet(after) {
+					added, removed = progressSetDiff(before.IDs, after.IDs)
+				} else {
+					added, removed = nil, nil
+				}
+			}
 			if *before.Value == *after.Value && len(added) == 0 && len(removed) == 0 {
 				continue
 			}
@@ -334,13 +343,13 @@ func markProgressReplay(tx *gorm.DB, importID uint) error {
 func progressCountersRegressed(before, after map[string]ProgressMetric) bool {
 	for _, name := range []string{"capture_total", "paldeck", "fast_travel", "level", "experience"} {
 		a, b := before[name], after[name]
-		if a.State != "known" || b.State != "known" {
+		if a.State != "known" || b.State != "known" || a.Value == nil || b.Value == nil {
 			continue
 		}
 		if *b.Value < *a.Value {
 			return true
 		}
-		if isProgressSet(name) {
+		if isProgressSet(name) && completeProgressSet(a) && completeProgressSet(b) {
 			_, removed := progressSetDiff(a.IDs, b.IDs)
 			if len(removed) > 0 {
 				return true
@@ -348,6 +357,10 @@ func progressCountersRegressed(before, after map[string]ProgressMetric) bool {
 		}
 	}
 	return false
+}
+
+func completeProgressSet(metric ProgressMetric) bool {
+	return metric.State == "known" && validateProgressMetric(metric, true) == nil
 }
 
 func progressSetDiff(before, after []string) ([]string, []string) {

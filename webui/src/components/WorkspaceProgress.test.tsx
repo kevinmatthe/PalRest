@@ -46,3 +46,27 @@ it('explains equal-count set replacements with their added and removed counts', 
   expect(screen.getByText('新增 1 项 · 移除 1 项')).toBeInTheDocument();
   expect(screen.queryByText('NewSpecies')).not.toBeInTheDocument();
 });
+
+it('keeps current measured playtime visible when no save progress has been collected', () => {
+  render(<WorkspaceProgress name="旧玩家" data={{ ...data, status: 'not_collected', checkpoints: [], changes: [] }} usedMs={5400000} mode="history" cursor={Date.parse('2026-09-16T10:00:00Z')} loading={false} onChange={() => {}} onRetry={() => {}} />);
+  expect(screen.getByText('当前已用游戏时长')).toBeInTheDocument();
+  expect(screen.getByText('1 小时 30 分钟')).toBeInTheDocument();
+  expect(screen.getByText(/历史窗口时长/)).toBeInTheDocument();
+  expect(screen.getByText('尚未采集这位玩家的存档进度')).toBeInTheDocument();
+});
+it('retains legacy counts and explains missing comparison details without inventing changes', () => {
+  const legacy = { ...data, changes: [], change_total: 0 };
+  render(<WorkspaceProgress name="旧玩家" data={legacy} mode="history" cursor={Date.parse('2026-09-16T10:00:00Z')} loading={false} onChange={() => {}} onRetry={() => {}} />);
+  expect(screen.getByText('45')).toBeInTheDocument();
+  expect(screen.getByText(/部分数量观测未保存明细/)).toBeInTheDocument();
+  expect(screen.getAllByText('未采集')).toHaveLength(4);
+  expect(screen.queryByRole('button', { name: /42 → 45/ })).not.toBeInTheDocument();
+});
+
+it('shows measured count changes without inventing missing set details', () => {
+  const legacy: PlayerProgressResponse = { ...data, changes: [{ ...data.changes[0], added: null, removed: null }] };
+  render(<WorkspaceProgress name="旧玩家" data={legacy} mode="history" cursor={Date.parse('2026-09-16T10:00:00Z')} loading={false} onChange={() => {}} onRetry={() => {}} />);
+  expect(screen.getByRole('button', { name: /拥有帕鲁 42 → 45/ })).toBeInTheDocument();
+  expect(screen.getByText('增减明细未采集，仅展示已保存的数量变化')).toBeInTheDocument();
+  expect(screen.queryByText(/新增 \d+ 项/)).not.toBeInTheDocument();
+});

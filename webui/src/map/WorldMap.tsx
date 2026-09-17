@@ -49,7 +49,10 @@ export const WorldMap = memo(function WorldMap(props: WorldMapProps) {
     if (!root.current) return;
     const map = L.map(root.current, {
       attributionControl: false, zoomControl: false, crs: L.CRS.Simple,
-      minZoom: 0, maxZoom: 6, zoomSnap: 0.5, maxBounds: PALWORLD_TILE_BOUNDS, maxBoundsViscosity: 0.8,
+      minZoom: 0, maxZoom: 6, zoomSnap: 0.25, zoomDelta: 0.25,
+      wheelPxPerZoomLevel: 160, wheelDebounceTime: 40,
+      zoomAnimation: !reducedRef.current, fadeAnimation: !reducedRef.current,
+      maxBounds: PALWORLD_TILE_BOUNDS, maxBoundsViscosity: 0.8,
       center: [-128, 128], zoom: 2,
     });
     const tiles = L.tileLayer(PALWORLD_TILE_URL, { bounds: PALWORLD_TILE_BOUNDS, noWrap: true, minNativeZoom: 0, maxNativeZoom: 6 });
@@ -73,7 +76,9 @@ export const WorldMap = memo(function WorldMap(props: WorldMapProps) {
     const manual = () => { map.stop(); stopFollow(); };
     const key = (e: KeyboardEvent) => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '+', '-', '='].includes(e.key)) manual(); };
     const element = root.current;
-    element.addEventListener('wheel', manual, { passive: true });
+    // Leaflet stops camera movement itself before wheel zooming. Calling stop()
+    // on every wheel event would also reset the view during a zoom gesture.
+    element.addEventListener('wheel', stopFollow, { passive: true });
     element.addEventListener('keydown', key);
     // Pointer input cancels an in-flight camera pan before a drag begins.
     element.addEventListener('pointerdown', manual);
@@ -82,7 +87,7 @@ export const WorldMap = memo(function WorldMap(props: WorldMapProps) {
     const frame = requestAnimationFrame(() => map.invalidateSize({ animate: false }));
     return () => {
       cancelAnimationFrame(frame); resize.disconnect();
-      element.removeEventListener('wheel', manual); element.removeEventListener('keydown', key); element.removeEventListener('pointerdown', manual);
+      element.removeEventListener('wheel', stopFollow); element.removeEventListener('keydown', key); element.removeEventListener('pointerdown', manual);
       markerRef.current?.clear(); markerRef.current = null;
       heatRef.current?.clear(); heatRef.current = null;
       disposeLeafletMap(map); mapRef.current = null; landmarksRef.current = null; trailRef.current = null; cursorTrailRef.current = null;

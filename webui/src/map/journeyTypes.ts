@@ -30,6 +30,7 @@ export type JourneySummary = {
   position: {
     sampleCount: number; totalCount: number; observedMs: number; unknownMs: number;
     coverage: number; movingMs: number; stationaryMs: number; pathLength: number;
+    lastObservation?: { x: number; y: number } | null;
     asOf: number | null; ageMs: number | null; edges: JourneyEdge[];
     level: { from: number; to: number; delta: number; start: number; end: number } | null;
   };
