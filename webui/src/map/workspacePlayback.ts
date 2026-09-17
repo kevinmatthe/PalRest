@@ -2,7 +2,7 @@ import type { TrajectorySample } from '../api';
 import { TELEPORT_MIN_DIST, T_GAP_MS } from '../behavior/behaviorTypes';
 
 export type PreparedSample = TrajectorySample & { time: number; breakBefore?: boolean };
-export type BreakReason = 'player' | 'restart' | 'segment' | 'time' | 'gap' | 'teleport' | 'invalid';
+export type BreakReason = 'player' | 'restart' | 'segment' | 'time' | 'gap' | 'teleport' | 'invalid' | 'continuity';
 export type PlaybackFrame = {
   x: number; y: number; sample: PreparedSample; index: number; interpolated: boolean;
   status: 'observed' | 'interpolated' | 'gap' | 'last-known'; reason?: BreakReason; nextAt?: number;
@@ -25,8 +25,13 @@ export function prepareTrajectory(input: TrajectorySample[]): PreparedSample[] {
   return result;
 }
 
+export function hasTrajectoryContinuity(sample: TrajectorySample): boolean {
+  return Boolean(sample.segment_id) && Number.isSafeInteger(sample.runtime_epoch) && sample.runtime_epoch >= 0;
+}
+
 export function connectionBreak(a: TrajectorySample, b: TrajectorySample & { breakBefore?: boolean }): BreakReason | undefined {
   if (a.user_id !== b.user_id) return 'player';
+  if (!hasTrajectoryContinuity(a) || !hasTrajectoryContinuity(b)) return 'continuity';
   if (a.runtime_epoch !== b.runtime_epoch) return 'restart';
   if (!a.segment_id || a.segment_id !== b.segment_id) return 'segment';
   const dt = Date.parse(b.observed_at) - Date.parse(a.observed_at);
@@ -70,5 +75,5 @@ export function trajectoryRuns(samples: PreparedSample[]): PreparedSample[][] {
 
 export const BREAK_LABELS: Record<BreakReason, string> = {
   player: '玩家边界', restart: '服务器重启', segment: '轨迹中断', time: '时间不连续',
-  gap: '观测缺口', teleport: '疑似传送', invalid: '无效观测',
+  continuity: '连续性信息不足', gap: '观测缺口', teleport: '疑似传送', invalid: '无效观测',
 };

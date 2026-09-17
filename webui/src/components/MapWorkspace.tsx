@@ -141,7 +141,7 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   }, [historical, reloadHistory]);
   const progressCard = selectedID ? <>
     <div className="world-detail-tabs" aria-label="玩家详情"><button type="button" aria-pressed={detailTab === 'progress'} onClick={() => setDetailTab('progress')}>进度变化</button><button type="button" aria-pressed={detailTab === 'journey'} onClick={() => setDetailTab('journey')}>游玩小结</button></div>
-    {detailTab === 'progress' ? <WorkspaceProgress key={selectedID} name={selectedName} data={progress.data} mode={mode} cursor={mode === 'history' ? clock.time : Date.now()} loading={progress.loading} error={progress.error} onChange={seekProgress} onRetry={() => setProgressRevision(v => v + 1)} /> : <>
+    {detailTab === 'progress' ? <WorkspaceProgress key={selectedID} name={selectedName} usedMs={selected?.used_ms} data={progress.data} mode={mode} cursor={mode === 'history' ? clock.time : Date.now()} loading={progress.loading} error={progress.error} onChange={seekProgress} onRetry={() => setProgressRevision(v => v + 1)} /> : <>
       {!historical ? <label className="world-journey-window">观察窗口<select aria-label="小结观察范围" value={windowRange.label.endsWith('h') ? windowRange.label : '24h'} onChange={e => changeRange(Number(e.target.value.slice(0, -1)))}><option value="1h">最近 1 小时</option><option value="6h">最近 6 小时</option><option value="24h">最近 24 小时</option><option value="168h">最近 7 天</option></select></label> : null}
       <WorkspaceJourney key={selectedID} name={selectedName} summary={journey!} loading={(historical ? history.loading : journeyLive.loading) || progress.loading} error={journeyError}
         onSeek={seekJourney} onFocus={focusDwell} onRetry={retryJourney} />
@@ -152,7 +152,6 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
       showTrail={showTrail} showLandmarks={showLandmarks} showBases={showBases} bases={bases} follow={follow} focusRequest={focusRequest}
       stale={mode === 'live' && live.stale} onSelect={selectPlayer} onInteraction={stopFollow}
       heat={showHeat ? journey?.heat ?? EMPTY_HEAT : EMPTY_HEAT} focusArea={focusArea} onFocusArea={focusDwell} />
-    <div className="world-vignette" aria-hidden="true" />
     <div className="world-heading"><span className="world-eyebrow"><Compass size={14} /> PALWORLD ATLAS</span><h2>世界正在发生<span>。</span></h2><p>{historical ? '沿着足迹，回到那一刻。' : '每位探险者，都有自己的旅程。'}</p></div>
     <div className="world-top-controls">
       <div className="world-mode-switch world-glass" aria-label="地图模式"><button type="button" aria-pressed={!historical} onClick={() => setMode('live')}><Radio size={15} />实时</button><button type="button" aria-label="切换历史模式" aria-pressed={historical} onClick={enterHistory}><History size={15} />回放</button></div>

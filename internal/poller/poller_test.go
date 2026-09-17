@@ -1,9 +1,12 @@
 package poller
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -730,3 +733,50 @@ func (b *blockingClient) ListPlayers(ctx context.Context) ([]domain.Player, erro
 }
 func (*blockingClient) Announce(context.Context, string) error     { return nil }
 func (*blockingClient) Kick(context.Context, string, string) error { return nil }
+
+func TestRunOnceLogsDurationOnSuccessAndFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		listErr  error
+		interval time.Duration
+		exceeded bool
+	}{
+		{"success", nil, time.Hour, false},
+		{"failure", errors.New("offline"), time.Hour, false},
+		{"over interval", nil, time.Nanosecond, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			p, err := New(&fakeClient{listErr: tt.listErr}, &fakeGuard{}, &fakeAnalytics{}, tt.interval, "warning", "kick", "login", time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.RunOnce(t.Context()); !errors.Is(err, tt.listErr) {
+				t.Fatalf("RunOnce: %v", err)
+			}
+			for _, line := range strings.Split(strings.TrimSpace(output.String()), "\n") {
+				var entry map[string]any
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					t.Fatal(err)
+				}
+				if entry["msg"] != "poll cycle finished" {
+					continue
+				}
+				if duration, ok := entry["duration_ms"].(float64); !ok || duration < 0 {
+					t.Fatalf("duration: %v", entry)
+				}
+				if entry["success"] != (tt.listErr == nil) || entry["interval_exceeded"] != tt.exceeded || entry["interval_ms"] != float64(tt.interval.Milliseconds()) {
+					t.Fatalf("summary: %v", entry)
+				}
+				if tt.exceeded && entry["level"] != "WARN" {
+					t.Fatalf("slow cycle not warned: %v", entry)
+				}
+				return
+			}
+			t.Fatal("missing poll cycle duration summary")
+		})
+	}
+}

@@ -350,6 +350,10 @@ WebUI 顶部的 Overview / Analytics 可在运行状态和玩家活动分析之�
 
 `observation.raw_retention` 默认 `90d`。统一观察清理由成功玩家观察触发，最多每天一次、每类最多删除 500 行，因此积压时可能暂时超过截止时间。它清理未被长期服务器事实引用的原始 activity event、trajectory、private sample 和 server metric；`server_observation_state` 当前 metrics/info/settings 基线、`server_runtime_state` 当前重启代际、内容寻址的 server documents/occurrences 和被它们引用的事件不会因该 raw cleanup 丢失。原有 Analytics 会话、并发桶和逐日统计仍使用独立的 90 天增量清理。当前 Policy 的 `timezone` 决定新的逐日归属和查询边界；修改只影响后续观察，不重分桶历史。
 
+`server.poll_interval` 控制后端玩家观察与可选服务器采样的触发频率，默认 `5s`，可在配置文件中调整（例如 `2s` 或 `30s`）以比较性能；已有显式 `30s` 配置会继续使用 `30s`。这是启动配置，修改后需要重启 sidecar；热重载会报告需要重启，不会切换运行中的间隔。`server.max_observation_gap` 必须至少等于该间隔。
+
+每轮玩家观察结束（包括失败和通知/踢出操作结束）都会记录 `poll cycle finished`，包含 `duration_ms`、`interval_ms`、`success` 和 `interval_exceeded`；失败或耗时超过间隔时为 WARN。耗时不包含等待轮询锁或独立服务器采样器的执行时间。玩家轮询保持串行，慢轮次不会重叠，ticker 会合并错过的 tick，因此实际采样间隔可能大于配置值；可选采样器也会合并繁忙期间的触发。缩短间隔会增加 REST 请求、数据库写入和日志量，可结合这些日志及 `/metrics` 比较负载。
+
 观察配置可省略，默认值如下。所有字段都是启动配置；修改后热重载会在 `/api/v1/status.config_reload_error` 明确要求重启，不会修改 SQLite 中的 Policy 文档或玩家策略状态。
 
 ```yaml

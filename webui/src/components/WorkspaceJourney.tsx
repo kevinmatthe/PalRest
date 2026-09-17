@@ -8,6 +8,7 @@ import '../journey.css';
 
 type Props = { summary: JourneySummary; name: string; loading: boolean; error?: string; onSeek: (time: number) => void; onFocus: (cell: JourneyHeatCell) => void; onRetry: () => void };
 const WARNINGS: Record<string, string> = {
+  position_continuity_unknown: '部分位置观测的连续性信息不足，仅保留观测点和最后位置，不据此推断移动、停留或活动。',
   timeline_truncated: '位置记录未完整加载，仅汇总已加载的有效观测。',
   progress_truncated: '进度记录未完整加载，变化合计不代表整个窗口。',
   progress_boundary: '进度存在世界、口径或存档边界，不跨边界比较。',
@@ -46,15 +47,16 @@ function ChangeEvidence({ change, onSeek }: { change: ProgressChange; onSeek: Pr
     <strong>{label} {change.before} → {change.after} <em>{signed(change.delta)}</em></strong>
     <TimeRange start={Date.parse(change.interval_start)} end={Date.parse(change.interval_end)} />
     <small>变化 #{change.id} · 快照 #{change.previous_checkpoint_id} → #{change.checkpoint_id} · 存档观测</small>
-    {change.added.length ? <p>新增 ID：<span>{change.added.join('、')}</span></p> : null}
-    {change.removed.length ? <p>移除 ID：<span>{change.removed.join('、')}</span></p> : null}
+    {change.added?.length ? <p>新增 ID：<span>{change.added.join('、')}</span></p> : null}
+    {change.removed?.length ? <p>移除 ID：<span>{change.removed.join('、')}</span></p> : null}
+    {!Array.isArray(change.added) || !Array.isArray(change.removed) ? <p>此记录未保存增减明细，仅展示已保存的数量变化。</p> : null}
     <button type="button" onClick={() => onSeek(Date.parse(change.interval_end))} aria-label={`回看变化 #${change.id} 的区间终点`}>回看区间终点 <ArrowUpRight size={15} aria-hidden="true" /></button>
   </li>;
 }
 function Milestone({ change, onSeek }: { change: ProgressChange; onSeek: Props['onSeek'] }) {
   const [open, setOpen] = useState(false);
   const label = change.metric === 'level' ? `存档等级提升 ${change.before} → ${change.after}`
-    : `${change.metric === 'paldeck' ? '图鉴' : '传送点'}新增 ${change.added.length} 项`;
+    : `${change.metric === 'paldeck' ? '图鉴' : '传送点'}新增 ${change.added?.length ?? 0} 项`;
   return <li><details onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{label}</summary>
     <TimeRange start={Date.parse(change.interval_start)} end={Date.parse(change.interval_end)} />
@@ -104,6 +106,8 @@ export const WorkspaceJourney = memo(function WorkspaceJourney({ summary, name, 
         <div className="journey-coverage-bar" role="meter" aria-label="位置观测覆盖率" aria-valuemin={0} aria-valuemax={100} aria-valuenow={coverage} aria-valuetext={`${coverage}% 的窗口有有效位置观测`}><span style={{ width: `${coverage}%` }} /></div>
         <p><span>覆盖 {coverage}%</span><span>未知 {duration(position.unknownMs)}</span></p>
       </section>
+      <p className="journey-caption">已加载位置观测 {position.sampleCount} 个</p>
+      {position.lastObservation ? <p className="journey-caption">最后观测坐标 ({number(position.lastObservation.x)}, {number(position.lastObservation.y)})</p> : null}
       <dl className="journey-facts">
         <div><dt>已观测路径</dt><dd>{position.edges.length ? <><strong>{number(position.pathLength)}</strong><small>游戏单位</small></> : <span>暂无有效观测对</span>}</dd></div>
         <div><dt>REST 等级观测变化</dt><dd>{position.level ? <><strong>{position.level.from} → {position.level.to}</strong><small>变化 {signed(position.level.delta)}</small></> : <span>不可比较</span>}</dd></div>

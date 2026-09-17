@@ -208,3 +208,36 @@ describe('saved growth and milestone evidence', () => {
     expect(summarize([], progress([a, b], [] )).milestones).toEqual([]);
   });
 });
+
+it('preserves legacy coordinates without deriving path, duration, heat or activities', () => {
+  const out = summarize([point(0, 1000, { runtime_epoch: undefined }), point(120, 13000, { runtime_epoch: undefined }), point(300, 13000, { runtime_epoch: undefined })]);
+  expect(out.position).toMatchObject({ sampleCount: 3, observedMs: 0, movingMs: 0, pathLength: 0, lastObservation: { x: 13000, y: 100 }, asOf: base + 300000 });
+  expect(out.heat).toEqual([]);
+  expect(out.inferences).toEqual([]);
+  expect(out.warnings).toContain('position_continuity_unknown');
+});
+it('does not turn legacy equal counts without set details into verified unchanged sets', () => {
+  const a = cp(1, 0, 4), b = cp(2, 60, 4);
+  const out = summarize([], progress([a, b]));
+  for (const key of ['owned_pals', 'paldeck', 'fast_travel'] as const) {
+    expect(out.metrics[key]).toMatchObject({ latestValue: 4, delta: null, status: 'unknown' });
+    expect(out.metrics[key].runs.map(run => run.length)).toEqual([1, 1]);
+  }
+  expect(out.metrics.capture_total).toMatchObject({ latestValue: 4, delta: 0 });
+});
+it('does not manufacture a rollback when legacy set details disappear', () => {
+  const a = cp(1, 0, 1), b = cp(2, 60, 1);
+  a.metrics.fast_travel.ids = ['Travel_A'];
+  const out = summarize([], progress([a, b]));
+  expect(out.metrics.fast_travel).toMatchObject({ status: 'unknown', latestValue: 1, delta: null });
+  expect(out.warnings).not.toContain('progress_boundary');
+});
+it('retains saved legacy numeric diffs without crashing or inventing detailed milestones', () => {
+  const a = cp(1, 0), b = cp(2, 60, 2);
+  const change = diff(a, b);
+  delete (change as Partial<ProgressChange>).added;
+  delete (change as Partial<ProgressChange>).removed;
+  const out = summarize([], progress([a, b], [change]));
+  expect(out.metrics.fast_travel).toMatchObject({ delta: 2, latestValue: 2 });
+  expect(out.milestones).toEqual([]);
+});

@@ -431,7 +431,7 @@ export type ProgressCheckpoint = {
 };
 export type ProgressChange = {
   id: number; metric: ProgressMetricName; before: number; after: number; delta: number;
-  added: string[]; removed: string[]; interval_start: string; interval_end: string;
+  added: string[] | null; removed: string[] | null; interval_start: string; interval_end: string;
   previous_checkpoint_id: number; checkpoint_id: number; rule_version: 1; confidence: 'observed'; source: 'save_import';
 };
 export type PlayerProgressResponse = {

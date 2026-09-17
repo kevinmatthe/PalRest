@@ -465,10 +465,19 @@ func TestProgressGrowthLegacyStoredJSONIsUnknown(t *testing.T) {
 	progressPlayer(t, r, "user")
 	importProgress(t, r, progressSnapshot(1, "a"))
 	// Simulate checkpoint JSON persisted by parser v2, before normalization knew growth.
-	if err := r.gorm.Model(&progressCheckpointModel{}).Where("id > 0").Update("metrics_json", `{"capture_total":{"state":"known","value":101}}`).Error; err != nil {
+	if err := r.gorm.Model(&progressCheckpointModel{}).Where("id > 0").Update("metrics_json", `{"owned_pals":{"state":"known","value":45},"capture_total":{"state":"known","value":101},"paldeck":{"state":"known","value":12}}`).Error; err != nil {
 		t.Fatal(err)
 	}
 	got := queryProgress(t, r)
+	if got.Status != "available" || len(got.Checkpoints) != 1 || len(got.Changes) != 0 {
+		t.Fatalf("legacy progress=%+v", got)
+	}
+	for name, value := range map[string]int64{"owned_pals": 45, "capture_total": 101, "paldeck": 12} {
+		metric := got.Checkpoints[0].Metrics[name]
+		if metric.State != "known" || metric.Value == nil || *metric.Value != value || len(metric.IDs) != 0 {
+			t.Fatalf("legacy %s=%+v", name, metric)
+		}
+	}
 	for _, name := range []string{"level", "experience"} {
 		m := got.Checkpoints[0].Metrics[name]
 		if m.State != "unknown" || m.Value != nil {
@@ -495,5 +504,42 @@ func TestProgressGrowthChangeFailureRollsBackImport(t *testing.T) {
 	r.gorm.Table("save_imports").Count(&count)
 	if count != 1 {
 		t.Fatalf("partial import count=%d", count)
+	}
+}
+
+func TestProgressImportAfterLegacyCountOnlyCheckpoint(t *testing.T) {
+	for _, metric := range []string{"owned_pals", "paldeck", "fast_travel"} {
+		for _, tc := range []struct {
+			name        string
+			stored      string
+			wantChanges int
+		}{
+			{"same_count", `{"state":"known","value":2}`, 0},
+			{"count_increase", `{"state":"known","value":1}`, 1},
+			{"incomplete_ids", `{"state":"known","value":2,"ids":["missing-old-id"]}`, 0},
+			{"missing_value", `{"state":"known"}`, 0},
+		} {
+			t.Run(metric+"/"+tc.name, func(t *testing.T) {
+				r, _ := openTemp(t)
+				progressPlayer(t, r, "user")
+				importProgress(t, r, progressSnapshot(1, "a"))
+				if err := r.gorm.Model(&progressCheckpointModel{}).Where("id > 0").Update("metrics_json", fmt.Sprintf(`{"%s":%s}`, metric, tc.stored)).Error; err != nil {
+					t.Fatal(err)
+				}
+				next := progressSnapshot(2, "a", "b")
+				count := int64(2)
+				next.Players[0].Progress.Metrics[metric] = ProgressMetric{State: "known", Value: &count, IDs: []string{"a", "b"}}
+				importProgress(t, r, next)
+				got := queryProgress(t, r)
+				if got.Checkpoints[1].Boundary != "" || len(got.Changes) != tc.wantChanges {
+					t.Fatalf("boundary=%q changes=%+v", got.Checkpoints[1].Boundary, got.Changes)
+				}
+				for _, change := range got.Changes {
+					if change.Metric != metric || change.Before != 1 || change.After != 2 || change.Delta != 1 || change.Added != nil || change.Removed != nil {
+						t.Fatalf("legacy numeric change must retain unknown set details: %+v", change)
+					}
+				}
+			})
+		}
 	}
 }

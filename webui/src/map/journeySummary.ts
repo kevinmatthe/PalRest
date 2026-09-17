@@ -1,6 +1,6 @@
 import type { PlayerProgressResponse, ProgressChange, ProgressCheckpoint, ProgressMetricName } from '../api';
 import { T_GAP_MS, V_IDLE } from '../behavior/behaviorTypes';
-import { connectionBreak, prepareTrajectory } from './workspacePlayback';
+import { connectionBreak, hasTrajectoryContinuity, prepareTrajectory } from './workspacePlayback';
 import type { JourneyEdge, JourneyHeatCell, JourneyInput, JourneyMetric, JourneySummary } from './journeyTypes';
 export type * from './journeyTypes';
 
@@ -12,6 +12,13 @@ const metricValue = (checkpoint: ProgressCheckpoint | undefined, key: ProgressMe
   return metric?.state === 'known' && Number.isFinite(metric.value) && metric.value! >= (key === 'level' ? 1 : 0) && Number.isSafeInteger(metric.value) ? metric.value! : null;
 };
 
+function completeSet(checkpoint: ProgressCheckpoint, key: ProgressMetricName): string[] | null {
+  const value = metricValue(checkpoint, key);
+  // Empty sets are omitted by the API; a positive count without IDs is incomplete.
+  const ids = checkpoint.metrics[key]?.ids ?? (value === 0 ? [] : null);
+  return ids && ids.length === value && new Set(ids).size === ids.length ? ids : null;
+}
+
 /** A boundary belongs to the incoming interval; an initial baseline is not a reset. */
 export function progressBoundary(previous: ProgressCheckpoint | undefined, current: ProgressCheckpoint): boolean {
   if (!current.consistent || !current.world_id || (current.boundary && current.boundary !== 'baseline')) return true;
@@ -19,8 +26,11 @@ export function progressBoundary(previous: ProgressCheckpoint | undefined, curre
     !previous.consistent || Date.parse(current.observed_at) <= Date.parse(previous.observed_at) ||
     (['level', 'experience', 'capture_total', 'paldeck', 'fast_travel'] as ProgressMetricName[]).some(key => {
       const before = metricValue(previous, key), after = metricValue(current, key);
-      return before !== null && after !== null && (after < before ||
-        ((key === 'paldeck' || key === 'fast_travel') && (previous.metrics[key]?.ids ?? []).some(id => !(current.metrics[key]?.ids ?? []).includes(id))));
+      if (before === null || after === null) return false;
+      if (after < before) return true;
+      if (key !== 'paldeck' && key !== 'fast_travel') return false;
+      const oldIDs = completeSet(previous, key), newIDs = completeSet(current, key);
+      return oldIDs !== null && newIDs !== null && oldIDs.some(id => !newIDs.includes(id));
     }));
 }
 
@@ -31,7 +41,9 @@ function compatible(previous: ProgressCheckpoint, current: ProgressCheckpoint): 
 
 function unchanged(a: ProgressCheckpoint, b: ProgressCheckpoint, key: ProgressMetricName): boolean {
   if (metricValue(a, key) !== metricValue(b, key)) return false;
-  const left = a.metrics[key]?.ids ?? [], right = b.metrics[key]?.ids ?? [];
+  if (key === 'level' || key === 'experience' || key === 'capture_total') return true;
+  const left = completeSet(a, key), right = completeSet(b, key);
+  if (!left || !right) return false;
   return left.length === right.length && left.every(id => right.includes(id));
 }
 
@@ -91,7 +103,7 @@ function summarizeProgress(data: PlayerProgressResponse, start: number, end: num
 function growthMilestones(metrics: JourneySummary['metrics'], data: PlayerProgressResponse): ProgressChange[] {
   const checkpoints = new Map([data.baseline, ...data.checkpoints].filter((p): p is ProgressCheckpoint => p !== null).map(p => [p.id, p]));
   return (['level', 'paldeck', 'fast_travel'] as const).flatMap(key => (metrics[key]?.changes ?? []).filter(change => {
-    if (change.delta <= 0 || change.removed.length) return false;
+    if (change.delta <= 0 || !Array.isArray(change.added) || !Array.isArray(change.removed) || change.removed.length) return false;
     if (key === 'level') return change.added.length === 0;
     const before = checkpoints.get(change.previous_checkpoint_id)?.metrics[key]?.ids;
     const after = checkpoints.get(change.checkpoint_id)?.metrics[key]?.ids;
@@ -143,6 +155,9 @@ export function summarizeJourney(input: JourneyInput): JourneySummary {
   const visible = prepared.filter(p => p.user_id === input.userID && p.time >= start && p.time <= end);
   const position = out.position;
   position.sampleCount = visible.length;
+  const last = visible.at(-1);
+  position.lastObservation = last ? { x: last.x, y: last.y } : null;
+  if (visible.some(p => !hasTrajectoryContinuity(p))) out.warnings.push('position_continuity_unknown');
   position.totalCount = timeline?.trajectory_total ?? timeline?.trajectories.length ?? 0;
   position.asOf = visible.at(-1)?.time ?? null;
   position.ageMs = position.asOf === null ? null : end - position.asOf;
