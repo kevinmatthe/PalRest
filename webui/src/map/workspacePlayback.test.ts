@@ -32,9 +32,16 @@ describe('continuous map playback', () => {
     expect(playbackFrame(samples, start + 15000)).toMatchObject({ x: 1000, interpolated: false, status: 'gap', nextAt: start + 30000 });
     expect(trajectoryRuns(samples)).toHaveLength(2);
   });
+  it.each([301, 305, 330])('allows delayed heartbeat at %s seconds within the same segment', seconds => {
+    const samples = prepareTrajectory([point(0, 1000), point(seconds, 1000)]);
+    expect(playbackFrame(samples, start + 60000)).toMatchObject({ status: 'interpolated', x: 1000 });
+    expect(trajectoryRuns(samples)).toHaveLength(1);
+    const interrupted = prepareTrajectory([point(0, 1000), point(seconds, 1000, { segment_id: 's2' })]);
+    expect(playbackFrame(interrupted, start + 60000)).toMatchObject({ status: 'gap', reason: 'segment' });
+  });
   it('keeps long gaps unknown and exposes where to resume', () => {
-    const samples = prepareTrajectory([point(0, 1000), point(301, 2000)]);
-    expect(playbackFrame(samples, start + 60000)).toMatchObject({ status: 'gap', reason: 'gap', nextAt: start + 301000 });
+    const samples = prepareTrajectory([point(0, 1000), point(331, 2000)]);
+    expect(playbackFrame(samples, start + 60000)).toMatchObject({ status: 'gap', reason: 'gap', nextAt: start + 331000 });
   });
   it('sorts valid evidence and rejects invalid values and ambiguous timestamps', () => {
     const samples = prepareTrajectory([point(30, 3000), point(0, 1000), point(20, NaN), point(25, 5, { observed_at: 'invalid' })]);

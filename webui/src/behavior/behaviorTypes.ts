@@ -3,8 +3,10 @@
 export const D_IDLE = 500;
 export const V_IDLE = 50;
 export const V_TRAVEL = 800;
-export const T_GAP_MS = 5 * 60_000;
-export const T_ACTIVE_CAP_MS = T_GAP_MS;
+// Allow polling / request jitter around the default five-minute trajectory heartbeat.
+// Segment and runtime boundaries still prevent bridging actual observation failures.
+export const T_GAP_MS = 5 * 60_000 + 30_000;
+export const T_ACTIVE_CAP_MS = 5 * 60_000;
 export const GAP_SHARE_WARN = 0.15;
 
 export type BehaviorPoint = {

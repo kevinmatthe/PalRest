@@ -36,7 +36,7 @@ WebUI 默认打开世界地图。浮动玩家列表支持搜索、仅在线筛�
 
 ## 玩家进度 Checkpoint
 
-启用 `save.enabled`，将 `save.path` 指向只读挂载的原始世界 `Level.sav`，并保留同级 `LevelMeta.sav`、`Players/` 与世界 GUID 目录。默认每 15 分钟导入，手动导入与定时导入共用单个解析队列。Worker 在独立进程中先复制稳定文件再解析，失败不会参与玩家计时或执法。
+启用 `save.enabled`，将 `save.path` 指向只读挂载的原始世界 `Level.sav`，并保留同级 `LevelMeta.sav`、`Players/` 与世界 GUID 目录。通过 `config.yaml` 的 `save.import_interval` 配置存档属性（如累计捕获记录）的更新周期，默认 `15m`，可设为 `1m`、`5m`，或 `0`（仅手动导入）；修改后需要重启后端。实际更新还受游戏存档写盘频率影响。手动导入与定时导入共用单个解析队列。Worker 在独立进程中先复制稳定文件再解析，失败不会参与玩家计时或执法。
 
 存档内部时间戳用于核对各文件是否属于同一次保存；来源时间使用原始 Level 文件的 UTC 修改时间。只有身份、世界、口径、时间顺序和文件一致性均可确认时才比较。首次只建基线；重复导入去重；乱序快照留存但不回退当前基线；重现过往存档或乱序观察会中断下一次比较；未知值不补零；累计计数下降或解锁集合减少时建立回档边界。分类目录摘要变化也会中断比较。快照、基线和变化在同一 SQLite 事务内提交。
 
@@ -125,6 +125,8 @@ policy:
 Phase 1 使用同一个 correlation ID 把一次玩家观察写成统一业务时间线：玩家加入、离开和已知属性变化是事件；坐标按最小移动距离或最大采样间隔稀疏采样，已知 level 改变或已知 ping 相对最后一个已采样已知值累计达到 `observation.trajectory_ping_change_threshold`（默认 10ms）时也立即保留轨迹点。小于阈值的浮点抖动不触发采样；NaN、无限值和负 ping 均视为 unknown、持久化为 0，unknown 与 known 之间的切换本身不构成变化。IP、ping 和 level 是只供管理员读取的稀疏 private sample。启动后的第一轮、轮询失败、持久化失败、超过 `server.max_observation_gap` 的区间以及进程停止期间都表示“未知”，不能推断为离线、零并发或零活动。
 
 `/metrics` 的 uptime 明确下降会生成 `server_restarted`，并在同一 SQLite 事务中推进持久化 server runtime epoch。轨迹 API 同时返回 `runtime_epoch`，并以 `runtime:<epoch>:<base64url(raw_segment_id)>` 无歧义编码 `segment_id`；即使玩家边界样本先于异步 metrics 写入，restart 事务也会修正该时刻及之后已写样本的 epoch，因此前端不会跨服务器重启连线。epoch 在应用重启后恢复，重复提交和多写者 CAS 不会重复推进。
+
+轨迹回放与行为分析的时间缺口阈值为 5 分 30 秒，为默认 5 分钟轨迹补点预留 30 秒调度余量；分段、重启和无效观测仍会阻断连接。此阈值固定在前端，调整 `observation.trajectory_max_interval` 时需注意匹配。
 
 REST 观察与存档进度是独立来源。地图回放使用位置观测；存档变化使用 checkpoint 区间，两者不会伪装成同一时刻的采样。
 
