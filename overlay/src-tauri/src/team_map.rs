@@ -15,12 +15,13 @@ fn open_window(app: &AppHandle) -> Result<(), String> {
         window.show().map_err(|e| e.to_string())?;
         return window.set_focus().map_err(|e| e.to_string());
     }
+    // Keep the opaque default: transparent() requires macos-private-api on macOS,
+    // even when passed false.
     WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
         .title("PalREST · Online players")
         .inner_size(640.0, 560.0)
         .min_inner_size(400.0, 360.0)
         .resizable(true)
-        .transparent(false)
         .decorations(true)
         .always_on_top(true)
         .build()
