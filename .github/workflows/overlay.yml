@@ -68,7 +68,7 @@ jobs:
         with:
           projectPath: overlay
           tauriScript: npm run tauri
-          args: --bundles app,dmg
+          args: --verbose --bundles app,dmg
 
       - name: Package ad-hoc macOS app and label development artifacts
         if: runner.os == 'macOS'
