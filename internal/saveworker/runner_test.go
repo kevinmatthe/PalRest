@@ -61,3 +61,18 @@ echo '{"schema":"palrest.save_snapshot.v1","extra":true}'
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestRunnerRejectsTrailingOutput(t *testing.T) {
+	for _, trailing := range []string{"{}", "null", "[]", "true", `{"extra":true}`, "garbage", "{"} {
+		t.Run(trailing, func(t *testing.T) {
+			worker := writeWorker(t, "#!/bin/sh\ncat <<'JSON'\n{}\n"+trailing+"\nJSON\n")
+			runner, err := New(worker, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runner.Extract(t.Context(), "/save/Level.sav"); err == nil {
+				t.Fatal("accepted trailing worker output")
+			}
+		})
+	}
+}

@@ -43,6 +43,7 @@ COPY --from=build /out/playtime-guard /usr/local/bin/playtime-guard
 COPY --from=save-worker /opt/palrest-save-worker /opt/palrest-save-worker
 COPY config.example.yaml /app/config.example.yaml
 COPY tools/save_worker/palrest_save_worker.py /usr/local/bin/palrest-save-worker
+COPY tools/save_worker/character_ids.json /usr/local/bin/character_ids.json
 RUN chmod 0755 /usr/local/bin/palrest-save-worker
 
 USER 1000:1000

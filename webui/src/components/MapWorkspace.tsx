@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowUpRight, ChevronDown, Compass, Crosshair, History, Layers, LocateFixed, Radio, RefreshCw, Route, Users } from 'lucide-react';
-import { getGuildBases, type Player, type WorldPOI } from '../api';
+import { getGuildBases, type Player, type ProgressChange, type WorldPOI } from '../api';
 import { WorldMap } from '../map/WorldMap';
 import type { MapDisplayPoint } from '../map/worldMapMarkers';
 import { BREAK_LABELS, playbackFrame, prepareTrajectory } from '../map/workspacePlayback';
@@ -8,6 +8,9 @@ import { useLivePositions, useHistoryWindow } from '../map/useWorkspaceData';
 import { usePlaybackClock } from '../map/usePlaybackClock';
 import { WorkspaceRoster } from './WorkspaceRoster';
 import { WorkspacePlaybackBar, workspaceTime } from './WorkspacePlaybackBar';
+import { WorkspaceProgress } from './WorkspaceProgress';
+import { usePlayerProgress } from '../map/usePlayerProgress';
+import { progressBounds } from '../map/workspaceProgress';
 import { eventLabel } from './timelineShared';
 
 type Props = { players: Player[]; refreshKey: number; active?: boolean; initialSelectedID?: string; onSelectPlayer?: (id: string) => void; onOpenPlayer?: (id: string) => void };
@@ -29,15 +32,26 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   const [windowRange, setWindowRange] = useState(() => ({ start: Date.now() - 86400000, end: Date.now(), label: '24h' }));
   const [refresh, setRefresh] = useState(0);
   const [historyRevision, setHistoryRevision] = useState(0);
+  const [progressRevision, setProgressRevision] = useState(0);
+  const [pendingProgressSeek, setPendingProgressSeek] = useState<{ userID: string; time: number } | null>(null);
+  const progress = usePlayerProgress(active, selectedID, mode, windowRange.start, windowRange.end, progressRevision + historyRevision);
+  const progressRange = useMemo(() => progressBounds(progress.data), [progress.data]);
   const live = useLivePositions(refreshKey + refresh, active);
   const history = useHistoryWindow(mode === 'history' && active, selectedID, windowRange.start, windowRange.end, historyRevision);
   const livePlayers = live.data?.players ?? EMPTY_LIVE;
   const samples = useMemo(() => prepareTrajectory(history.data?.trajectories ?? []), [history.data]);
   const events = useMemo(() => [...(history.data?.events ?? EMPTY_EVENTS)].filter(e => Number.isFinite(Date.parse(e.occurred_at))).sort((a, b) => Date.parse(a.occurred_at) - Date.parse(b.occurred_at)), [history.data]);
-  const start = Math.min(samples[0]?.time ?? Infinity, events.length ? Date.parse(events[0].occurred_at) : Infinity);
-  const end = Math.max(samples.at(-1)?.time ?? -Infinity, events.length ? Date.parse(events.at(-1)!.occurred_at) : -Infinity);
+  const start = Math.max(windowRange.start, Math.min(progressRange.start, samples[0]?.time ?? Infinity, events.length ? Date.parse(events[0].occurred_at) : Infinity));
+  const end = Math.min(windowRange.end, Date.now(), Math.max(progressRange.end, samples.at(-1)?.time ?? -Infinity, events.length ? Date.parse(events.at(-1)!.occurred_at) : -Infinity));
   const clock = usePlaybackClock(Number.isFinite(start) ? start : windowRange.start, Number.isFinite(end) ? end : windowRange.end, `${selectedID}:${windowRange.start}:${windowRange.end}`);
   const frame = useMemo(() => playbackFrame(samples, clock.time), [samples, clock.time]);
+  useEffect(() => {
+    if (!pendingProgressSeek || mode !== 'history') return;
+    if (pendingProgressSeek.userID !== selectedID) { setPendingProgressSeek(null); return; }
+    if (history.loading || progress.loading || (!history.data && !history.error) || (!progress.data && !progress.error)) return;
+    clock.seek(pendingProgressSeek.time);
+    setPendingProgressSeek(null);
+  }, [pendingProgressSeek, mode, selectedID, history.loading, history.data, history.error, progress.loading, progress.data, progress.error, clock.seek]);
   const selected = players.find(p => p.user_id === selectedID);
   const selectedLive = livePlayers.find(p => p.user_id === selectedID);
   const selectedName = selected?.name || selectedLive?.name || selected?.account_name || selectedID;
@@ -64,11 +78,21 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   const truncated = Boolean(history.data && ((history.data.trajectory_total ?? 0) > samples.length || (history.data.event_total ?? 0) > events.length || history.data.trajectories.length >= 500 || events.length >= 500));
   const historical = mode === 'history';
   const selectedPoint = points.find(p => p.user_id === selectedID);
-  const disabled = history.loading || samples.length < 2;
+  const disabled = history.loading || !Number.isFinite(start) || !Number.isFinite(end) || end <= start;
   function enterHistory() {
     if (!history.data && windowRange.label.endsWith('h')) changeRange(Number(windowRange.label.slice(0, -1)));
     setMode('history'); setFollow(false);
   }
+  function seekProgress(change: ProgressChange) {
+    const time = Date.parse(change.interval_end);
+    if (!Number.isFinite(time) || time > Date.now()) return;
+    if (mode === 'history') { clock.seek(time); return; }
+    const now = Date.now();
+    setWindowRange({ start: now - (windowRange.end - windowRange.start), end: now, label: windowRange.label });
+    setPendingProgressSeek({ userID: selectedID, time });
+    setMode('history'); setFollow(false);
+  }
+  const progressCard = selectedID ? <WorkspaceProgress key={selectedID} name={selectedName} data={progress.data} mode={mode} cursor={mode === 'history' ? clock.time : Date.now()} loading={progress.loading} error={progress.error} onChange={seekProgress} onRetry={() => setProgressRevision(v => v + 1)} /> : null;
   function changeRange(hours: number) { const end = Date.now(); setWindowRange({ start: end - hours * 3600000, end, label: `${hours}h` }); }
   function reloadHistory() {
     clock.setPlaying(false);
@@ -96,6 +120,7 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
     {rosterOpen ? <WorkspaceRoster players={players} live={livePlayers} selectedID={selectedID} mode={mode} onSelect={selectPlayer} onClose={closeRoster}>
       {selectedID ? <div className="world-selected-detail"><div className="world-detail-label"><span>{historical ? '正在回看' : '选中玩家'}</span><strong>{selectedName}</strong></div>
         <div className="world-selected-actions"><button type="button" disabled={!selectedPoint} onClick={() => setFocusRequest(v => v + 1)}><Crosshair size={15} />定位</button><button type="button" aria-label={follow ? '停止跟随' : '跟随玩家'} aria-pressed={follow} disabled={!selectedPoint} onClick={() => { setFollow(v => !v); if (!follow) setFocusRequest(v => v + 1); }}><LocateFixed size={15} />{follow ? '跟随中' : '跟随'}</button></div>
+        {progressCard}
         {!historical ? <button className="world-detail-link" type="button" onClick={enterHistory}>回看这位玩家<ArrowUpRight size={15} /></button> : <>
           <div className="world-history-numbers"><div><strong>{samples.length}</strong><span>位置观测</span></div><div><strong>{events.length}</strong><span>事件记录</span></div></div>
           <details className="world-events"><summary>事件记录<ChevronDown size={14} /></summary><ol>{events.map(event => <li key={event.id}><button type="button" onClick={() => clock.seek(Date.parse(event.occurred_at))}><time>{workspaceTime(Date.parse(event.occurred_at))}</time><strong>{eventLabel(event.event_type)}</strong><small>{event.confidence === 'snapshot_derived' ? '存档推导' : '已观测'}</small></button></li>)}</ol>{!events.length ? <p>当前区间没有事件记录</p> : null}</details>
@@ -103,6 +128,7 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
         {onOpenPlayer ? <button className="world-detail-link" type="button" onClick={() => onOpenPlayer(selectedID)}>完整证据与行为分析<ArrowUpRight size={15} /></button> : null}
       </div> : <p className="world-roster-tip">选择一位玩家，定位或回看旅程。</p>}
     </WorkspaceRoster> : null}
+    {!rosterOpen && progressCard ? <div className="world-progress-panel world-glass">{progressCard}</div> : null}
     {historical ? <div className="world-history-tools world-glass"><Route size={15} /><span>观察窗口</span><select aria-label="历史时间范围" value={windowRange.label} onChange={e => changeRange(Number(e.target.value.replace('h', '')))}><option value="1h">最近 1 小时</option><option value="6h">最近 6 小时</option><option value="24h">最近 24 小时</option><option value="168h">最近 7 天</option>{windowRange.label === 'day' ? <option value="day">指定日期</option> : null}</select><input type="date" aria-label="回看指定日期" onChange={e => { if (!e.target.value) return; const begin = new Date(`${e.target.value}T00:00:00`); const end = new Date(begin); end.setDate(end.getDate() + 1); if (Number.isFinite(begin.getTime())) setWindowRange({ start: begin.getTime(), end: end.getTime(), label: 'day' }); }} /></div> : null}
     <div className="world-messages" aria-live="polite">
       {historical && !selectedID ? <p>选择玩家，开始回看旅程</p> : null}

@@ -73,6 +73,10 @@ type WorldPOIQueries interface {
 	ListAllGuildBases(ctx context.Context) (store.GuildBasesCatalog, error)
 }
 
+type ProgressQueries interface {
+	ReadPlayerProgress(context.Context, string, time.Time, time.Time, int) (store.PlayerProgress, error)
+}
+
 type SaveImporter interface {
 	Import(context.Context, string) (store.SaveImportResult, error)
 }
@@ -89,6 +93,7 @@ type Server struct {
 	adminStore      AdminStore
 	observations    ObservationQueries
 	worldPOIs       WorldPOIQueries
+	progress        ProgressQueries
 	saveImporter    SaveImporter
 	overlayProvider OverlayProvider
 	auth            *adminAuth
@@ -107,7 +112,11 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 	var overlayProvider OverlayProvider
 	observations, _ := adminStore.(ObservationQueries)
 	worldPOIs, _ := adminStore.(WorldPOIQueries)
+	progress, _ := adminStore.(ProgressQueries)
 	for _, option := range options {
+		if value, ok := option.(ProgressQueries); ok {
+			progress = value
+		}
 		switch value := option.(type) {
 		case PolicyUpdater:
 			policyUpdater = value
@@ -119,7 +128,7 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 			overlayProvider = value.provider
 		}
 	}
-	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, observations: observations, worldPOIs: worldPOIs, saveImporter: saveImporter, overlayProvider: overlayProvider, auth: auth, config: configFn, now: time.Now}
+	server := &Server{health: health, status: status, snapshots: snapshots, analytics: analytics, analyticsOnline: analyticsOnline, policies: policies, policyUpdater: policyUpdater, resetter: resetter, adminStore: adminStore, observations: observations, worldPOIs: worldPOIs, progress: progress, saveImporter: saveImporter, overlayProvider: overlayProvider, auth: auth, config: configFn, now: time.Now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.healthz)
 	mux.HandleFunc("GET /readyz", server.readyz)
@@ -136,6 +145,7 @@ func New(health Health, status Status, snapshots Snapshots, analytics AnalyticsQ
 	mux.HandleFunc("GET /api/v1/players", server.getPlayers)
 	mux.HandleFunc("GET /api/v1/players/{userID}", server.getPlayer)
 	mux.HandleFunc("GET /api/v1/players/{userID}/timeline", server.getPlayerTimeline)
+	mux.HandleFunc("GET /api/v1/players/{userID}/progress", server.getPlayerProgress)
 	mux.HandleFunc("GET /api/v1/players/{userID}/world-pois", server.getPlayerWorldPOIs)
 	mux.HandleFunc("GET /api/v1/guild-bases", server.getGuildBases)
 	mux.HandleFunc("GET /api/v1/live/positions", server.getLivePositions)

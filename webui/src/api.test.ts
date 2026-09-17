@@ -128,3 +128,11 @@ describe('timeline API', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/guild-bases');
   });
 });
+it('requests player progress with encoded identity, explicit window, limit and cancellation', async () => {
+  const { getPlayerProgress } = await import('./api');
+  const payload = { user_id: 'steam/id', status: 'not_collected', baseline: null, checkpoints: [], changes: [], checkpoint_total: 0, change_total: 0 };
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(payload)));
+  const controller = new AbortController();
+  await expect(getPlayerProgress('steam/id', '2026-09-16T00:00:00Z', '2026-09-17T00:00:00Z', 200, controller.signal)).resolves.toEqual(payload);
+  expect(fetchMock).toHaveBeenCalledWith('/api/v1/players/steam%2Fid/progress?start=2026-09-16T00%3A00%3A00Z&end=2026-09-17T00%3A00%3A00Z&limit=200', expect.objectContaining({ signal: controller.signal, credentials: 'same-origin' }));
+});
