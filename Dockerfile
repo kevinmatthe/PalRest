@@ -10,7 +10,8 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 COPY config.example.yaml ./config.example.yaml
-RUN go test ./... && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/playtime-guard ./cmd/playtime-guard
+# Tests run in CI before publishing; image builds only compile the binary.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/playtime-guard ./cmd/playtime-guard
 
 FROM python:3.11-slim AS save-worker
 

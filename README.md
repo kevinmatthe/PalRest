@@ -307,6 +307,33 @@ docker run --rm -p 127.0.0.1:18081:8080 \
 
 `PALREST_API_UPSTREAM` 是 WebUI 容器内 Caddy 访问 Go sidecar 的地址。默认值为 `http://palworld-playtime-guard:8080`，适合与 sidecar 位于同一 Docker 网络的部署。通常不需要设置 `PALREST_API_BASE_URL`；保持为空时浏览器只访问 WebUI 容器，由 Caddy 反代 API 请求。
 
+### GitHub 容器镜像
+
+[Containers 工作流](.github/workflows/containers.yml) 会运行 Go / WebUI 测试、构建并检查两个 `linux/amd64` 镜像，然后发布到 GitHub Container Registry：
+
+| 服务 | 镜像 |
+| --- | --- |
+| Go sidecar（含 Save Worker） | `ghcr.io/kevinmatthe/palrest` |
+| WebUI（含地图瓦片） | `ghcr.io/kevinmatthe/palrest-webui` |
+
+发布使用 GitHub 自动提供的 `GITHUB_TOKEN` 和 `packages: write` 权限，**无需配置 Docker Hub 账号或任何额外的发布密钥**。CI 自动检出存档解析子模块与 Git LFS 地图资源，并在推送镜像前运行容器内检查。
+
+- 分支 push：发布 `branch-<分支名>`（例如 `branch-codex-map-workspace`，斜线转为连字符）与 `sha-<完整提交 SHA>`。
+- 默认分支 push：同时更新 `latest`。其他分支不会覆盖 `latest`。
+- 版本 tag（例如 `v1.2.3`）：发布 `1.2.3` 与提交标签；预发布 tag 保留预发布后缀。
+- PR：只测试和构建，不登录或推送 GHCR。也支持手动运行工作流。
+
+例如拉取当前开发分支的镜像：
+
+```bash
+docker pull ghcr.io/kevinmatthe/palrest:branch-codex-map-workspace
+docker pull ghcr.io/kevinmatthe/palrest-webui:branch-codex-map-workspace
+```
+
+Compose 中可用上述 `image:` 替代对应服务的 `build:`，现有配置文件、存档、数据卷、网络及环境变量继续使用。需要固定版本时，两个服务使用同一个 `sha-<完整提交 SHA>` 标签。
+
+GHCR 首次创建的 package 默认为 private；若希望服务器匿名拉取，在 GitHub package 的 **Package settings → Change visibility → Public** 设置一次即可。发布本身无需新增密钥。参见 [GitHub Container Registry 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
+
 ## 桌面悬浮条
 
 Windows/macOS 悬浮条位于 `overlay/`。它与 WebUI/Caddy 使用同一个服务根地址读取 snapshot、玩家列表和私有地图瓦片；安装、网络示例、平台限制、构建签名流程及实机验收清单见 [overlay/README.md](overlay/README.md)。
