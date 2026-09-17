@@ -11,12 +11,18 @@ import { WorkspacePlaybackBar, workspaceTime } from './WorkspacePlaybackBar';
 import { WorkspaceProgress } from './WorkspaceProgress';
 import { usePlayerProgress } from '../map/usePlayerProgress';
 import { progressBounds } from '../map/workspaceProgress';
+import { WorkspaceJourney } from './WorkspaceJourney';
+import { useJourneyTimeline } from '../map/useJourneyTimeline';
+import { useJourneyCursor } from '../map/useJourneyCursor';
+import { summarizeJourney } from '../map/journeySummary';
+import type { JourneyHeatCell } from '../map/journeyTypes';
 import { eventLabel } from './timelineShared';
 
 type Props = { players: Player[]; refreshKey: number; active?: boolean; initialSelectedID?: string; onSelectPlayer?: (id: string) => void; onOpenPlayer?: (id: string) => void };
 const EMPTY_LIVE: NonNullable<ReturnType<typeof useLivePositions>['data']>['players'] = [];
 const EMPTY_EVENTS: NonNullable<ReturnType<typeof useHistoryWindow>['data']>['events'] = [];
 const EMPTY_SAMPLES: ReturnType<typeof prepareTrajectory> = [];
+const EMPTY_HEAT: JourneyHeatCell[] = [];
 
 export function MapWorkspace({ players, refreshKey, active = true, initialSelectedID = '', onSelectPlayer, onOpenPlayer }: Props) {
   const [selectedID, setSelectedID] = useState(initialSelectedID);
@@ -27,6 +33,10 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   const [showLandmarks, setShowLandmarks] = useState(false);
   const [showBases, setShowBases] = useState(false);
   const [showTrail, setShowTrail] = useState(true);
+  const [showHeat, setShowHeat] = useState(false);
+  const [detailTab, setDetailTab] = useState<'progress' | 'journey'>('progress');
+  const [focusArea, setFocusArea] = useState<{ x: number; y: number; request: number }>();
+  const [journeyRevision, setJourneyRevision] = useState(0);
   const [bases, setBases] = useState<WorldPOI[]>([]);
   const [basesError, setBasesError] = useState(false);
   const [windowRange, setWindowRange] = useState(() => ({ start: Date.now() - 86400000, end: Date.now(), label: '24h' }));
@@ -38,6 +48,7 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   const progressRange = useMemo(() => progressBounds(progress.data), [progress.data]);
   const live = useLivePositions(refreshKey + refresh, active);
   const history = useHistoryWindow(mode === 'history' && active, selectedID, windowRange.start, windowRange.end, historyRevision);
+  const journeyLive = useJourneyTimeline(active && mode === 'live' && (detailTab === 'journey' || showHeat), selectedID, windowRange.end - windowRange.start, journeyRevision + refreshKey);
   const livePlayers = live.data?.players ?? EMPTY_LIVE;
   const samples = useMemo(() => prepareTrajectory(history.data?.trajectories ?? []), [history.data]);
   const events = useMemo(() => [...(history.data?.events ?? EMPTY_EVENTS)].filter(e => Number.isFinite(Date.parse(e.occurred_at))).sort((a, b) => Date.parse(a.occurred_at) - Date.parse(b.occurred_at)), [history.data]);
@@ -45,6 +56,18 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   const end = Math.min(windowRange.end, Date.now(), Math.max(progressRange.end, samples.at(-1)?.time ?? -Infinity, events.length ? Date.parse(events.at(-1)!.occurred_at) : -Infinity));
   const clock = usePlaybackClock(Number.isFinite(start) ? start : windowRange.start, Number.isFinite(end) ? end : windowRange.end, `${selectedID}:${windowRange.start}:${windowRange.end}`);
   const frame = useMemo(() => playbackFrame(samples, clock.time), [samples, clock.time]);
+  const journeyCursor = useJourneyCursor(clock.time, active && mode === 'history' && clock.playing && (detailTab === 'journey' || showHeat), `${selectedID}:${windowRange.start}:${windowRange.end}`);
+  const journeyStart = mode === 'history' ? windowRange.start : journeyLive.start ?? windowRange.start;
+  const journeyEnd = Math.min(Date.now(), mode === 'history' ? journeyCursor : Math.floor(Date.now() / 1000) * 1000);
+  const journeyTimeline = mode === 'history' ? history.data : journeyLive.data;
+  const journeyError = (mode === 'history' ? history.error : journeyLive.error) || progress.error;
+  const journeyNeeded = Boolean(selectedID) && (detailTab === 'journey' || showHeat);
+  const journey = useMemo(() => {
+    if (!journeyNeeded) return undefined;
+    const result = summarizeJourney({ userID: selectedID, start: journeyStart, end: Math.max(journeyStart, journeyEnd), timeline: journeyTimeline, progress: progress.data });
+    if (journeyError) { result.inferences = []; result.warnings = [...new Set([...result.warnings, 'data_unavailable'])]; }
+    return result;
+  }, [journeyNeeded, selectedID, journeyStart, journeyEnd, journeyTimeline, progress.data, journeyError]);
   useEffect(() => {
     if (!pendingProgressSeek || mode !== 'history') return;
     if (pendingProgressSeek.userID !== selectedID) { setPendingProgressSeek(null); return; }
@@ -57,6 +80,7 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   const selectedName = selected?.name || selectedLive?.name || selected?.account_name || selectedID;
 
   useEffect(() => { setSelectedID(initialSelectedID); }, [initialSelectedID]);
+  useEffect(() => { setFocusArea(undefined); }, [selectedID, mode]);
   useEffect(() => { if (mode === 'live' || !active) clock.setPlaying(false); }, [mode, active, clock.setPlaying]);
   useEffect(() => {
     if (!showBases || !active) return;
@@ -84,26 +108,44 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
     setMode('history'); setFollow(false);
   }
   function seekProgress(change: ProgressChange) {
-    const time = Date.parse(change.interval_end);
+    seekJourney(Date.parse(change.interval_end));
+  }
+  const seekJourney = useCallback((time: number) => {
     if (!Number.isFinite(time) || time > Date.now()) return;
+    clock.setPlaying(false);
     if (mode === 'history') { clock.seek(time); return; }
     const now = Date.now();
     setWindowRange({ start: now - (windowRange.end - windowRange.start), end: now, label: windowRange.label });
     setPendingProgressSeek({ userID: selectedID, time });
     setMode('history'); setFollow(false);
-  }
-  const progressCard = selectedID ? <WorkspaceProgress key={selectedID} name={selectedName} data={progress.data} mode={mode} cursor={mode === 'history' ? clock.time : Date.now()} loading={progress.loading} error={progress.error} onChange={seekProgress} onRetry={() => setProgressRevision(v => v + 1)} /> : null;
-  function changeRange(hours: number) { const end = Date.now(); setWindowRange({ start: end - hours * 3600000, end, label: `${hours}h` }); }
-  function reloadHistory() {
+  }, [clock.setPlaying, clock.seek, mode, windowRange, selectedID]);
+  const focusDwell = useCallback((cell: JourneyHeatCell) => {
+    setFollow(false); setShowHeat(true);
+    setFocusArea(previous => ({ x: cell.x, y: cell.y, request: (previous?.request ?? 0) + 1 }));
+  }, []);
+  const changeRange = useCallback((hours: number) => { const end = Date.now(); setWindowRange({ start: end - hours * 3600000, end, label: `${hours}h` }); }, []);
+  const reloadHistory = useCallback(() => {
     clock.setPlaying(false);
     if (windowRange.label.endsWith('h')) changeRange(Number(windowRange.label.slice(0, -1)));
     setHistoryRevision(v => v + 1);
-  }
-
+  }, [clock.setPlaying, windowRange.label, changeRange]);
+  const retryJourney = useCallback(() => {
+    setJourneyRevision(v => v + 1); setProgressRevision(v => v + 1);
+    if (historical) reloadHistory();
+  }, [historical, reloadHistory]);
+  const progressCard = selectedID ? <>
+    <div className="world-detail-tabs" aria-label="玩家详情"><button type="button" aria-pressed={detailTab === 'progress'} onClick={() => setDetailTab('progress')}>进度变化</button><button type="button" aria-pressed={detailTab === 'journey'} onClick={() => setDetailTab('journey')}>游玩小结</button></div>
+    {detailTab === 'progress' ? <WorkspaceProgress key={selectedID} name={selectedName} data={progress.data} mode={mode} cursor={mode === 'history' ? clock.time : Date.now()} loading={progress.loading} error={progress.error} onChange={seekProgress} onRetry={() => setProgressRevision(v => v + 1)} /> : <>
+      {!historical ? <label className="world-journey-window">观察窗口<select aria-label="小结观察范围" value={windowRange.label.endsWith('h') ? windowRange.label : '24h'} onChange={e => changeRange(Number(e.target.value.slice(0, -1)))}><option value="1h">最近 1 小时</option><option value="6h">最近 6 小时</option><option value="24h">最近 24 小时</option><option value="168h">最近 7 天</option></select></label> : null}
+      <WorkspaceJourney key={selectedID} name={selectedName} summary={journey!} loading={(historical ? history.loading : journeyLive.loading) || progress.loading} error={journeyError}
+        onSeek={seekJourney} onFocus={focusDwell} onRetry={retryJourney} />
+    </>}
+  </> : null;
   return <section className={`world-workspace ${historical ? 'is-history' : 'is-live'} ${rosterOpen ? 'roster-open' : ''}`} aria-label="地图工作台">
     <WorldMap mode={mode} points={points} selectedID={selectedID} samples={historical ? samples : EMPTY_SAMPLES} cursorTime={clock.time}
       showTrail={showTrail} showLandmarks={showLandmarks} showBases={showBases} bases={bases} follow={follow} focusRequest={focusRequest}
-      stale={mode === 'live' && live.stale} onSelect={selectPlayer} onInteraction={stopFollow} />
+      stale={mode === 'live' && live.stale} onSelect={selectPlayer} onInteraction={stopFollow}
+      heat={showHeat ? journey?.heat ?? EMPTY_HEAT : EMPTY_HEAT} focusArea={focusArea} onFocusArea={focusDwell} />
     <div className="world-vignette" aria-hidden="true" />
     <div className="world-heading"><span className="world-eyebrow"><Compass size={14} /> PALWORLD ATLAS</span><h2>世界正在发生<span>。</span></h2><p>{historical ? '沿着足迹，回到那一刻。' : '每位探险者，都有自己的旅程。'}</p></div>
     <div className="world-top-controls">
@@ -112,6 +154,8 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
         <label><input type="checkbox" checked={showLandmarks} onChange={e => setShowLandmarks(e.target.checked)} />传送点与高塔</label>
         <label><input type="checkbox" checked={showBases} onChange={e => setShowBases(e.target.checked)} />公会据点</label>
         <label><input type="checkbox" checked={showTrail} onChange={e => setShowTrail(e.target.checked)} />回放足迹</label>
+        <label><input type="checkbox" checked={showHeat} disabled={!selectedID} onChange={e => setShowHeat(e.target.checked)} />停留热度</label>
+        {showHeat ? <p>按有效停留时长加权 · 近似网格区域</p> : null}
         {basesError ? <p role="status">据点暂时不可用</p> : null}
       </div></details>
     </div>

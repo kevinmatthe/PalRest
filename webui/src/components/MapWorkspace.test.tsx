@@ -4,7 +4,7 @@ import * as api from '../api';
 import { MapWorkspace } from './MapWorkspace';
 
 vi.mock('../api', async load => ({ ...await load<typeof import('../api')>(), getLivePositions: vi.fn(), getPlayerTimeline: vi.fn(), getGuildBases: vi.fn(), getPlayerProgress: vi.fn() }));
-vi.mock('../map/WorldMap', () => ({ WorldMap: ({ mode, points, onSelect, onInteraction }: any) => <div data-testid="world-map" data-mode={mode} data-points={JSON.stringify(points)}><button onClick={() => onSelect('u')}>地图玩家</button><button onClick={onInteraction}>拖动地图</button></div> }));
+vi.mock('../map/WorldMap', () => ({ WorldMap: ({ mode, points, heat, focusArea, onSelect, onInteraction }: any) => <div data-testid="world-map" data-mode={mode} data-points={JSON.stringify(points)} data-heat={JSON.stringify(heat ?? [])} data-focus-area={JSON.stringify(focusArea)}><button onClick={() => onSelect('u')}>地图玩家</button><button onClick={onInteraction}>拖动地图</button></div> }));
 
 const player = { user_id: 'u', name: '测试玩家', account_name: 'tester', player_id: 'p', online: true, enabled: false, exempt: false, used_ms: 0, remaining_ms: 0, limit_ms: 0, strategy: 'fixed', period: 'daily', period_start: '', next_reset: '', warning_before_ms: [], warnings: [] } satisfies api.Player;
 const now = Date.now();
@@ -101,4 +101,37 @@ it('seeks progress change endpoints with no trajectory, and hides future progres
   expect(screen.queryByText('45')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /拥有帕鲁 42 → 45/ })).not.toBeInTheDocument();
   expect(api.getPlayerProgress).toHaveBeenCalledTimes(2);
+});
+
+it('loads the live journey only on demand and reuses historical data while seeking', async () => {
+  render(<MapWorkspace players={[player]} refreshKey={0} />);
+  fireEvent.click(await screen.findByRole('button', { name: /选择玩家 测试玩家/ }));
+  expect(api.getPlayerTimeline).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '游玩小结' }));
+  await waitFor(() => expect(api.getPlayerTimeline).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole('button', { name: '历史回放' }));
+  await waitFor(() => expect(screen.getByRole('slider', { name: '回放时间' })).toBeEnabled());
+  expect(api.getPlayerTimeline).toHaveBeenCalledTimes(2);
+  fireEvent.change(screen.getByRole('slider', { name: '回放时间' }), { target: { value: String(now - 45000) } });
+  await act(async () => {});
+  expect(api.getPlayerTimeline).toHaveBeenCalledTimes(2);
+});
+
+it('clears dwell heat when rewinding before completed observations without remounting the map', async () => {
+  vi.mocked(api.getPlayerTimeline).mockResolvedValue({ ...history, trajectories: history.trajectories.map(p => ({ ...p, x: 3000 })) });
+  render(<MapWorkspace players={[player]} refreshKey={0} />);
+  fireEvent.click(await screen.findByRole('button', { name: /选择玩家 测试玩家/ }));
+  const map = screen.getByTestId('world-map');
+  fireEvent.click(screen.getByLabelText('停留热度'));
+  await waitFor(() => expect(JSON.parse(map.dataset.heat!)).toHaveLength(1));
+  fireEvent.click(screen.getByRole('button', { name: '历史回放' }));
+  const slider = await screen.findByRole('slider', { name: '回放时间' });
+  await waitFor(() => expect(slider).toBeEnabled());
+  fireEvent.change(slider, { target: { value: String(now - 60000) } });
+  expect(JSON.parse(map.dataset.heat!)).toEqual([]);
+  fireEvent.change(slider, { target: { value: String(now - 30000) } });
+  await waitFor(() => expect(JSON.parse(map.dataset.heat!)).toHaveLength(1));
+  expect(screen.getByTestId('world-map')).toBe(map);
+  fireEvent.click(screen.getByLabelText('停留热度'));
+  expect(JSON.parse(map.dataset.heat!)).toEqual([]);
 });

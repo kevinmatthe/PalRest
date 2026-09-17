@@ -228,3 +228,12 @@
   .world-progress-panel { width: 19rem; max-height: calc(100% - 7rem); }
   .is-history .world-progress-panel { max-height: calc(100% - 7rem); }
 }
+
+.world-detail-tabs { display: flex; gap: .4rem; padding: .6rem 0; }
+.world-detail-tabs button { flex: 1; min-height: 44px; border: 1px solid var(--world-line, #47655c); border-radius: .65rem; background: transparent; color: #b3c9c1; cursor: pointer; }
+.world-detail-tabs button[aria-pressed="true"] { background: #d0e7b9; border-color: #d0e7b9; color: #18342b; }
+.world-detail-tabs button:focus-visible { outline: 2px solid #c8ebac; outline-offset: 3px; }
+.world-journey-window { display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding: .45rem .2rem; color: #b3c9c1; font-size: .75rem; }
+.world-journey-window select { min-height: 44px; max-width: 65%; color: #dbece1; background: #17332c; border: 1px solid #47655c; border-radius: .55rem; padding: .5rem; }
+.world-dwell-cell { cursor: pointer; }
+.world-progress-panel > .world-detail-tabs { position: sticky; top: 0; z-index: 1; background: #142d26; }

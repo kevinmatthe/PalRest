@@ -7,18 +7,23 @@ import { MAP_LANDMARKS } from './mapLandmarks';
 import { WorldMapMarkers, projectWorkspaceXY, type MapDisplayPoint } from './worldMapMarkers';
 import { trajectoryRuns, type PreparedSample } from './workspacePlayback';
 import { disposeLeafletMap } from './disposeLeafletMap';
+import { WorldMapHeat } from './worldMapHeat';
+import type { JourneyHeatCell } from './journeyTypes';
 
 export type WorldMapProps = {
   mode: 'live' | 'history'; points: MapDisplayPoint[]; selectedID: string;
   samples: PreparedSample[]; cursorTime: number; showTrail: boolean; showLandmarks: boolean;
   showBases: boolean; bases: WorldPOI[]; follow: boolean; focusRequest: number; stale: boolean;
   onSelect: (id: string) => void; onInteraction: () => void;
+  heat?: JourneyHeatCell[]; focusArea?: { x: number; y: number; request: number };
+  onFocusArea?: (cell: JourneyHeatCell) => void;
 };
 
 export const WorldMap = memo(function WorldMap(props: WorldMapProps) {
   const root = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markerRef = useRef<WorldMapMarkers | null>(null);
+  const heatRef = useRef<WorldMapHeat | null>(null);
   const landmarksRef = useRef<L.LayerGroup | null>(null);
   const trailRef = useRef<L.Polyline | null>(null);
   const cursorTrailRef = useRef<L.Polyline | null>(null);
@@ -28,6 +33,7 @@ export const WorldMap = memo(function WorldMap(props: WorldMapProps) {
   const [reduced, setReduced] = useState(false);
   const [tileError, setTileError] = useState(false);
   const lastFocus = useRef(0);
+  const lastAreaFocus = useRef(0);
   const lastPan = useRef(0);
   const lastTrailIndex = useRef(-2);
 
@@ -59,6 +65,7 @@ export const WorldMap = memo(function WorldMap(props: WorldMapProps) {
     mapRef.current = map;
     markerRef.current = new WorldMapMarkers(map, id => propsRef.current.onSelect(id));
     landmarksRef.current = L.layerGroup().addTo(map);
+    heatRef.current = new WorldMapHeat(L.layerGroup().addTo(map), cell => propsRef.current.onFocusArea?.(cell));
     trailRef.current = L.polyline([], { color: '#71ddcf', weight: 3, opacity: 0.72, interactive: false }).addTo(map);
     cursorTrailRef.current = L.polyline([], { color: '#dcfbe8', weight: 4, interactive: false }).addTo(map);
     const stopFollow = () => propsRef.current.onInteraction();
@@ -77,9 +84,19 @@ export const WorldMap = memo(function WorldMap(props: WorldMapProps) {
       cancelAnimationFrame(frame); resize.disconnect();
       element.removeEventListener('wheel', manual); element.removeEventListener('keydown', key); element.removeEventListener('pointerdown', manual);
       markerRef.current?.clear(); markerRef.current = null;
+      heatRef.current?.clear(); heatRef.current = null;
       disposeLeafletMap(map); mapRef.current = null; landmarksRef.current = null; trailRef.current = null; cursorTrailRef.current = null;
     };
   }, []);
+
+  useEffect(() => { heatRef.current?.sync(props.heat ?? []); }, [props.heat]);
+  useEffect(() => {
+    const area = props.focusArea, map = mapRef.current;
+    if (!area) { lastAreaFocus.current = 0; return; }
+    if (!map || area.request === lastAreaFocus.current) return;
+    lastAreaFocus.current = area.request;
+    map.setView(projectWorkspaceXY(area.x, area.y), Math.max(map.getZoom(), 3), { animate: !reduced, duration: 0.55 });
+  }, [props.focusArea, reduced]);
 
   useEffect(() => {
     markerRef.current?.sync(props.points, props.selectedID, props.mode, reduced, props.stale);
