@@ -237,3 +237,5 @@
 .world-journey-window select { min-height: 44px; max-width: 65%; color: #dbece1; background: #17332c; border: 1px solid #47655c; border-radius: .55rem; padding: .5rem; }
 .world-dwell-cell { cursor: pointer; }
 .world-progress-panel > .world-detail-tabs { position: sticky; top: 0; z-index: 1; background: #142d26; }
+.world-marker-progress { display: block; margin-top: .45rem; padding-top: .45rem; border-top: 1px solid #b5d2a940; max-width: min(17rem, calc(100vw - 5rem)); white-space: pre-line; overflow-wrap: anywhere; color: #c4d8bc; font-size: .75rem; line-height: 1.5; }
+.world-marker-progress[hidden] { display: none; }

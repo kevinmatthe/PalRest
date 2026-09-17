@@ -17,6 +17,26 @@ def record(field, entries, value_type):
 
 
 class ProgressTests(unittest.TestCase):
+    def test_growth_raw_values_preserve_zero_experience_and_missing(self):
+        sp = {'IsPlayer': prop(True), 'Level': {'type': 'ByteProperty', 'value': {'value': 7}}, 'Exp': {'type': 'IntProperty', 'value': 0}}
+        def extract():
+            world = {'CharacterSaveParameterMap': prop([{'key': {'PlayerUId': prop('1' * 32)}, 'value': {'RawData': prop({'object': {'SaveParameter': prop(sp)}})}}])}
+            player = worker.extract_players(world, 0, 0)[0]
+            self.assertIn('progress', player)
+            return player['progress']['metrics']
+        self.assertEqual(extract()['level'], {'state': 'known', 'value': 7})
+        self.assertEqual(extract()['experience'], {'state': 'known', 'value': 0})
+        for field, name in [('Level', 'level'), ('Exp', 'experience')]:
+            previous = sp.pop(field)
+            self.assertEqual(extract()[name], {'state': 'unknown', 'reason': 'field_missing'})
+            for invalid in [None, True, -1, 1.5, '12', {}, 9007199254740992] + ([0] if field == 'Level' else []):
+                with self.subTest(field=field, invalid=invalid):
+                    sp[field] = prop(invalid)
+                    metric = extract()[name]
+                    self.assertEqual(metric['state'], 'unknown')
+                    self.assertNotIn('value', metric)
+            sp[field] = previous
+
     def test_missing_is_unknown_not_zero(self):
         result = worker.record_metric({}, 'PalCaptureCount')
         self.assertEqual(result['state'], 'unknown')
@@ -60,6 +80,8 @@ class ProgressTests(unittest.TestCase):
                 (root / name).write_bytes(name.encode())
             with worker.stable_snapshot(root / 'Level.sav') as (level, manifest):
                 fingerprint = worker.snapshot_fingerprint(level, level.parent / 'Players')
+                with patch.object(worker, 'PARSER_VERSION', 2):
+                    self.assertNotEqual(worker.snapshot_fingerprint(level, level.parent / 'Players'), fingerprint)
                 self.assertNotEqual(worker.snapshot_fingerprint(level, level.parent / 'Players', 'A' * 32, 'explicit'), fingerprint)
                 (root / 'Level.sav').write_bytes(b'changed after copying')
                 self.assertEqual(level.read_bytes(), b'Level.sav')
@@ -239,7 +261,7 @@ class SnapshotTests(unittest.TestCase):
         from types import SimpleNamespace
         uid = '1' * 32
         ticks = 639230480446090000
-        sp = {'IsPlayer': prop(True), 'NickName': prop('Synthetic')}
+        sp = {'IsPlayer': prop(True), 'NickName': prop('Synthetic'), 'Level': prop({'value': 7}), 'Exp': prop(0)}
         level = {'Timestamp': prop(ticks), 'worldSaveData': prop({'CharacterSaveParameterMap': prop([{'key': {'PlayerUId': prop(uid)}, 'value': {'RawData': prop({'object': {'SaveParameter': prop(sp)}})}}])})}
         player = {'Timestamp': prop(ticks - 1), 'SaveData': prop({'PlayerUId': prop(uid)})}
         with tempfile.TemporaryDirectory() as directory:
@@ -252,6 +274,9 @@ class SnapshotTests(unittest.TestCase):
                 return SimpleNamespace(properties=values[path.name])
             with patch.object(worker, 'read_gvas', side_effect=reader):
                 result = worker.extract_snapshot(root / 'Level.sav', 'A' * 32)
+            self.assertEqual(result['parser']['version'], 3)
+            self.assertEqual(result['players'][0]['progress']['metrics']['level'], {'state': 'known', 'value': 7})
+            self.assertEqual(result['players'][0]['progress']['metrics']['experience'], {'state': 'known', 'value': 0})
             catalog_path = Path(worker.__file__).with_name('character_ids.json')
             catalog_bytes = catalog_path.read_bytes()
             self.assertEqual(result['source']['progress_definition'], hashlib.sha256(catalog_bytes).hexdigest())
@@ -273,6 +298,9 @@ class SnapshotTests(unittest.TestCase):
             self.assertFalse(result['source']['consistent'])
             self.assertNotIn('PRIVATE SECRET', str(result))
             self.assertEqual(result['players'][0]['progress']['metrics']['capture_total'], {'state': 'unknown', 'reason': 'player_parse_failed'})
+            # Growth is present in Level.sav even when the companion player file fails.
+            self.assertEqual(result['players'][0]['progress']['metrics']['level'], {'state': 'known', 'value': 7})
+            self.assertEqual(result['players'][0]['progress']['metrics']['experience'], {'state': 'known', 'value': 0})
 
 
 if __name__ == '__main__':

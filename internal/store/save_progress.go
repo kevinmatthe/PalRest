@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-var progressMetricNames = []string{"owned_pals", "capture_total", "paldeck", "fast_travel"}
+var progressMetricNames = []string{"owned_pals", "capture_total", "paldeck", "fast_travel", "level", "experience"}
 var progressReasonPattern = regexp.MustCompile(`^[a-z0-9_]{0,80}$`)
 
 // A missing metric is unknown, never a measured zero. Sets carry their stable IDs
@@ -160,14 +160,21 @@ func validateSaveProgress(s SaveSnapshot, p *SaveProgress) error {
 		if !slices.Contains(progressMetricNames, name) {
 			return fmt.Errorf("unsupported progress metric %q", name)
 		}
-		if err := validateProgressMetric(m, name != "capture_total"); err != nil {
+		if err := validateProgressMetric(m, isProgressSet(name)); err != nil {
 			return err
+		}
+		if name == "level" && m.State == "known" && *m.Value == 0 {
+			return fmt.Errorf("invalid progress level")
 		}
 	}
 	if p.UnattributedPals != nil {
 		return validateProgressMetric(*p.UnattributedPals, false)
 	}
 	return nil
+}
+
+func isProgressSet(name string) bool {
+	return name == "owned_pals" || name == "paldeck" || name == "fast_travel"
 }
 
 func validateProgressMetric(m ProgressMetric, isSet bool) error {
@@ -325,7 +332,7 @@ func markProgressReplay(tx *gorm.DB, importID uint) error {
 }
 
 func progressCountersRegressed(before, after map[string]ProgressMetric) bool {
-	for _, name := range []string{"capture_total", "paldeck", "fast_travel"} {
+	for _, name := range []string{"capture_total", "paldeck", "fast_travel", "level", "experience"} {
 		a, b := before[name], after[name]
 		if a.State != "known" || b.State != "known" {
 			continue
@@ -333,7 +340,7 @@ func progressCountersRegressed(before, after map[string]ProgressMetric) bool {
 		if *b.Value < *a.Value {
 			return true
 		}
-		if name != "capture_total" {
+		if isProgressSet(name) {
 			_, removed := progressSetDiff(a.IDs, b.IDs)
 			if len(removed) > 0 {
 				return true
@@ -368,6 +375,9 @@ func progressSetDiff(before, after []string) ([]string, []string) {
 func (m progressCheckpointModel) dto() (ProgressCheckpoint, error) {
 	out := ProgressCheckpoint{ID: m.ID, WorldID: m.WorldID, ObservedAt: m.ObservedAt, CapturedAt: m.CapturedAt, Source: "save_import", SourceTimeKind: m.SourceTimeKind, SchemaVersion: m.SchemaVersion, Consistent: m.Consistent, Boundary: m.Boundary}
 	err := json.Unmarshal([]byte(m.MetricsJSON), &out.Metrics)
+	if err == nil {
+		out.Metrics = normalizedProgressMetrics(out.Metrics)
+	}
 	if err == nil && m.UnattributedJSON != "" {
 		err = json.Unmarshal([]byte(m.UnattributedJSON), &out.UnattributedPals)
 	}

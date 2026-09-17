@@ -33,14 +33,17 @@ variables.
 `palsav` and `palooz` are GPL-licensed components. Keep parser use isolated from
 the Go binary and treat image distribution accordingly.
 
-Parser version 2 keeps `palrest.save_snapshot.v1` and adds player progress:
+Parser version 3 keeps `palrest.save_snapshot.v1` and progress schema 1,
+adding optional `level` and `experience` counters to the existing metric map:
 
 ```json
 {"progress":{"schema_version":1,"metrics":{
   "owned_pals":{"state":"known","value":2,"ids":["INSTANCE_GUID_1","INSTANCE_GUID_2"]},
   "capture_total":{"state":"known","value":12},
   "paldeck":{"state":"unknown","reason":"field_missing"},
-  "fast_travel":{"state":"unsupported","reason":"field_shape_unsupported"}
+  "fast_travel":{"state":"unsupported","reason":"field_shape_unsupported"},
+  "level":{"state":"known","value":15},
+  "experience":{"state":"known","value":0}
 }}}
 ```
 
@@ -88,6 +91,17 @@ create an observation just because it was copied later.
 
 Validated metric sources and definitions:
 
+- `level`: the player character’s raw `SaveParameter.Level`, a ByteProperty
+  whose integer is nested under `value.value` in the inspected saves. Only
+  positive integers are known.
+- `experience`: raw `SaveParameter.Exp`, an Int64Property with a nonnegative
+  integer `value`. A measured zero is known. Both growth counters reject
+  booleans, strings, fractions, negatives and integers above JavaScript’s exact
+  integer range; missing or invalid values are unknown. Legacy top-level player
+  defaults never establish known growth values. These fields come from Level.sav
+  independently of player-file records; incomplete generations still disable
+  comparisons for the whole checkpoint.
+
 - `capture_total`: sum of `SaveData.RecordData.PalCaptureCount`, a Name→Int map.
   This is the saved cumulative capture record, **including Human entries**;
   it is neither current ownership nor evidence of a specific capture action.
@@ -128,3 +142,16 @@ metrics for all players. One anonymous player changed owned pals 9→11, saved
 capture records 9→11, paldeck 6→8, and fast travel 5→6; the added instance/species/
 travel sets matched those count increases. No real saves or identifying player
 values are committed as fixtures.
+
+Read-only growth validation on the same two adjacent backups found valid raw
+Level/Exp values for all 11 players. All levels were unchanged. Two anonymous
+players had experience increases 17,023,278→17,023,620 (+342) and
+22,771→25,021 (+2,250); the other nine were unchanged. No identifying values or
+save data are included in the repository.
+
+Parser version 3 changes the fingerprint and establishes a `schema_changed`
+comparison boundary after earlier parser versions. A decrease in either growth
+counter establishes `counter_reset`; no changes across that interval are emitted.
+Existing checkpoint JSON without either growth field is returned as unknown,
+without a database migration or fabricated history. Growth changes share the
+existing atomic import/checkpoint/change transaction and observation interval.

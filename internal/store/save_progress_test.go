@@ -371,3 +371,129 @@ func TestProgressClassificationDefinitionChangesBoundary(t *testing.T) {
 		t.Fatalf("catalogue change became activity: %+v", out)
 	}
 }
+
+func TestProgressGrowthCountersValidate(t *testing.T) {
+	for _, name := range []string{"level", "experience"} {
+		for _, tc := range []struct {
+			label string
+			value int64
+			ids   []string
+			valid bool
+		}{
+			{"positive", 8, nil, true}, {"zero", 0, nil, name == "experience"},
+			{"negative", -1, nil, false}, {"ids", 1, []string{"bad"}, false},
+			{"unsafe_integer", 9007199254740992, nil, false},
+		} {
+			t.Run(name+"/"+tc.label, func(t *testing.T) {
+				s := progressSnapshot(1)
+				s.Players[0].Progress.Metrics[name] = ProgressMetric{State: "known", Value: &tc.value, IDs: tc.ids}
+				err := validateSaveProgress(s, s.Players[0].Progress)
+				if (err == nil) != tc.valid {
+					t.Fatalf("valid=%v err=%v", tc.valid, err)
+				}
+			})
+		}
+	}
+}
+
+func growthSnapshot(n int, level, experience int64) SaveSnapshot {
+	s := progressSnapshot(n, "a")
+	s.Parser.Version = 3
+	s.Players[0].Progress.Metrics["capture_total"] = ProgressMetric{State: "unknown"}
+	s.Players[0].Progress.Metrics["level"] = ProgressMetric{State: "known", Value: &level}
+	s.Players[0].Progress.Metrics["experience"] = ProgressMetric{State: "known", Value: &experience}
+	return s
+}
+
+func TestProgressGrowthBaselineDiffAndBoundaries(t *testing.T) {
+	for _, boundary := range []string{"", "level_reset", "experience_reset", "schema_changed", "unknown"} {
+		name := boundary
+		if name == "" {
+			name = "growth_increase"
+		}
+		t.Run(name, func(t *testing.T) {
+			r, _ := openTemp(t)
+			progressPlayer(t, r, "user")
+			a, b := growthSnapshot(1, 1, 0), growthSnapshot(2, 2, 50)
+			wantBoundary := boundary
+			switch boundary {
+			case "level_reset":
+				a = growthSnapshot(1, 3, 0)
+				wantBoundary = "counter_reset"
+			case "experience_reset":
+				a = growthSnapshot(1, 1, 100)
+				wantBoundary = "counter_reset"
+			case "schema_changed":
+				a.Parser.Version = 2
+			case "unknown":
+				delete(a.Players[0].Progress.Metrics, "level")
+				delete(a.Players[0].Progress.Metrics, "experience")
+				wantBoundary = ""
+			}
+			importProgress(t, r, a)
+			if got := queryProgress(t, r); len(got.Changes) != 0 || got.Checkpoints[0].Boundary != "baseline" {
+				t.Fatalf("baseline=%+v", got)
+			}
+			importProgress(t, r, b)
+			got := queryProgress(t, r)
+			if got.Checkpoints[1].Boundary != wantBoundary {
+				t.Fatalf("boundary=%q", got.Checkpoints[1].Boundary)
+			}
+			if boundary != "" {
+				if len(got.Changes) != 0 {
+					t.Fatalf("unproven changes=%+v", got.Changes)
+				}
+				return
+			}
+			if len(got.Changes) != 2 {
+				t.Fatalf("changes=%+v", got.Changes)
+			}
+			for _, c := range got.Changes {
+				if c.Delta <= 0 || len(c.Added) != 0 || len(c.Removed) != 0 || c.CheckpointID != got.Checkpoints[1].ID || c.PreviousCheckpointID != got.Checkpoints[0].ID {
+					t.Fatalf("change=%+v", c)
+				}
+				if c.Metric == "experience" && (c.Before != 0 || c.After != 50 || c.Delta != 50) {
+					t.Fatalf("zero experience=%+v", c)
+				}
+			}
+		})
+	}
+}
+
+func TestProgressGrowthLegacyStoredJSONIsUnknown(t *testing.T) {
+	r, _ := openTemp(t)
+	progressPlayer(t, r, "user")
+	importProgress(t, r, progressSnapshot(1, "a"))
+	// Simulate checkpoint JSON persisted by parser v2, before normalization knew growth.
+	if err := r.gorm.Model(&progressCheckpointModel{}).Where("id > 0").Update("metrics_json", `{"capture_total":{"state":"known","value":101}}`).Error; err != nil {
+		t.Fatal(err)
+	}
+	got := queryProgress(t, r)
+	for _, name := range []string{"level", "experience"} {
+		m := got.Checkpoints[0].Metrics[name]
+		if m.State != "unknown" || m.Value != nil {
+			t.Fatalf("%s=%+v", name, m)
+		}
+	}
+}
+
+func TestProgressGrowthChangeFailureRollsBackImport(t *testing.T) {
+	r, _ := openTemp(t)
+	progressPlayer(t, r, "user")
+	importProgress(t, r, growthSnapshot(1, 1, 0))
+	if err := r.gorm.Exec("CREATE TRIGGER fail_growth BEFORE INSERT ON save_progress_changes WHEN NEW.metric = 'experience' BEGIN SELECT RAISE(ABORT, 'test failure'); END;").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ImportSaveSnapshot(t.Context(), growthSnapshot(2, 2, 50), progressStart); err == nil {
+		t.Fatal("expected growth insertion failure")
+	}
+	got := queryProgress(t, r)
+	if len(got.Checkpoints) != 1 || len(got.Changes) != 0 {
+		t.Fatalf("partial progress=%+v", got)
+	}
+	var count int64
+	r.gorm.Table("save_imports").Count(&count)
+	if count != 1 {
+		t.Fatalf("partial import count=%d", count)
+	}
+}

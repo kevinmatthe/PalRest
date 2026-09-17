@@ -1,4 +1,4 @@
-import type { PlayerProgressResponse, PlayerTimelineResponse, ProgressChange, ProgressMetricName } from '../api';
+import type { PlayerProgressResponse, PlayerTimelineResponse, ProgressChange, ProgressMetrics } from '../api';
 
 export type JourneyInput = {
   userID: string; start: number; end: number;
@@ -33,6 +33,7 @@ export type JourneySummary = {
     asOf: number | null; ageMs: number | null; edges: JourneyEdge[];
     level: { from: number; to: number; delta: number; start: number; end: number } | null;
   };
-  metrics: Record<ProgressMetricName, JourneyMetric>;
+  metrics: ProgressMetrics<JourneyMetric>;
+  milestones?: ProgressChange[];
   heat: JourneyHeatCell[]; inferences: JourneyInference[]; warnings: string[];
 };

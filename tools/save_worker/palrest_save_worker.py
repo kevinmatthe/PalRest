@@ -28,7 +28,7 @@ from palsav.paltypes import PALWORLD_CUSTOM_PROPERTIES, PALWORLD_TYPE_HINTS
 
 
 PARSER_NAME = "palrest-palsav-worker"
-PARSER_VERSION = 2
+PARSER_VERSION = 3
 
 
 @contextlib.contextmanager
@@ -121,7 +121,8 @@ def extract_snapshot(level_path: Path, world_id: str | None = None) -> dict[str,
                 metrics = {'owned_pals': owned[uid]}
                 for name, field in [('capture_total', 'PalCaptureCount'), ('paldeck', 'PaldeckUnlockFlag'), ('fast_travel', 'FastTravelPointUnlockFlag')]:
                     metrics[name] = record_metric(data, field)
-            player['progress'] = {'schema_version': 1, 'metrics': metrics, 'unattributed_pals': unattributed[uid]}
+            player['progress']['metrics'].update(metrics)
+            player['progress']['unattributed_pals'] = unattributed[uid]
         return {
             "schema": "palrest.save_snapshot.v1",
             "parser": {"name": PARSER_NAME, "version": PARSER_VERSION},
@@ -145,7 +146,7 @@ def read_gvas(path: Path) -> GvasFile:
 
 
 def snapshot_fingerprint(level_path: Path, players_dir: Path, world_id: str = "", world_id_kind: str = "unknown", progress_definition: str | None = None) -> str:
-    digest = hashlib.sha256(b"palrest-palsav-worker:2;progress:1\0")
+    digest = hashlib.sha256(f"{PARSER_NAME}:{PARSER_VERSION};progress:1\0".encode())
     digest.update(json.dumps([world_id, world_id_kind], separators=(",", ":")).encode())
     if progress_definition is None:
         progress_definition = hashlib.sha256(Path(__file__).with_name("character_ids.json").read_bytes()).hexdigest()
@@ -179,12 +180,14 @@ def extract_players(world: dict[str, Any], real_ticks: int, file_mtime: float) -
         uid_hex = uid_to_hex(raw_uid)
         if not uid_hex:
             continue
+        growth = {'level': growth_metric(save_param, 'Level'), 'experience': growth_metric(save_param, 'Exp')}
         player = {
             "save_player_uid": hex_to_decimal_uid(uid_hex),
             "save_player_hex": uid_hex,
             "nickname": value_at(save_param, "NickName", "value") or "",
-            "level": byte_value(save_param.get("Level"), 1),
-            "exp": int(value_at(save_param, "Exp", "value") or 0),
+            "level": growth["level"].get("value", 1),
+            "exp": growth["experience"].get("value", 0),
+            "progress": {"schema_version": 1, "metrics": growth},
             "hp": fixed_point(save_param.get("Hp")),
             "shield_hp": fixed_point(save_param.get("ShieldHP")),
             "full_stomach": round(float(value_at(save_param, "FullStomach", "value") or 0), 2),
@@ -353,6 +356,19 @@ def save_generation(properties: dict) -> int | None:
 
 def unknown(reason: str, state: str = 'unknown') -> dict:
     return {'state': state, 'reason': reason}
+
+
+def growth_metric(save_param: dict, field: str) -> dict:
+    """Read growth from raw character data, never legacy player defaults."""
+    if field not in save_param:
+        return unknown('field_missing')
+    value = value_at(save_param, field, 'value')
+    if field == 'Level' and isinstance(value, dict):
+        value = value.get('value')
+    minimum = 1 if field == 'Level' else 0
+    if type(value) is not int or not minimum <= value <= 9007199254740991:
+        return unknown('invalid_field_value')
+    return {'state': 'known', 'value': value}
 
 
 def record_metric(save_data: dict, field: str) -> dict:

@@ -419,12 +419,14 @@ export function savePolicies(policy: PolicyDocument) {
   });
 }
 
-export type ProgressMetricName = 'owned_pals' | 'capture_total' | 'paldeck' | 'fast_travel';
+export type LegacyProgressMetricName = 'owned_pals' | 'capture_total' | 'paldeck' | 'fast_travel';
+export type ProgressMetricName = LegacyProgressMetricName | 'level' | 'experience';
+export type ProgressMetrics<T> = Record<LegacyProgressMetricName, T> & Partial<Record<'level' | 'experience', T>>;
 export type ProgressMetric = { state: 'known' | 'unknown' | 'unsupported'; value?: number; ids?: string[]; reason?: string };
 export type ProgressCheckpoint = {
   id: number; world_id: string; observed_at: string; captured_at: string; source: 'save_import';
   schema_version: number; consistent: boolean; boundary: string;
-  metrics: Record<ProgressMetricName, ProgressMetric>;
+  metrics: ProgressMetrics<ProgressMetric>;
   unattributed_pals?: ProgressMetric;
 };
 export type ProgressChange = {

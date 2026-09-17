@@ -154,3 +154,57 @@ it('does not lose exploration evidence when the same movement is sampled more de
   expect(dense.inferences[0].movingMs).toBe(sparse.inferences[0].movingMs);
   expect(dense.position.stationaryMs).toBe(sparse.position.stationaryMs);
 });
+
+
+describe('saved growth and milestone evidence', () => {
+  const growth = (id: number, s: number, level: number, experience: number) => {
+    const checkpoint = cp(id, s);
+    Object.assign(checkpoint.metrics, { level: { state: 'known', value: level }, experience: { state: 'known', value: experience } });
+    return checkpoint;
+  };
+  const growthDiff = (a: ProgressCheckpoint, b: ProgressCheckpoint, metric: 'level' | 'experience') => diff(a, b, {
+    metric, before: a.metrics[metric]!.value!, after: b.metrics[metric]!.value!,
+    delta: b.metrics[metric]!.value! - a.metrics[metric]!.value!, added: [], removed: [],
+  });
+  it('keeps old four-metric responses unknown for growth while retaining genuine zero experience', () => {
+    const old = summarize([], progress([cp(1, 0), cp(2, 60)]));
+    expect(old.metrics.level).toMatchObject({ status: 'unknown', delta: null, latestValue: null, runs: [] });
+    expect(old.metrics.experience).toMatchObject({ status: 'unknown', delta: null, latestValue: null });
+    const a = growth(1, 0, 1, 0), b = growth(2, 60, 1, 0);
+    expect(summarize([], progress([a, b])).metrics.experience).toMatchObject({ status: 'known', delta: 0, latestValue: 0 });
+  });
+  it('plots saved level and experience independently of REST levels and excludes future milestones', () => {
+    const a = growth(1, 0, 1, 0), b = growth(2, 60, 2, 100), c = growth(3, 180, 3, 300);
+    const changes = [growthDiff(a, b, 'level'), growthDiff(a, b, 'experience'), growthDiff(b, c, 'level')];
+    const out = summarize([point(0, 100, { level: 50 }), point(60, 100, { level: 51 })], progress([a, b, c], changes), 120);
+    expect(out.metrics.level).toMatchObject({ status: 'known', delta: 1, latestValue: 2 });
+    expect(out.metrics.experience).toMatchObject({ status: 'known', delta: 100, latestValue: 100 });
+    expect(out.metrics.experience?.runs.flat().map(p => p.value)).toEqual([0, 100]);
+    expect(out.milestones).toEqual([changes[0]]);
+  });
+  it.each(['level', 'experience'] as const)('breaks comparison on an unlabeled %s regression while retaining valid earlier milestones', key => {
+    const a = growth(1, 0, 10, 1000), b = growth(2, 60, 11, 1100), c = growth(3, 120, 11, 1100);
+    c.metrics[key]!.value = 1;
+    const valid = growthDiff(a, b, 'level'), reset = growthDiff(b, c, key);
+    const out = summarize([], progress([a, b, c], [valid, reset]));
+    expect(out.metrics[key]).toMatchObject({ status: 'boundary', delta: null });
+    expect(out.metrics[key]?.runs.at(-1)).toHaveLength(1);
+    expect(out.milestones).toEqual([valid]);
+  });
+  it('includes only evidenced new unlock IDs and excludes cross-schema milestone claims', () => {
+    const a = cp(1, 0), b = cp(2, 60, 1), c = cp(3, 120, 2, { schema_version: 2 });
+    a.metrics.fast_travel.ids = []; b.metrics.fast_travel.ids = ['Travel_A']; c.metrics.fast_travel.ids = ['Travel_A', 'Travel_B'];
+    const valid = diff(a, b, { added: ['Travel_A'] }), cross = diff(b, c, { added: ['Travel_B'] });
+    expect(summarize([], progress([a, b, c], [valid, cross])).milestones).toEqual([valid]);
+    expect(summarize([], progress([a, b], [diff(a, b, { added: ['invented'] })])).milestones).toEqual([]);
+    delete b.metrics.fast_travel.ids;
+    expect(summarize([], progress([a, b], [valid])).milestones).toEqual([]);
+  });
+  it('keeps verified local milestones under truncation without claiming the whole window', () => {
+    const a = growth(1, 0, 1, 0), b = growth(2, 60, 2, 100), change = growthDiff(a, b, 'level');
+    const out = summarize([], progress([a, b], [change], { change_total: 50 }));
+    expect(out.metrics.level).toMatchObject({ status: 'partial', delta: 1 });
+    expect(out.milestones).toEqual([change]);
+    expect(summarize([], progress([a, b], [] )).milestones).toEqual([]);
+  });
+});

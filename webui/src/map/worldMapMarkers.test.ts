@@ -57,6 +57,32 @@ it('projects real world coordinates continuously through zero', () => {
   expect(Math.abs(a[0] - b[0])).toBeLessThan(.001);
 });
 
+it('updates selected-player progress as safe text without moving or replacing the marker', () => {
+  markers.sync([{ ...p, recentProgress: '拥有帕鲁 5 → 7\n<img src=x onerror=alert(1)>' }], 'u', 'live', false, false);
+  const icon = host.querySelector('.world-player-pin');
+  const card = host.querySelector('.world-marker-card');
+  expect(card?.textContent).toContain('拥有帕鲁 5 → 7');
+  expect(card?.querySelector('img')).toBeNull();
+  const move = vi.spyOn(L.Marker.prototype, 'setLatLng');
+  markers.sync([{ ...p, recentProgress: '存档等级 10 → 11' }], 'u', 'live', false, false);
+  expect(host.querySelector('.world-player-pin')).toBe(icon);
+  expect(host.querySelector('.world-marker-card')).toBe(card);
+  expect(card?.textContent).toContain('存档等级 10 → 11');
+  expect(move).not.toHaveBeenCalled();
+  markers.sync([p], 'u', 'history', false, false);
+  expect(card?.textContent).not.toContain('存档等级');
+  markers.sync([{ ...p, recentProgress: '不能留在旧玩家上' }], 'other', 'live', false, false);
+  expect(card?.textContent).not.toContain('不能留在旧玩家上');
+});
+
+it('removes obsolete tooltip evidence immediately even when Leaflet fades overlays out', () => {
+  (map as L.Map & { _fadeAnimated: boolean })._fadeAnimated = true;
+  markers.sync([{ ...p, recentProgress: '未来存档变化' }], 'u', 'live', false, false);
+  expect(host.querySelector('.world-marker-card')?.textContent).toContain('未来存档变化');
+  markers.sync([], 'u', 'history', false, false);
+  expect(host.querySelector('.world-marker-card')).toBeNull();
+});
+
 it('snaps to the next observation after a connection failure instead of animating across it', () => {
   markers.sync([p], 'u', 'live', false, false);
   markers.sync([p], 'u', 'live', false, true);

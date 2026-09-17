@@ -32,7 +32,7 @@ it('makes coverage, unknown duration, game units and observation freshness expli
 
 it('shows unknown quantities without zero and lets the entire panel collapse', () => {
   mount();
-  expect(screen.getAllByText('未采集')).toHaveLength(4);
+  expect(screen.getAllByText('未采集')).toHaveLength(6);
   expect(screen.queryByText('+0')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /观察窗口小结/ }));
   expect(screen.queryByRole('meter')).not.toBeInTheDocument();
@@ -123,4 +123,44 @@ it('mounts large position evidence only while its disclosure is expanded', async
   await waitFor(() => expect(screen.getAllByText(/sample-source-/)).toHaveLength(300));
   await userEvent.click(disclosure);
   await waitFor(() => expect(screen.queryAllByText(/sample-source-/)).toHaveLength(0));
+});
+
+
+it('renders saved growth with its own observation time and expands milestone evidence before seeking', async () => {
+  const data = summary();
+  const change = { id: 99, metric: 'level' as const, before: 4, after: 5, delta: 1, added: [], removed: [], previous_checkpoint_id: 8, checkpoint_id: 9, interval_start: new Date(start).toISOString(), interval_end: new Date(end - 120_000).toISOString(), confidence: 'observed' as const, source: 'save_import' as const, rule_version: 1 as const };
+  data.metrics.level = { status: 'boundary', delta: null, latestValue: 5, runs: [[{ checkpointID: 9, time: end - 120_000, value: 5 }]], changes: [change] };
+  data.metrics.experience = { status: 'known', delta: 0, latestValue: 0, runs: [[{ checkpointID: 9, time: end - 120_000, value: 0 }]], changes: [] };
+  data.milestones = [change];
+  const { onSeek } = mount(data);
+  const level = screen.getByRole('region', { name: '存档等级趋势与证据' });
+  expect(within(level).getByText('不可比较')).toBeInTheDocument();
+  expect(level.querySelector('time')).toHaveAttribute('dateTime', change.interval_end);
+  expect(screen.getByText('REST 等级观测变化')).toBeInTheDocument();
+  const milestones = screen.getByRole('region', { name: '成长里程碑' });
+  expect(within(milestones).queryByText(/快照 #8/)).not.toBeInTheDocument();
+  await userEvent.click(within(milestones).getByText('存档等级提升 4 → 5'));
+  expect(await within(milestones).findByText(/快照 #8 → #9/)).toBeInTheDocument();
+  expect(within(milestones).getByText(/已确认的局部区间/)).toBeInTheDocument();
+  fireEvent.click(within(milestones).getByRole('button', { name: /回看变化 #99/ }));
+  expect(onSeek).toHaveBeenCalledWith(end - 120_000);
+});
+
+it('does not turn REST level changes into saved milestones', () => {
+  mount();
+  const milestones = screen.getByRole('region', { name: '成长里程碑' });
+  expect(within(milestones).getByText('暂无可确认的成长里程碑。')).toBeInTheDocument();
+});
+
+
+it('reveals the exact saved unlock IDs only when milestone evidence is expanded', async () => {
+  const data = summary();
+  data.milestones = [{ id: 100, metric: 'paldeck', before: 1, after: 2, delta: 1, added: ['Pal_Observed'], removed: [], previous_checkpoint_id: 8, checkpoint_id: 9, interval_start: new Date(start).toISOString(), interval_end: new Date(end).toISOString(), confidence: 'observed', source: 'save_import', rule_version: 1 }];
+  const { onSeek } = mount(data);
+  const milestones = screen.getByRole('region', { name: '成长里程碑' });
+  expect(within(milestones).queryByText('Pal_Observed')).not.toBeInTheDocument();
+  await userEvent.click(within(milestones).getByText('图鉴新增 1 项'));
+  expect(await within(milestones).findByText('Pal_Observed')).toBeInTheDocument();
+  fireEvent.click(within(milestones).getByRole('button', { name: /回看变化 #100/ }));
+  expect(onSeek).toHaveBeenCalledWith(end);
 });

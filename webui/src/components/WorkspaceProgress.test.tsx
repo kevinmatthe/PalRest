@@ -7,7 +7,7 @@ it('shows observed quantities, explains truncation and seeks a change interval w
   const onChange = vi.fn();
   render(<WorkspaceProgress name="测试玩家" data={data} mode="history" cursor={Date.parse('2026-09-16T10:00:00Z')} loading={false} onChange={onChange} onRetry={() => {}} />);
   expect(screen.getByText('45')).toBeInTheDocument();
-  expect(screen.getAllByText('未采集')).toHaveLength(2);
+  expect(screen.getAllByText('未采集')).toHaveLength(4);
   expect(screen.getByText('暂不支持')).toBeInTheDocument();
   expect(screen.getByText(/变化仅加载 1\/8/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /拥有帕鲁 42 → 45/ }));

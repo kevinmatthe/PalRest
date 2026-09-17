@@ -15,6 +15,7 @@ import { WorkspaceJourney } from './WorkspaceJourney';
 import { useJourneyTimeline } from '../map/useJourneyTimeline';
 import { useJourneyCursor } from '../map/useJourneyCursor';
 import { summarizeJourney } from '../map/journeySummary';
+import { prepareRecentProgress, recentProgressText } from '../map/recentProgress';
 import type { JourneyHeatCell } from '../map/journeyTypes';
 import { eventLabel } from './timelineShared';
 
@@ -78,6 +79,11 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   const selected = players.find(p => p.user_id === selectedID);
   const selectedLive = livePlayers.find(p => p.user_id === selectedID);
   const selectedName = selected?.name || selectedLive?.name || selected?.account_name || selectedID;
+  const recentEvidence = useMemo(() => {
+    const end = mode === 'live' ? Date.now() : windowRange.end;
+    return prepareRecentProgress(progress.data, selectedID, end - (windowRange.end - windowRange.start), end);
+  }, [progress.data, selectedID, mode, windowRange]);
+  const recentText = progress.error ? undefined : recentProgressText(recentEvidence, mode === 'history' ? clock.time : Date.now());
 
   useEffect(() => { setSelectedID(initialSelectedID); }, [initialSelectedID]);
   useEffect(() => { setFocusArea(undefined); }, [selectedID, mode]);
@@ -95,9 +101,9 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   const stopFollow = useCallback(() => setFollow(false), []);
   const closeRoster = useCallback(() => setRosterOpen(false), []);
   const points = useMemo<MapDisplayPoint[]>(() => mode === 'live'
-    ? livePlayers.filter(p => Number.isFinite(p.x) && Number.isFinite(p.y)).map(p => ({ ...p, name: p.name || p.account_name || p.user_id, observedAt: live.data?.as_of, continuity: 'live', state: '当前位置' }))
-    : frame ? [{ user_id: selectedID, name: selectedName, x: frame.x, y: frame.y, level: frame.sample.level, observedAt: frame.sample.observed_at, continuity: `history:${frame.sample.segment_id}:${frame.sample.runtime_epoch}`, state: frame.status === 'gap' ? '观测缺口' : frame.status === 'last-known' ? '最后观测' : frame.interpolated ? '回放位置 · 插值' : '回放位置' }] : [],
-  [mode, livePlayers, live.data?.as_of, frame, selectedID, selectedName]);
+    ? livePlayers.filter(p => Number.isFinite(p.x) && Number.isFinite(p.y)).map(p => ({ ...p, name: p.name || p.account_name || p.user_id, observedAt: live.data?.as_of, continuity: 'live', state: '当前位置', recentProgress: p.user_id === selectedID ? recentText : undefined }))
+    : frame ? [{ user_id: selectedID, name: selectedName, x: frame.x, y: frame.y, level: frame.sample.level, observedAt: frame.sample.observed_at, continuity: `history:${frame.sample.segment_id}:${frame.sample.runtime_epoch}`, state: frame.status === 'gap' ? '观测缺口' : frame.status === 'last-known' ? '最后观测' : frame.interpolated ? '回放位置 · 插值' : '回放位置', recentProgress: recentText }] : [],
+  [mode, livePlayers, live.data?.as_of, frame, selectedID, selectedName, recentText]);
 
   const truncated = Boolean(history.data && ((history.data.trajectory_total ?? 0) > samples.length || (history.data.event_total ?? 0) > events.length || history.data.trajectories.length >= 500 || events.length >= 500));
   const historical = mode === 'history';

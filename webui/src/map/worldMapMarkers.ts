@@ -5,6 +5,7 @@ import { TELEPORT_MIN_DIST } from '../behavior/behaviorTypes';
 export type MapDisplayPoint = {
   user_id: string; name: string; x: number; y: number; level?: number;
   observedAt?: string; continuity: string; state: string;
+  recentProgress?: string;
 };
 
 /** The API carries game coordinates, including valid values close to zero. */
@@ -19,7 +20,7 @@ export function playerColor(id: string) {
   return `hsl(${(hash >>> 0) % 360} 72% 68%)`;
 }
 
-type Entry = { marker: L.Marker; point: MapDisplayPoint; title: HTMLElement; detail: HTMLElement; badge: HTMLElement; frame: number; stale: boolean };
+type Entry = { marker: L.Marker; point: MapDisplayPoint; title: HTMLElement; detail: HTMLElement; recent: HTMLElement; badge: HTMLElement; frame: number; stale: boolean };
 
 /** Owns markers independently from React rendering; all user text uses textContent. */
 export class WorldMapMarkers {
@@ -29,7 +30,7 @@ export class WorldMapMarkers {
   sync(points: MapDisplayPoint[], selectedID: string, mode: 'live' | 'history', reduced: boolean, stale: boolean) {
     const ids = new Set(points.map(p => p.user_id));
     for (const [id, entry] of this.entries) {
-      if (!ids.has(id)) { cancelAnimationFrame(entry.frame); entry.marker.remove(); this.entries.delete(id); }
+      if (!ids.has(id)) { this.removeEntry(entry); this.entries.delete(id); }
     }
     for (const p of points) {
       if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
@@ -49,11 +50,14 @@ export class WorldMapMarkers {
         const card = document.createElement('div');
         const title = document.createElement('strong');
         const detail = document.createElement('span');
+        const recent = document.createElement('small');
+        recent.className = 'world-marker-progress';
+        recent.hidden = true;
         card.className = 'world-marker-card';
-        card.append(title, detail);
+        card.append(title, detail, recent);
         marker.bindTooltip(card, { permanent: false, direction: 'top', offset: [0, -22], className: 'world-player-tooltip', opacity: 1 });
         marker.on('click', () => this.onSelect(p.user_id));
-        entry = { marker, point: p, title, detail, badge, frame: 0, stale };
+        entry = { marker, point: p, title, detail, recent, badge, frame: 0, stale };
         this.entries.set(p.user_id, entry);
       }
       const active = p.user_id === selectedID;
@@ -64,6 +68,9 @@ export class WorldMapMarkers {
       const observed = stamp && Number.isFinite(stamp.getTime()) ? stamp.toLocaleTimeString('zh-CN', { hour12: false }) : '时间未知';
       const detail = `${label} · ${p.level ? `Lv.${p.level} · ` : ''}${observed}`;
       if (entry.detail.textContent !== detail) entry.detail.textContent = detail;
+      const recent = active ? p.recentProgress ?? '' : '';
+      if (entry.recent.textContent !== recent) entry.recent.textContent = recent;
+      entry.recent.hidden = !recent;
       const el = entry.marker.getElement();
       el?.classList.toggle('is-selected', active);
       el?.classList.toggle('is-stale', stale || p.state === '观测缺口' || p.state === '最后观测');
@@ -102,5 +109,12 @@ export class WorldMapMarkers {
     }
   }
 
-  clear() { for (const e of this.entries.values()) { cancelAnimationFrame(e.frame); e.marker.remove(); } this.entries.clear(); }
+  private removeEntry(entry: Entry) {
+    cancelAnimationFrame(entry.frame);
+    // Leaflet keeps faded tooltip DOM for 200ms; discard obsolete evidence immediately.
+    entry.marker.getTooltip()?.getElement()?.remove();
+    entry.marker.remove();
+  }
+
+  clear() { for (const entry of this.entries.values()) this.removeEntry(entry); this.entries.clear(); }
 }

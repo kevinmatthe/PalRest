@@ -16,6 +16,7 @@ const WARNINGS: Record<string, string> = {
   data_unavailable: '部分观测数据尚不可用，未知区间不计作活动。',
   invalid_input: '观察窗口无效，暂时无法生成小结。',
 };
+const UNKNOWN_METRIC: JourneyMetric = { status: 'unknown', delta: null, latestValue: null, changes: [], runs: [] };
 const number = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 0 });
 const signed = (value: number) => `${value > 0 ? '+' : ''}${number(value)}`;
 const time = (value: number) => Number.isFinite(value) ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '时间未知';
@@ -50,9 +51,21 @@ function ChangeEvidence({ change, onSeek }: { change: ProgressChange; onSeek: Pr
     <button type="button" onClick={() => onSeek(Date.parse(change.interval_end))} aria-label={`回看变化 #${change.id} 的区间终点`}>回看区间终点 <ArrowUpRight size={15} aria-hidden="true" /></button>
   </li>;
 }
+function Milestone({ change, onSeek }: { change: ProgressChange; onSeek: Props['onSeek'] }) {
+  const [open, setOpen] = useState(false);
+  const label = change.metric === 'level' ? `存档等级提升 ${change.before} → ${change.after}`
+    : `${change.metric === 'paldeck' ? '图鉴' : '传送点'}新增 ${change.added.length} 项`;
+  return <li><details onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>{label}</summary>
+    <TimeRange start={Date.parse(change.interval_start)} end={Date.parse(change.interval_end)} />
+    {open ? <ol><ChangeEvidence change={change} onSeek={onSeek} /></ol> : null}
+  </details></li>;
+}
+
 function MetricCard({ label, metric, start, end, onSeek }: { label: string; metric: JourneyMetric; start: number; end: number; onSeek: Props['onSeek'] }) {
   const [open, setOpen] = useState(false);
   const evidenceID = useId();
+  const latest = metric.runs.at(-1)?.at(-1);
   const unavailable = metric.status === 'boundary' || metric.latestValue !== null || metric.runs.some(run => run.length) ? '不可比较' : '未采集';
   const value = metric.delta === null ? unavailable : signed(metric.delta);
   return <section className="journey-metric" aria-label={`${label}趋势与证据`}>
@@ -60,7 +73,7 @@ function MetricCard({ label, metric, start, end, onSeek }: { label: string; metr
       <span><span>{label}</span><small>{metric.delta === null ? '窗口变化' : metric.status === 'partial' ? '已确认变化合计' : '观测区间变化'}</small></span>
       <strong className={metric.delta === null ? 'is-unknown' : ''}>{value}</strong><ChevronDown size={15} className={open ? 'is-open' : ''} aria-hidden="true" />
     </button>
-    {metric.latestValue !== null ? <p className="journey-latest">最近保存观测 <b>{number(metric.latestValue)}</b></p> : null}
+    {metric.latestValue !== null ? <p className="journey-latest">最近保存观测 <b>{number(metric.latestValue)}</b>{latest ? <time dateTime={new Date(latest.time).toISOString()}>{time(latest.time)} · 存档导入</time> : null}</p> : null}
     <JourneyTrend label={label} runs={metric.runs} start={start} end={end} showTable={open} />
     {open ? <div id={evidenceID} className="journey-metric-evidence">
       {metric.status === 'partial' ? <p>仅合计窗口内已确认、可比较的变化区间；缺失部分不补零。</p> : null}
@@ -76,7 +89,7 @@ export const WorkspaceJourney = memo(function WorkspaceJourney({ summary, name, 
   const { position } = summary;
   const coverage = Math.round(position.coverage * 100);
   const exploration = summary.inferences.find(inference => inference.kind === 'exploration');
-  const changes = PROGRESS_METRICS.flatMap(metric => summary.metrics[metric.key].changes);
+  const changes = PROGRESS_METRICS.flatMap(metric => (summary.metrics[metric.key]?.changes ?? []));
   const topRegions = [...summary.heat].sort((a, b) => b.durationMs - a.durationMs).slice(0, 3);
   return <section className="world-journey" aria-label={`${name}的观察窗口小结`}>
     <button type="button" className="journey-heading" aria-expanded={open} aria-controls={bodyID} onClick={() => setOpen(value => !value)}>
@@ -93,15 +106,20 @@ export const WorkspaceJourney = memo(function WorkspaceJourney({ summary, name, 
       </section>
       <dl className="journey-facts">
         <div><dt>已观测路径</dt><dd>{position.edges.length ? <><strong>{number(position.pathLength)}</strong><small>游戏单位</small></> : <span>暂无有效观测对</span>}</dd></div>
-        <div><dt>等级观测变化</dt><dd>{position.level ? <><strong>{position.level.from} → {position.level.to}</strong><small>变化 {signed(position.level.delta)}</small></> : <span>不可比较</span>}</dd></div>
+        <div><dt>REST 等级观测变化</dt><dd>{position.level ? <><strong>{position.level.from} → {position.level.to}</strong><small>变化 {signed(position.level.delta)}</small></> : <span>不可比较</span>}</dd></div>
       </dl>
-      {position.level ? <p className="journey-caption">等级观测 <TimeRange start={position.level.start} end={position.level.end} /></p> : null}
+      {position.level ? <p className="journey-caption">REST 等级观测 <TimeRange start={position.level.start} end={position.level.end} /></p> : null}
       <p className="journey-caption">{position.ageMs === null || position.asOf === null ? '尚无位置观测' : <>最近位置观测 {time(position.asOf)}<br />距窗口终点 {duration(position.ageMs)}</>}</p>
       {summary.warnings.length ? <ul className="journey-warnings">{summary.warnings.map(warning => <li key={warning}>{WARNINGS[warning] ?? '部分证据不完整，请结合原始观测查看。'}</li>)}</ul> : null}
       <div className="journey-section-heading"><h3>成长观测</h3><span>保存的变化区间</span></div>
       <p className="journey-caption">实点为观测，虚线只表示可比较；空白处没有补值。</p>
-      <div className="journey-metrics">{PROGRESS_METRICS.map(metric => <MetricCard key={metric.key} label={metric.label} metric={summary.metrics[metric.key]} start={summary.start} end={summary.end} onSeek={onSeek} />)}</div>
+      <div className="journey-metrics">{PROGRESS_METRICS.map(metric => <MetricCard key={metric.key} label={metric.label} metric={summary.metrics[metric.key] ?? UNKNOWN_METRIC} start={summary.start} end={summary.end} onSeek={onSeek} />)}</div>
       <p className="journey-caption">拥有数量变化不等于捕获。变化发生在两次存档观测之间，未关联具体地点。</p>
+      <section className="journey-milestones" aria-label="成长里程碑">
+        <div className="journey-section-heading"><h3>成长里程碑</h3><span>实际保存的成长</span></div>
+        <p className="journey-caption">仅展示已确认的局部区间；不代表整个窗口的净增长，也不确定变化的准确时刻或地点。</p>
+        {summary.milestones?.length ? <ol>{summary.milestones.map(change => <Milestone key={`${change.metric}-${change.id}`} change={change} onSeek={onSeek} />)}</ol> : <p className="journey-caption">暂无可确认的成长里程碑。</p>}
+      </section>
       <section className="journey-inference" aria-label="活动线索">
         <span className="journey-kicker">活动线索 · 规则推断</span>
         {exploration ? <details><summary>可能有探索活动</summary>

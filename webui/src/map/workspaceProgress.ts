@@ -1,5 +1,6 @@
 import type { PlayerProgressResponse, ProgressCheckpoint, ProgressMetric, ProgressMetricName } from '../api';
 export const PROGRESS_METRICS: { key: ProgressMetricName; label: string }[] = [
+  { key: 'level', label: '存档等级' }, { key: 'experience', label: '存档经验' },
   { key: 'owned_pals', label: '拥有帕鲁' }, { key: 'capture_total', label: '累计捕获记录' },
   { key: 'paldeck', label: '图鉴解锁' }, { key: 'fast_travel', label: '传送点解锁' },
 ];

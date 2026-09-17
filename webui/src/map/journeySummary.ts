@@ -4,23 +4,23 @@ import { connectionBreak, prepareTrajectory } from './workspacePlayback';
 import type { JourneyEdge, JourneyHeatCell, JourneyInput, JourneyMetric, JourneySummary } from './journeyTypes';
 export type * from './journeyTypes';
 
-const METRICS: ProgressMetricName[] = ['owned_pals', 'capture_total', 'paldeck', 'fast_travel'];
+const METRICS: ProgressMetricName[] = ['level', 'experience', 'owned_pals', 'capture_total', 'paldeck', 'fast_travel'];
 const HEAT_GRID = 10_000;
 const emptyMetric = (): JourneyMetric => ({ status: 'unknown', delta: null, latestValue: null, changes: [], runs: [] });
 const metricValue = (checkpoint: ProgressCheckpoint | undefined, key: ProgressMetricName): number | null => {
   const metric = checkpoint?.metrics[key];
-  return metric?.state === 'known' && Number.isFinite(metric.value) && metric.value! >= 0 ? metric.value! : null;
+  return metric?.state === 'known' && Number.isFinite(metric.value) && metric.value! >= (key === 'level' ? 1 : 0) && Number.isSafeInteger(metric.value) ? metric.value! : null;
 };
 
 /** A boundary belongs to the incoming interval; an initial baseline is not a reset. */
-function progressBoundary(previous: ProgressCheckpoint | undefined, current: ProgressCheckpoint): boolean {
+export function progressBoundary(previous: ProgressCheckpoint | undefined, current: ProgressCheckpoint): boolean {
   if (!current.consistent || !current.world_id || (current.boundary && current.boundary !== 'baseline')) return true;
   return !!previous && (previous.world_id !== current.world_id || previous.schema_version !== current.schema_version ||
     !previous.consistent || Date.parse(current.observed_at) <= Date.parse(previous.observed_at) ||
-    (['capture_total', 'paldeck', 'fast_travel'] as ProgressMetricName[]).some(key => {
+    (['level', 'experience', 'capture_total', 'paldeck', 'fast_travel'] as ProgressMetricName[]).some(key => {
       const before = metricValue(previous, key), after = metricValue(current, key);
       return before !== null && after !== null && (after < before ||
-        (key !== 'capture_total' && (previous.metrics[key].ids ?? []).some(id => !(current.metrics[key].ids ?? []).includes(id))));
+        ((key === 'paldeck' || key === 'fast_travel') && (previous.metrics[key]?.ids ?? []).some(id => !(current.metrics[key]?.ids ?? []).includes(id))));
     }));
 }
 
@@ -31,7 +31,7 @@ function compatible(previous: ProgressCheckpoint, current: ProgressCheckpoint): 
 
 function unchanged(a: ProgressCheckpoint, b: ProgressCheckpoint, key: ProgressMetricName): boolean {
   if (metricValue(a, key) !== metricValue(b, key)) return false;
-  const left = a.metrics[key].ids ?? [], right = b.metrics[key].ids ?? [];
+  const left = a.metrics[key]?.ids ?? [], right = b.metrics[key]?.ids ?? [];
   return left.length === right.length && left.every(id => right.includes(id));
 }
 
@@ -87,6 +87,23 @@ function summarizeProgress(data: PlayerProgressResponse, start: number, end: num
   return result;
 }
 
+/** Milestones name saved increases, never guessed thresholds or precise event times. */
+function growthMilestones(metrics: JourneySummary['metrics'], data: PlayerProgressResponse): ProgressChange[] {
+  const checkpoints = new Map([data.baseline, ...data.checkpoints].filter((p): p is ProgressCheckpoint => p !== null).map(p => [p.id, p]));
+  return (['level', 'paldeck', 'fast_travel'] as const).flatMap(key => (metrics[key]?.changes ?? []).filter(change => {
+    if (change.delta <= 0 || change.removed.length) return false;
+    if (key === 'level') return change.added.length === 0;
+    const before = checkpoints.get(change.previous_checkpoint_id)?.metrics[key]?.ids;
+    const after = checkpoints.get(change.checkpoint_id)?.metrics[key]?.ids;
+    if (!before || !after || before.length !== change.before || after.length !== change.after) return false;
+    const oldIDs = new Set(before), newIDs = new Set(after), added = new Set(change.added);
+    const actualAdded = after.filter(id => !oldIDs.has(id));
+    return oldIDs.size === before.length && newIDs.size === after.length && added.size === change.added.length &&
+      before.every(id => newIDs.has(id)) && actualAdded.length === change.delta && added.size === actualAdded.length &&
+      actualAdded.every(id => added.has(id));
+  })).sort((a, b) => Date.parse(b.interval_end) - Date.parse(a.interval_end) || b.id - a.id);
+}
+
 function heatCells(edges: JourneyEdge[]): JourneyHeatCell[] {
   const cells = new Map<string, JourneyHeatCell>();
   for (const edge of edges) {
@@ -111,7 +128,7 @@ export function summarizeJourney(input: JourneyInput): JourneySummary {
   const out: JourneySummary = {
     start, end,
     position: { sampleCount: 0, totalCount: 0, observedMs: 0, unknownMs: end - start, coverage: 0, movingMs: 0, stationaryMs: 0, pathLength: 0, asOf: null, ageMs: null, edges: [], level: null },
-    metrics: { owned_pals: emptyMetric(), capture_total: emptyMetric(), paldeck: emptyMetric(), fast_travel: emptyMetric() }, heat: [], inferences: [], warnings: [],
+    metrics: { level: emptyMetric(), experience: emptyMetric(), owned_pals: emptyMetric(), capture_total: emptyMetric(), paldeck: emptyMetric(), fast_travel: emptyMetric() }, milestones: [], heat: [], inferences: [], warnings: [],
   };
   if (!valid) { out.warnings.push('invalid_input'); return out; }
   const timeline = input.timeline?.user_id === input.userID ? input.timeline : undefined;
@@ -156,7 +173,8 @@ export function summarizeJourney(input: JourneyInput): JourneySummary {
   if (position.ageMs !== null && position.ageMs > T_GAP_MS) out.warnings.push('stale_positions');
   out.heat = heatCells(position.edges);
   if (progress) out.metrics = summarizeProgress(progress, start, end, progressTruncated);
-  const boundary = METRICS.some(key => out.metrics[key].status === 'boundary');
+  if (progress) out.milestones = growthMilestones(out.metrics, progress);
+  const boundary = METRICS.some(key => out.metrics[key]?.status === 'boundary');
   if (boundary) out.warnings.push('progress_boundary');
   const travel = out.metrics.fast_travel;
   if (timeline && progress && !timelineTruncated && !progressTruncated && !boundary && travel.status === 'known' &&
