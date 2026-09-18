@@ -16,10 +16,16 @@ import (
 
 type Runner struct {
 	command string
+	worldID string
 	timeout time.Duration
 }
 
 func New(command string, timeout time.Duration) (*Runner, error) {
+	return NewForWorld(command, timeout, "")
+}
+
+// NewForWorld preserves world identity when a container mount hides the save directory GUID.
+func NewForWorld(command string, timeout time.Duration, worldID string) (*Runner, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return nil, fmt.Errorf("save worker command is empty")
@@ -27,7 +33,7 @@ func New(command string, timeout time.Duration) (*Runner, error) {
 	if timeout <= 0 {
 		return nil, fmt.Errorf("save worker timeout must be positive")
 	}
-	return &Runner{command: command, timeout: timeout}, nil
+	return &Runner{command: command, timeout: timeout, worldID: worldID}, nil
 }
 
 func (r *Runner) Extract(ctx context.Context, levelPath string) (store.SaveSnapshot, error) {
@@ -38,7 +44,11 @@ func (r *Runner) Extract(ctx context.Context, levelPath string) (store.SaveSnaps
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, r.command, "--level", levelPath)
+	args := []string{"--level", levelPath}
+	if r.worldID != "" {
+		args = append(args, "--world-id", r.worldID)
+	}
+	cmd := exec.CommandContext(ctx, r.command, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

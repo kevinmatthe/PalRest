@@ -66,6 +66,10 @@ nearest ancestor directory with a valid world GUID. `world_id_kind` is
 `explicit`, `directory`, or `unknown`. Level and LevelMeta in the validated
 server save do not contain a world GUID. A relocated backup such as `bk0823`
 therefore needs the explicit original world ID to participate in comparisons.
+For scheduled imports through the guard, set `save.world_id` to the original GUID
+when a container mount such as `/Save/Level.sav` hides the directory name.
+The guard passes it as a separate `--world-id` argument. Existing unknown-world
+checkpoints remain unchanged; the first identified import establishes a new baseline.
 Names and guild membership never establish world/player identity.
 
 `source.source_time` is the original Level.sav modification time in UTC and

@@ -148,7 +148,7 @@ it('seeks progress change endpoints with no trajectory, and hides future progres
   expect(api.getPlayerProgress).toHaveBeenCalledTimes(2);
 });
 
-it('loads the live journey only on demand and reuses historical data while seeking', async () => {
+it('loads the live journey only on demand and keeps the complete historical summary separate while seeking', async () => {
   render(<MapWorkspace players={[player]} refreshKey={0} />);
   fireEvent.click(await screen.findByRole('button', { name: /选择玩家 测试玩家/ }));
   expect(api.getPlayerTimeline).not.toHaveBeenCalled();
@@ -156,10 +156,10 @@ it('loads the live journey only on demand and reuses historical data while seeki
   await waitFor(() => expect(api.getPlayerTimeline).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole('button', { name: '历史回放' }));
   await waitFor(() => expect(screen.getByRole('slider', { name: '回放时间' })).toBeEnabled());
-  expect(api.getPlayerTimeline).toHaveBeenCalledTimes(2);
+  expect(api.getPlayerTimeline).toHaveBeenCalledTimes(3);
   fireEvent.change(screen.getByRole('slider', { name: '回放时间' }), { target: { value: String(now - 45000) } });
   await act(async () => {});
-  expect(api.getPlayerTimeline).toHaveBeenCalledTimes(2);
+  expect(api.getPlayerTimeline).toHaveBeenCalledTimes(3);
 });
 
 it('clears dwell heat when rewinding before completed observations without remounting the map', async () => {
@@ -203,4 +203,27 @@ it('keeps a seek made as soon as asynchronously loaded playback becomes enabled'
   await sought;
   await act(async () => {});
   expect(JSON.parse(screen.getByTestId('world-map').dataset.points!)[0].x).toBe(3500);
+});
+
+it('retains earlier summary growth when the replay map evicts earlier chunks', async () => {
+  const rows = [
+    { ...history.trajectories[0], observed_at: new Date(now - 7200000).toISOString(), level: 45, source_ref: 'early-a' },
+    { ...history.trajectories[0], observed_at: new Date(now - 7140000).toISOString(), level: 46, source_ref: 'early-b' },
+    { ...history.trajectories[0], observed_at: new Date(now - 60000).toISOString(), level: 50, source_ref: 'late-a' },
+    { ...history.trajectories[0], observed_at: new Date(now - 30000).toISOString(), level: 50, source_ref: 'late-b' },
+  ];
+  vi.mocked(api.getPlayerTimeline).mockImplementation(async (_user, from, to, limit) => {
+    const inRange = rows.filter(row => Date.parse(row.observed_at) >= Date.parse(from) && Date.parse(row.observed_at) < Date.parse(to));
+    return { ...history, trajectories: inRange.slice(-(limit ?? 500)), trajectory_total: inRange.length,
+      range_start: rows[0].observed_at, range_end: rows.at(-1)!.observed_at };
+  });
+  render(<MapWorkspace players={[player]} refreshKey={0} />);
+  fireEvent.click(await screen.findByRole('button', { name: /选择玩家 测试玩家/ }));
+  fireEvent.click(screen.getByRole('button', { name: '历史回放' }));
+  fireEvent.click(screen.getByRole('button', { name: '游玩小结' }));
+  const slider = await screen.findByRole('slider', { name: '回放时间' });
+  await waitFor(() => expect(slider).toBeEnabled());
+  fireEvent.change(slider, { target: { value: String(now - 30000) } });
+  await waitFor(() => expect(screen.getByText('已确认等级变化合计')).toBeInTheDocument());
+  expect(screen.getByText('+1')).toBeInTheDocument();
 });

@@ -61,3 +61,14 @@ it('does not query an empty player or invalid window, and reports timeout', asyn
   expect(result.current.loading).toBe(false);
   expect(result.current.error).toContain('超时');
 });
+
+it('loads a fixed historical summary window without polling or shifting its bounds', async () => {
+  vi.useFakeTimers();
+  vi.mocked(getPlayerTimeline).mockResolvedValue(response('a'));
+  const { result } = renderHook(() => useJourneyTimeline(true, 'a', 1000, 0, 2000));
+  await act(async () => {});
+  expect(result.current.start).toBe(1000);
+  expect(result.current.end).toBe(2000);
+  await act(async () => { vi.advanceTimersByTime(120000); });
+  expect(getPlayerTimeline).toHaveBeenCalledTimes(1);
+});

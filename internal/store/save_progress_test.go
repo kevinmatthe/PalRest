@@ -543,3 +543,36 @@ func TestProgressImportAfterLegacyCountOnlyCheckpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestExplicitWorldRestoresEveryMetricWithoutRewritingUnknownHistory(t *testing.T) {
+	r, _ := openTemp(t)
+	progressPlayer(t, r, "user")
+	for n := 1; n <= 3; n++ {
+		s := progressSnapshot(n)
+		if n == 1 {
+			s.Source.WorldID = ""
+			s.Source.WorldIDKind = "unknown"
+		}
+		for _, metric := range progressMetricNames {
+			value := int64(n)
+			m := ProgressMetric{State: "known", Value: &value}
+			if isProgressSet(metric) {
+				m.IDs = []string{"a", "b", "c"}[:n]
+			}
+			s.Players[0].Progress.Metrics[metric] = m
+		}
+		importProgress(t, r, s)
+	}
+	out := queryProgress(t, r)
+	if out.Checkpoints[0].WorldID != "" || out.Checkpoints[0].Boundary != "world_unknown" || out.Checkpoints[1].Boundary != "world_changed" {
+		t.Fatalf("rewrote historical evidence: %+v", out.Checkpoints)
+	}
+	if len(out.Changes) != 6 {
+		t.Fatalf("expected all six metrics, got %+v", out.Changes)
+	}
+	for _, change := range out.Changes {
+		if change.Before != 2 || change.After != 3 || change.Delta != 1 || change.PreviousCheckpointID != out.Checkpoints[1].ID || change.CheckpointID != out.Checkpoints[2].ID {
+			t.Fatalf("invalid change: %+v", change)
+		}
+	}
+}

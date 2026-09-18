@@ -25,6 +25,7 @@ export type JourneyInference = {
   changeIDs: number[]; edges: JourneyEdge[];
   observedMs: number; movingMs: number; coverage: number; unlockedCount: number;
 };
+export type JourneyLevelRun = { from: number; to: number; delta: number; start: number; end: number; sourceFrom: string; sourceTo: string };
 export type JourneySummary = {
   start: number; end: number;
   position: {
@@ -32,7 +33,7 @@ export type JourneySummary = {
     coverage: number; movingMs: number; stationaryMs: number; pathLength: number;
     lastObservation?: { x: number; y: number } | null;
     asOf: number | null; ageMs: number | null; edges: JourneyEdge[];
-    level: { from: number; to: number; delta: number; start: number; end: number } | null;
+    level: { from: number; to: number; delta: number; start: number; end: number; partial?: boolean; runs?: JourneyLevelRun[] } | null;
   };
   metrics: ProgressMetrics<JourneyMetric>;
   milestones?: ProgressChange[];

@@ -27,3 +27,27 @@ it('does not draw an empty metric as a zero trend', () => {
   expect(screen.getByText('尚无可绘制的观测')).toBeInTheDocument();
   expect(container.querySelector('svg')).toBeNull();
 });
+
+it('paginates raw evidence without dropping any observation from a large window', async () => {
+  const { fireEvent } = await import('@testing-library/react');
+  const points = Array.from({ length: 205 }, (_, i) => ({ checkpointID: i + 1, time: 1000 + i, value: i }));
+  render(<JourneyTrend label="经验" start={1000} end={2000} runs={[points]} showTable />);
+  const table = screen.getByRole('table');
+  expect(within(table).getAllByRole('row')).toHaveLength(101);
+  expect(within(table).queryByText('#205')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '下一页观测' }));
+  fireEvent.click(screen.getByRole('button', { name: '下一页观测' }));
+  expect(within(table).getAllByRole('row')).toHaveLength(6);
+  expect(within(table).getByText('#205')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '下一页观测' })).toBeDisabled();
+});
+
+it('bounds chart nodes for complete windows while preserving actual extrema and disconnected runs', () => {
+  const first = Array.from({ length: 2500 }, (_, i) => ({ checkpointID: i + 1, time: i, value: i === 1200 ? 9999 : 10 }));
+  const second = Array.from({ length: 2500 }, (_, i) => ({ checkpointID: i + 2501, time: i + 5000, value: 20 }));
+  const { container } = render(<JourneyTrend label="等级" start={0} end={10000} runs={[first, second]} />);
+  expect(container.querySelectorAll('circle').length).toBeLessThanOrEqual(1060);
+  expect(container.querySelectorAll('polyline')).toHaveLength(2);
+  expect(container.querySelector('svg')?.textContent).toContain('9999');
+  expect(screen.getByText(/图表抽样显示/)).toBeInTheDocument();
+});

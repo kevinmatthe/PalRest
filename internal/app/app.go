@@ -150,7 +150,7 @@ func New(configPath string) (*App, error) {
 	var saveRunner *saveworker.Runner
 	var saveImporter *saveworker.Importer
 	if cfg.Save.Enabled {
-		saveRunner, err = saveworker.New(cfg.Save.WorkerCommand, cfg.Save.WorkerTimeout.Duration)
+		saveRunner, err = saveworker.NewForWorld(cfg.Save.WorkerCommand, cfg.Save.WorkerTimeout.Duration, cfg.Save.WorldID)
 		if err != nil {
 			_ = repo.Close()
 			return nil, err

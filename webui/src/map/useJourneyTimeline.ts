@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { getPlayerTimeline, type PlayerTimelineResponse } from '../api';
+import type { PlayerTimelineResponse } from '../api';
+import { loadTimelineWindow } from './completeWindow';
 
 type State = { key: string; data?: PlayerTimelineResponse; loading: boolean; error?: string; start?: number; end?: number };
 
-/** Live summary data is deliberately separate from the frozen historical window. */
-export function useJourneyTimeline(active: boolean, userID: string, duration: number, revision = 0) {
-  const key = `${userID}:${duration}:${revision}`;
+/** Summary owns the complete window; replay map chunks must not narrow its evidence. */
+export function useJourneyTimeline(active: boolean, userID: string, duration: number, revision = 0, fixedEnd?: number) {
+  const key = `${userID}:${duration}:${revision}:${fixedEnd ?? 'live'}`;
   const valid = Boolean(userID) && Number.isFinite(duration) && duration > 0 && duration <= 31 * 86400000;
   const [state, setState] = useState<State>({ key: '', loading: false });
   const [visible, setVisible] = useState(() => document.visibilityState !== 'hidden');
@@ -25,9 +26,9 @@ export function useJourneyTimeline(active: boolean, userID: string, duration: nu
     async function query() {
       controller = new AbortController();
       timeout = window.setTimeout(() => controller.abort(), 20000);
-      const end = Date.now(), start = end - duration;
+      const end = fixedEnd ?? Date.now(), start = end - duration;
       try {
-        const data = await getPlayerTimeline(userID, new Date(start).toISOString(), new Date(end).toISOString(), 500, controller.signal);
+        const data = await loadTimelineWindow(userID, start, end, controller.signal);
         if (cancelled || controller.signal.aborted) return;
         setState({ key, data, loading: false, start, end });
       } catch (err) {
@@ -35,11 +36,11 @@ export function useJourneyTimeline(active: boolean, userID: string, duration: nu
           error: controller.signal.aborted ? '小结请求超时，请重试' : err instanceof Error ? err.message : '小结暂时不可用' }));
       } finally {
         window.clearTimeout(timeout);
-        if (!cancelled) timer = window.setTimeout(() => void query(), 60000);
+        if (!cancelled && fixedEnd === undefined) timer = window.setTimeout(() => void query(), 60000);
       }
     }
     void query();
     return () => { cancelled = true; controller?.abort(); window.clearTimeout(timer); window.clearTimeout(timeout); };
-  }, [active, visible, valid, userID, duration, key]);
+  }, [active, visible, valid, userID, duration, key, fixedEnd]);
   return state.key === key ? state : { key, loading: active && visible && valid } as State;
 }

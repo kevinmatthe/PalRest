@@ -53,7 +53,7 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   const [streamCursor, setStreamCursor] = useState<{ key: string; time: number } | null>(null);
   const requestedCursor = pendingProgressSeek?.userID === selectedID ? pendingProgressSeek.time : streamCursor?.key === historyKey ? streamCursor.time : null;
   const history = useHistoryStream(mode === 'history' && active, selectedID, windowRange.start, windowRange.end, requestedCursor, historyRevision);
-  const journeyLive = useJourneyTimeline(active && mode === 'live' && (detailTab === 'journey' || showHeat), selectedID, windowRange.end - windowRange.start, journeyRevision + refreshKey);
+  const journeyWindow = useJourneyTimeline(active && (detailTab === 'journey' || showHeat), selectedID, windowRange.end - windowRange.start, journeyRevision + (mode === 'history' ? historyRevision : refreshKey), mode === 'history' ? windowRange.end : undefined);
   const livePlayers = live.data?.players ?? EMPTY_LIVE;
   const samples = useMemo(() => prepareTrajectory(history.data?.trajectories ?? []), [history.data]);
   const events = useMemo(() => [...(history.data?.events ?? EMPTY_EVENTS)].filter(e => Number.isFinite(Date.parse(e.occurred_at))).sort((a, b) => Date.parse(a.occurred_at) - Date.parse(b.occurred_at)), [history.data]);
@@ -73,10 +73,10 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
   }, [mode, history.loading, start, pendingProgressSeek, streamCursor, historyKey, clock.time]);
   const frame = useMemo(() => playbackFrame(samples, clock.time), [samples, clock.time]);
   const journeyCursor = useJourneyCursor(clock.time, active && mode === 'history' && clock.playing && (detailTab === 'journey' || showHeat), `${selectedID}:${windowRange.start}:${windowRange.end}`);
-  const journeyStart = mode === 'history' ? history.loadedStart ?? windowRange.start : journeyLive.start ?? windowRange.start;
-  const journeyEnd = Math.min(Date.now(), mode === 'history' ? Math.min(journeyCursor, history.loadedEnd ?? journeyCursor) : Math.floor(Date.now() / 1000) * 1000);
-  const journeyTimeline = mode === 'history' ? history.data : journeyLive.data;
-  const journeyError = (mode === 'history' ? history.error : journeyLive.error) || progress.error;
+  const journeyStart = journeyWindow.start ?? windowRange.start;
+  const journeyEnd = Math.min(Date.now(), mode === 'history' ? journeyCursor : journeyWindow.end ?? windowRange.end);
+  const journeyTimeline = journeyWindow.data;
+  const journeyError = journeyWindow.error || progress.error;
   const journeyNeeded = Boolean(selectedID) && (detailTab === 'journey' || showHeat);
   const journey = useMemo(() => {
     if (!journeyNeeded) return undefined;
@@ -157,8 +157,8 @@ export function MapWorkspace({ players, refreshKey, active = true, initialSelect
     <div className="world-detail-tabs" aria-label="玩家详情"><button type="button" aria-pressed={detailTab === 'progress'} onClick={() => setDetailTab('progress')}>进度变化</button><button type="button" aria-pressed={detailTab === 'journey'} onClick={() => setDetailTab('journey')}>游玩小结</button></div>
     {detailTab === 'progress' ? <WorkspaceProgress key={selectedID} name={selectedName} usedMs={selected?.used_ms} data={progress.data} mode={mode} cursor={mode === 'history' ? clock.time : Date.now()} loading={progress.loading} error={progress.error} onChange={seekProgress} onRetry={() => setProgressRevision(v => v + 1)} /> : <>
       {!historical ? <label className="world-journey-window">观察窗口<select aria-label="小结观察范围" value={windowRange.label.endsWith('h') ? windowRange.label : '24h'} onChange={e => changeRange(Number(e.target.value.slice(0, -1)))}><option value="1h">最近 1 小时</option><option value="6h">最近 6 小时</option><option value="24h">最近 24 小时</option><option value="168h">最近 7 天</option></select></label> : null}
-      {historical ? <p>小结仅统计当前已缓冲区间</p> : null}
-      <WorkspaceJourney key={selectedID} name={selectedName} summary={journey!} loading={(historical ? history.loading || history.buffering : journeyLive.loading) || progress.loading} error={journeyError}
+      {historical ? <p>小结统计所选窗口起点至回放时刻</p> : null}
+      <WorkspaceJourney key={selectedID} name={selectedName} summary={journey!} loading={journeyWindow.loading || progress.loading} error={journeyError}
         onSeek={seekJourney} onFocus={focusDwell} onRetry={retryJourney} />
     </>}
   </> : null;

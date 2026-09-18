@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { getPlayerProgress, type PlayerProgressResponse } from '../api';
+import type { PlayerProgressResponse } from '../api';
+import { loadProgressWindow } from './completeWindow';
 type ProgressState = { key: string; data?: PlayerProgressResponse; loading: boolean; error?: string };
 export function usePlayerProgress(active: boolean, userID: string, mode: 'live' | 'history', start: number, end: number, revision = 0) {
   const key = `${userID}:${mode}:${start}:${end}:${revision}`;
@@ -20,11 +21,11 @@ export function usePlayerProgress(active: boolean, userID: string, mode: 'live' 
       const queryEnd = mode === 'live' ? Date.now() : end;
       const queryStart = mode === 'live' ? queryEnd - (end - start) : start;
       try {
-        const data = await getPlayerProgress(userID, new Date(queryStart).toISOString(), new Date(queryEnd).toISOString(), 200, controller.signal);
+        const data = await loadProgressWindow(userID, queryStart, queryEnd, controller.signal);
         if (cancelled || controller.signal.aborted) return;
         const next = { key, data, loading: false };
         cache.current.set(key, next);
-        if (cache.current.size > 12) cache.current.delete(cache.current.keys().next().value!);
+        if (cache.current.size > 3) cache.current.delete(cache.current.keys().next().value!);
         setState(next);
       } catch (err) {
         if (!cancelled) setState(current => ({ key, data: current.key === key ? current.data : undefined, loading: false,

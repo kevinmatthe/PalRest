@@ -38,9 +38,9 @@ describe('position evidence', () => {
     expect(dense[0].durationMs).toBe(sparse[0].durationMs); expect(sparse[0].edges).toHaveLength(1);
     expect(summarize([point(0, 9999), point(60, 10001)]).heat.map(c => c.durationMs)).toEqual([30000, 30000]);
   });
-  it('reports levels only along the latest continuous positive-level chain', () => {
+  it('reports confirmed levels across continuous positive-level chains', () => {
     const out = summarize([point(0, 100, { level: 5 }), point(60, 100, { level: 6 }), point(120, 100, { level: 0 }), point(180, 100, { level: 20 }), point(240, 100, { level: 22 })]);
-    expect(out.position.level).toEqual({ from: 20, to: 22, delta: 2, start: base + 180000, end: base + 240000 });
+    expect(out.position.level).toMatchObject({ from: 5, to: 22, delta: 3, start: base, end: base + 240000, partial: true });
     expect(summarize([point(0), point(60, 100, { level: 50, runtime_epoch: 2 })]).position.level).toBeNull();
   });
 });
@@ -70,10 +70,10 @@ describe('persisted progress evidence', () => {
       expect(summarize([], progress([a, b], changes)).metrics.fast_travel.changes).toEqual([]);
     }
   });
-  it.each(['world_changed', 'schema_changed', 'counter_reset', 'inconsistent', 'out_of_order', 'after_out_of_order', 'replayed_snapshot'])('refuses net delta across %s', boundary => {
+  it.each(['world_changed', 'schema_changed', 'counter_reset', 'inconsistent', 'out_of_order', 'after_out_of_order', 'replayed_snapshot'])('retains only confirmed local delta across %s', boundary => {
     const a = cp(1, 0), b = cp(2, 60, 1), c = cp(3, 120, 0, { boundary });
     const out = summarize([], progress([a, b, c], [diff(a, b)]));
-    expect(out.metrics.fast_travel).toMatchObject({ status: 'boundary', delta: null });
+    expect(out.metrics.fast_travel).toMatchObject({ status: 'partial', delta: 1, reason: 'progress_boundary' });
     expect(out.metrics.fast_travel.runs.map(r => r.length)).toEqual([2, 1]); expect(out.warnings).toContain('progress_boundary');
   });
   it('detects world/schema changes without explicit labels and allows initial baseline', () => {
@@ -118,9 +118,9 @@ describe('conservative exploration inference', () => {
   });
 });
 
-it('does not present an earlier level chain as current after an unknown or isolated restart sample', () => {
-  expect(summarize([point(0), point(60, 100, { level: 11 }), point(120, 100, { level: 0 })]).position.level).toBeNull();
-  expect(summarize([point(0), point(60, 100, { level: 11 }), point(120, 100, { runtime_epoch: 2, level: 20 })]).position.level).toBeNull();
+it('retains earlier level evidence as partial after an unknown or isolated restart sample', () => {
+  expect(summarize([point(0), point(60, 100, { level: 11 }), point(120, 100, { level: 0 })]).position.level).toMatchObject({ delta: 1, partial: true, end: base + 60000 });
+  expect(summarize([point(0), point(60, 100, { level: 11 }), point(120, 100, { runtime_epoch: 2, level: 20 })]).position.level).toMatchObject({ delta: 1, partial: true, end: base + 60000 });
   expect(summarize([point(0), point(60, 100, { level: 11 }), point(180, 100, { runtime_epoch: 2 })], undefined, 120).position.level?.delta).toBe(1);
 });
 it('does not infer negative cumulative activity from an unlabeled rollback', () => {
@@ -192,7 +192,7 @@ describe('saved growth and milestone evidence', () => {
     c.metrics[key]!.value = 1;
     const valid = growthDiff(a, b, 'level'), reset = growthDiff(b, c, key);
     const out = summarize([], progress([a, b, c], [valid, reset]));
-    expect(out.metrics[key]).toMatchObject({ status: 'boundary', delta: null });
+    expect(out.metrics[key]).toMatchObject(key === 'level' ? { status: 'partial', delta: 1, reason: 'progress_boundary' } : { status: 'boundary', delta: null });
     expect(out.metrics[key]?.runs.at(-1)).toHaveLength(1);
     expect(out.milestones).toEqual([valid]);
   });
@@ -245,4 +245,37 @@ it('retains saved legacy numeric diffs without crashing or inventing detailed mi
   const out = summarize([], progress([a, b], [change]));
   expect(out.metrics.fast_travel).toMatchObject({ delta: 2, latestValue: 2 });
   expect(out.milestones).toEqual([]);
+});
+
+it('retains confirmed REST growth before teleports and later unchanged observations', () => {
+  const out = summarize([point(0, 100, { level: 45 }), point(60, 110, { level: 46 }), point(120, 900000, { level: 46 }), point(180, 900010, { level: 46 })]);
+  expect(out.position.level).toMatchObject({ delta: 1, partial: true, start: base, end: base + 180000 });
+  expect(out.position.pathLength).toBe(20);
+});
+it('retains REST growth across separate observed runs without counting the gap or a rollback', () => {
+  const out = summarize([point(0, 100, { level: 45 }), point(60, 110, { level: 46 }), point(120, 120, { level: 20, runtime_epoch: 2 }), point(180, 130, { level: 22, runtime_epoch: 2 })]);
+  expect(out.position.level).toMatchObject({ delta: 3, partial: true });
+  const rollback = summarize([point(0, 100, { level: 45 }), point(60, 110, { level: 46 }), point(120, 120, { level: 20 })]);
+  expect(rollback.position.level).toMatchObject({ delta: 1, partial: true });
+});
+it.each(['level', 'experience', 'owned_pals', 'capture_total', 'paldeck', 'fast_travel'] as const)('preserves confirmed %s changes on either side of a boundary', key => {
+  const a = cp(1, 0), b = cp(2, 60), c = cp(3, 120, 0, { boundary: 'world_changed', world_id: 'new' }), d = cp(4, 180, 0, { world_id: 'new' });
+  [a, b, c, d].forEach((p, i) => { p.metrics[key] = { state: 'known', value: [10, 11, 20, 22][i] }; });
+  const changes = [diff(a, b, { metric: key, before: 10, after: 11, delta: 1 }), diff(c, d, { metric: key, before: 20, after: 22, delta: 2 })];
+  const out = summarize([], progress([a, b, c, d], changes));
+  expect(out.metrics[key]).toMatchObject({ status: 'partial', delta: 3, reason: 'progress_boundary' });
+  expect(out.metrics[key]?.changes).toHaveLength(2);
+  expect(out.warnings).toContain('progress_boundary');
+  expect(out.inferences).toEqual([]);
+});
+
+it('explains missing world identity rather than treating saved metrics as unchanged', () => {
+  const a = cp(1, 0, 10, { world_id: '', boundary: 'world_unknown' });
+  const b = cp(2, 60, 12, { world_id: '', boundary: 'world_unknown' });
+  const out = summarize([], progress([a, b]));
+  expect(out.metrics.fast_travel.delta).toBeNull();
+  expect(out.warnings).toContain('world_identity_unknown');
+});
+it('marks retained REST evidence partial when the final coordinate observation is invalid', () => {
+  expect(summarize([point(0), point(60, 100, { level: 11 }), point(120, NaN, { level: 12 })]).position.level).toMatchObject({ delta: 1, partial: true });
 });
