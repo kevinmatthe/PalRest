@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -245,10 +246,11 @@ type Observation struct {
 }
 
 type Save struct {
-	Enabled        bool     `yaml:"enabled" json:"enabled"`
-	Path           string   `yaml:"path,omitempty" json:"path,omitempty"`
-	WorkerCommand  string   `yaml:"worker_command,omitempty" json:"worker_command,omitempty"`
-	WorkerTimeout  Duration `yaml:"worker_timeout,omitempty" json:"worker_timeout,omitempty"`
+	WorldID       string   `yaml:"world_id,omitempty" json:"world_id,omitempty"`
+	Enabled       bool     `yaml:"enabled" json:"enabled"`
+	Path          string   `yaml:"path,omitempty" json:"path,omitempty"`
+	WorkerCommand string   `yaml:"worker_command,omitempty" json:"worker_command,omitempty"`
+	WorkerTimeout Duration `yaml:"worker_timeout,omitempty" json:"worker_timeout,omitempty"`
 	// ImportInterval runs automatic save imports when enabled (0 = only manual admin import).
 	ImportInterval Duration `yaml:"import_interval,omitempty" json:"import_interval,omitempty"`
 }
@@ -433,6 +435,13 @@ func (c *Config) validate(lookup func(string) (string, bool)) error {
 	}
 	if c.Save.ImportInterval.Duration < 0 {
 		return fmt.Errorf("save.import_interval must be non-negative")
+	}
+	if c.Save.WorldID != "" {
+		world := strings.ToUpper(strings.ReplaceAll(c.Save.WorldID, "-", ""))
+		if _, err := hex.DecodeString(world); err != nil || len(world) != 32 || world == strings.Repeat("0", 32) {
+			return fmt.Errorf("save.world_id must be a nonzero 32-digit GUID")
+		}
+		c.Save.WorldID = world
 	}
 	if c.Save.Enabled {
 		if strings.TrimSpace(c.Save.Path) == "" {

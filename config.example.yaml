@@ -26,6 +26,8 @@ observation:
 # Optional save parsing. This is off by default and runs an external parser
 # worker, so Guard accounting is independent from save parser failures.
 save:
+  # 容器路径未保留世界 GUID 时，填写原存档目录的非零 GUID；留空则从目录推断。
+  world_id: ""
   enabled: false
   path: /data/pal-saves/Level.sav
   worker_command: palrest-save-worker

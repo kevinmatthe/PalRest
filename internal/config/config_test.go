@@ -363,3 +363,20 @@ func TestPollIntervalDefaultAndExplicitConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestSaveWorldIdentity(t *testing.T) {
+	for _, world := range []string{"D8302DA2BB0D4AD68C7DF8192592BCE4", "d8302da2-bb0d-4ad6-8c7d-f8192592bce4"} {
+		cfg, err := Parse([]byte(validConfig+"save:\n  world_id: "+world+"\n"), env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Save.WorldID != "D8302DA2BB0D4AD68C7DF8192592BCE4" {
+			t.Fatalf("world=%q", cfg.Save.WorldID)
+		}
+	}
+	for _, world := range []string{"invalid", "00000000000000000000000000000000", "../save"} {
+		if _, err := Parse([]byte(validConfig+"save:\n  world_id: '"+world+"'\n"), env); err == nil {
+			t.Fatalf("accepted %q", world)
+		}
+	}
+}

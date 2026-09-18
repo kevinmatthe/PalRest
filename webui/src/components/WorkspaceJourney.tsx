@@ -1,4 +1,4 @@
-import { memo, useId, useState } from 'react';
+import { memo, useId, useState, type ReactNode } from 'react';
 import { ArrowUpRight, ChevronDown, Compass, MapPin } from 'lucide-react';
 import type { ProgressChange } from '../api';
 import type { JourneyEdge, JourneyHeatCell, JourneyMetric, JourneySummary } from '../map/journeyTypes';
@@ -11,6 +11,7 @@ const WARNINGS: Record<string, string> = {
   position_continuity_unknown: '部分位置观测的连续性信息不足，仅保留观测点和最后位置，不据此推断移动、停留或活动。',
   timeline_truncated: '位置记录未完整加载，仅汇总已加载的有效观测。',
   progress_truncated: '进度记录未完整加载，变化合计不代表整个窗口。',
+  world_identity_unknown: '存档未携带世界标识，相关区间无法比较成长；需要管理员修复采集配置。',
   progress_boundary: '进度存在世界、口径或存档边界，不跨边界比较。',
   insufficient_observations: '有效位置观测不足，尚不能判断这段时间的活动。',
   stale_positions: '最近位置观测已陈旧，不推测此后的移动或在线状态。',
@@ -30,16 +31,38 @@ function duration(value: number) {
 function TimeRange({ start, end }: { start: number; end: number }) {
   return <span className="journey-time-range">{time(start)} — {time(end)}</span>;
 }
+function EvidenceList<T>({ items, renderItem }: { items: T[]; renderItem: (item: T, index: number) => ReactNode }) {
+  const [requestedPage, setPage] = useState(0);
+  const count = Math.max(1, Math.ceil(items.length / 100)), page = Math.min(requestedPage, count - 1);
+  return <><ol>{items.slice(page * 100, (page + 1) * 100).map((item, index) => renderItem(item, page * 100 + index))}</ol>
+    {count > 1 ? <nav aria-label="观测证据分页">
+      <button type="button" disabled={page === 0} onClick={() => setPage(page - 1)}>上一页证据</button>
+      <span>第 {page + 1}/{count} 页 · 共 {items.length} 条</span>
+      <button type="button" disabled={page === count - 1} onClick={() => setPage(page + 1)}>下一页证据</button>
+    </nav> : null}
+  </>;
+}
 function EdgeEvidence({ edges }: { edges: JourneyEdge[] }) {
   const [open, setOpen] = useState(false);
   return <details className="journey-source-evidence" onToggle={event => setOpen(event.currentTarget.open)}><summary>位置观测证据 · {edges.length} 个区间</summary>
-    {open ? <ol>{edges.map((edge, index) => <li key={`${edge.start}-${index}`}>
+    {open ? <EvidenceList items={edges} renderItem={(edge, index) => <li key={`${edge.start}-${index}`}>
       <TimeRange start={edge.start} end={edge.end} />
       <span>有效观测 {duration(edge.durationMs)} · 路径 {number(edge.distance)} 游戏单位</span>
       <small>来源 {edge.from.sourceRef} → {edge.to.sourceRef}</small>
       <small>位置 ({number(edge.from.x)}, {number(edge.from.y)}) → ({number(edge.to.x)}, {number(edge.to.y)})</small>
-    </li>)}</ol> : null}
+    </li>} /> : null}
   </details>;
+}
+function LevelEvidence({ level }: { level: NonNullable<JourneySummary['position']['level']> }) {
+  const [open, setOpen] = useState(false);
+  return level.runs?.length ? <details className="journey-source-evidence" onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>REST 等级证据 · {level.runs.length} 个区间</summary>
+    {open ? <EvidenceList items={level.runs} renderItem={run => <li key={`${run.start}-${run.end}`}>
+      <strong>{run.from} → {run.to} · {signed(run.delta)}</strong>
+      <TimeRange start={run.start} end={run.end} />
+      <small>来源 {run.sourceFrom} → {run.sourceTo}</small>
+    </li>} /> : null}
+  </details> : null;
 }
 function ChangeEvidence({ change, onSeek }: { change: ProgressChange; onSeek: Props['onSeek'] }) {
   const label = PROGRESS_METRICS.find(metric => metric.key === change.metric)?.label ?? '进度';
@@ -79,8 +102,8 @@ function MetricCard({ label, metric, start, end, onSeek }: { label: string; metr
     <JourneyTrend label={label} runs={metric.runs} start={start} end={end} showTable={open} />
     {open ? <div id={evidenceID} className="journey-metric-evidence">
       {metric.status === 'partial' ? <p>仅合计窗口内已确认、可比较的变化区间；缺失部分不补零。</p> : null}
-      {metric.status === 'boundary' ? <p>存在比较边界，不能合并成整个窗口的变化。</p> : null}
-      {metric.changes.length ? <ol>{metric.changes.map(change => <ChangeEvidence key={change.id} change={change} onSeek={onSeek} />)}</ol> : <p>暂无可比较的保存变化区间。</p>}
+      {metric.reason === 'progress_boundary' || metric.status === 'boundary' ? <p>存在比较边界，不能合并成整个窗口的变化。</p> : null}
+      {metric.changes.length ? <EvidenceList items={metric.changes} renderItem={change => <ChangeEvidence key={change.id} change={change} onSeek={onSeek} />} /> : <p>暂无可比较的保存变化区间。</p>}
     </div> : null}
   </section>;
 }
@@ -110,9 +133,13 @@ export const WorkspaceJourney = memo(function WorkspaceJourney({ summary, name, 
       {position.lastObservation ? <p className="journey-caption">最后观测坐标 ({number(position.lastObservation.x)}, {number(position.lastObservation.y)})</p> : null}
       <dl className="journey-facts">
         <div><dt>已观测路径</dt><dd>{position.edges.length ? <><strong>{number(position.pathLength)}</strong><small>游戏单位</small></> : <span>暂无有效观测对</span>}</dd></div>
-        <div><dt>REST 等级观测变化</dt><dd>{position.level ? <><strong>{position.level.from} → {position.level.to}</strong><small>变化 {signed(position.level.delta)}</small></> : <span>不可比较</span>}</dd></div>
+        <div><dt>REST 等级观测变化</dt><dd>{position.level ? <><strong>{position.level.from} → {position.level.to}</strong>{position.level.partial ? <><small>已确认区间起止等级</small><small><span>已确认等级变化合计</span> <b>{signed(position.level.delta)}</b></small></> : <small>变化 {signed(position.level.delta)}</small>}</> : <span>不可比较</span>}</dd></div>
       </dl>
-      {position.level ? <p className="journey-caption">REST 等级观测 <TimeRange start={position.level.start} end={position.level.end} /></p> : null}
+      {position.level ? <>
+        <p className="journey-caption">REST 等级观测 <TimeRange start={position.level.start} end={position.level.end} /></p>
+        {position.level.partial ? <p className="journey-caption">存在观测中断或比较边界，仅合计可比较区间；不是整个窗口的净变化。</p> : null}
+        <LevelEvidence level={position.level} />
+      </> : null}
       <p className="journey-caption">{position.ageMs === null || position.asOf === null ? '尚无位置观测' : <>最近位置观测 {time(position.asOf)}<br />距窗口终点 {duration(position.ageMs)}</>}</p>
       {summary.warnings.length ? <ul className="journey-warnings">{summary.warnings.map(warning => <li key={warning}>{WARNINGS[warning] ?? '部分证据不完整，请结合原始观测查看。'}</li>)}</ul> : null}
       <div className="journey-section-heading"><h3>成长观测</h3><span>保存的变化区间</span></div>
@@ -122,7 +149,7 @@ export const WorkspaceJourney = memo(function WorkspaceJourney({ summary, name, 
       <section className="journey-milestones" aria-label="成长里程碑">
         <div className="journey-section-heading"><h3>成长里程碑</h3><span>实际保存的成长</span></div>
         <p className="journey-caption">仅展示已确认的局部区间；不代表整个窗口的净增长，也不确定变化的准确时刻或地点。</p>
-        {summary.milestones?.length ? <ol>{summary.milestones.map(change => <Milestone key={`${change.metric}-${change.id}`} change={change} onSeek={onSeek} />)}</ol> : <p className="journey-caption">暂无可确认的成长里程碑。</p>}
+        {summary.milestones?.length ? <EvidenceList items={summary.milestones} renderItem={change => <Milestone key={`${change.metric}-${change.id}`} change={change} onSeek={onSeek} />} /> : <p className="journey-caption">暂无可确认的成长里程碑。</p>}
       </section>
       <section className="journey-inference" aria-label="活动线索">
         <span className="journey-kicker">活动线索 · 规则推断</span>

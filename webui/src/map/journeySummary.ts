@@ -1,6 +1,7 @@
 import type { PlayerProgressResponse, ProgressChange, ProgressCheckpoint, ProgressMetricName } from '../api';
 import { T_GAP_MS, V_IDLE } from '../behavior/behaviorTypes';
 import { connectionBreak, hasTrajectoryContinuity, prepareTrajectory } from './workspacePlayback';
+import { summarizeRestLevels } from './restLevelSummary';
 import type { JourneyEdge, JourneyHeatCell, JourneyInput, JourneyMetric, JourneySummary } from './journeyTypes';
 export type * from './journeyTypes';
 
@@ -62,7 +63,15 @@ function summarizeProgress(data: PlayerProgressResponse, start: number, end: num
     .filter(p => Date.parse(p.observed_at) <= end).map(p => [p.id, p])).values()]
     .sort((a, b) => Date.parse(a.observed_at) - Date.parse(b.observed_at) || a.id - b.id);
   const points = all.filter(p => Date.parse(p.observed_at) >= start);
-  const hasBoundary = points.some(p => progressBoundary(all[all.indexOf(p) - 1], p));
+  const previousByID = new Map(all.map((p, i) => [p.id, all[i - 1]]));
+  const hasBoundary = points.some(p => progressBoundary(previousByID.get(p.id), p));
+  const changesByPair = new Map<string, ProgressChange[]>();
+  const pairKey = (previous: number, current: number, metric: string) => `${previous}:${current}:${metric}`;
+  for (const change of data.changes) {
+    const key = pairKey(change.previous_checkpoint_id, change.checkpoint_id, change.metric);
+    const existing = changesByPair.get(key);
+    if (existing) existing.push(change); else changesByPair.set(key, [change]);
+  }
   const result = {} as Record<ProgressMetricName, JourneyMetric>;
   for (const key of METRICS) {
     const metric = emptyMetric();
@@ -74,11 +83,12 @@ function summarizeProgress(data: PlayerProgressResponse, start: number, end: num
       const current = points[i], previous = points[i - 1];
       const value = metricValue(current, key);
       const connected = !invalidTimes && previous && compatible(previous, current) && metricValue(previous, key) !== null && value !== null;
-      const matching = connected ? data.changes.filter(c => verifiedChange(c, previous, current, key)) : [];
+      const saved = previous ? changesByPair.get(pairKey(previous.id, current.id, key)) ?? [] : [];
+      const matching = connected ? saved.filter(c => verifiedChange(c, previous, current, key)) : [];
       // More than one saved diff for a pair is ambiguous; never double count it.
       const verified = matching.length === 1;
       const zero = connected && !truncated && unchanged(previous, current, key) && matching.length === 0 &&
-        !data.changes.some(c => c.metric === key && c.checkpoint_id === current.id && c.previous_checkpoint_id === previous.id);
+        saved.length === 0;
       if (previous) {
         if (verified || zero) { verifiedIntervals++; sum += verified ? matching[0].delta : 0; }
         else incomplete = true;
@@ -90,10 +100,10 @@ function summarizeProgress(data: PlayerProgressResponse, start: number, end: num
         metric.runs[metric.runs.length - 1].push({ checkpointID: current.id, time: Date.parse(current.observed_at), value });
       }
     }
-    if (hasBoundary) { metric.status = 'boundary'; metric.reason = 'progress_boundary'; }
-    else if (verifiedIntervals > 0) { metric.status = incomplete ? 'partial' : 'known'; metric.delta = sum; }
-    else { metric.status = truncated ? 'partial' : 'unknown'; }
-    if (metric.status === 'partial') metric.reason = truncated ? 'progress_truncated' : 'insufficient_observations';
+    if (verifiedIntervals > 0) { metric.status = incomplete || hasBoundary ? 'partial' : 'known'; metric.delta = sum; }
+    else { metric.status = hasBoundary ? 'boundary' : truncated ? 'partial' : 'unknown'; }
+    if (hasBoundary) metric.reason = 'progress_boundary';
+    else if (metric.status === 'partial') metric.reason = truncated ? 'progress_truncated' : 'insufficient_observations';
     result[key] = metric;
   }
   return result;
@@ -161,12 +171,14 @@ export function summarizeJourney(input: JourneyInput): JourneySummary {
   position.totalCount = timeline?.trajectory_total ?? timeline?.trajectories.length ?? 0;
   position.asOf = visible.at(-1)?.time ?? null;
   position.ageMs = position.asOf === null ? null : end - position.asOf;
-  let currentLevel: JourneySummary['position']['level'] = null;
+  const invalidLevelEvidence = (timeline?.trajectories ?? []).some(p => p.user_id === input.userID &&
+    Date.parse(p.observed_at) >= start && Date.parse(p.observed_at) <= end && (!Number.isFinite(p.x) || !Number.isFinite(p.y)));
+  position.level = summarizeRestLevels(prepared, input.userID, start, end, timelineTruncated || invalidLevelEvidence);
   for (let i = 1; i < prepared.length; i++) {
     const a = prepared[i - 1], b = prepared[i];
     if (b.time > end) break;
     if (a.user_id !== input.userID || b.user_id !== input.userID || a.time < start || connectionBreak(a, b)) {
-      currentLevel = null; position.level = null; continue;
+      continue;
     }
     const durationMs = b.time - a.time, distance = Math.hypot(b.x - a.x, b.y - a.y);
     // Time-normalized classification keeps constant-speed paths independent of sampling density.
@@ -174,13 +186,6 @@ export function summarizeJourney(input: JourneyInput): JourneySummary {
     position.edges.push({ start: a.time, end: b.time, durationMs, distance, stationary, from: { x: a.x, y: a.y, sourceRef: a.source_ref }, to: { x: b.x, y: b.y, sourceRef: b.source_ref } });
     position.observedMs += durationMs; position.pathLength += distance;
     if (stationary) position.stationaryMs += durationMs; else position.movingMs += durationMs;
-    if (Number.isFinite(a.level) && a.level > 0 && Number.isFinite(b.level) && b.level > 0) {
-      const previousLevel = currentLevel as JourneySummary['position']['level'];
-      currentLevel = previousLevel && previousLevel.end === a.time
-        ? { ...previousLevel, to: b.level, delta: b.level - previousLevel.from, end: b.time }
-        : { from: a.level, to: b.level, delta: b.level - a.level, start: a.time, end: b.time };
-      position.level = currentLevel;
-    } else { currentLevel = null; position.level = null; }
   }
   position.unknownMs = Math.max(0, end - start - position.observedMs);
   position.coverage = end > start ? position.observedMs / (end - start) : 0;
@@ -189,8 +194,9 @@ export function summarizeJourney(input: JourneyInput): JourneySummary {
   out.heat = heatCells(position.edges);
   if (progress) out.metrics = summarizeProgress(progress, start, end, progressTruncated);
   if (progress) out.milestones = growthMilestones(out.metrics, progress);
-  const boundary = METRICS.some(key => out.metrics[key]?.status === 'boundary');
+  const boundary = METRICS.some(key => out.metrics[key]?.reason === 'progress_boundary');
   if (boundary) out.warnings.push('progress_boundary');
+  if (progress?.checkpoints.some(p => Date.parse(p.observed_at) >= start && Date.parse(p.observed_at) <= end && (!p.world_id || p.boundary === 'world_unknown'))) out.warnings.push('world_identity_unknown');
   const travel = out.metrics.fast_travel;
   if (timeline && progress && !timelineTruncated && !progressTruncated && !boundary && travel.status === 'known' &&
     position.observedMs >= 300_000 && position.coverage >= 0.6 && position.movingMs >= 120_000 && travel.delta !== null && travel.delta >= 1) {

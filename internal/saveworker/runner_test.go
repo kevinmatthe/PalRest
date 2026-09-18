@@ -76,3 +76,17 @@ func TestRunnerRejectsTrailingOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestRunnerPassesWorldIdentityAsSeparateArgument(t *testing.T) {
+	worker := writeWorker(t, `#!/bin/sh
+[ "$#" = 4 ] && [ "$1" = '--level' ] && [ "$2" = '/Save/Level.sav' ] && [ "$3" = '--world-id' ] && [ "$4" = 'D8302DA2BB0D4AD68C7DF8192592BCE4' ] || exit 2
+echo '{"schema":"palrest.save_snapshot.v1"}'
+`)
+	runner, err := NewForWorld(worker, time.Second, "D8302DA2BB0D4AD68C7DF8192592BCE4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Extract(t.Context(), "/Save/Level.sav"); err != nil {
+		t.Fatal(err)
+	}
+}

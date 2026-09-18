@@ -120,7 +120,7 @@ it('mounts large position evidence only while its disclosure is expanded', async
   expect(screen.queryAllByText(/sample-source-/)).toHaveLength(0);
   const disclosure = screen.getByText('位置观测证据 · 300 个区间');
   await userEvent.click(disclosure);
-  await waitFor(() => expect(screen.getAllByText(/sample-source-/)).toHaveLength(300));
+  await waitFor(() => expect(screen.getAllByText(/sample-source-/)).toHaveLength(100));
   await userEvent.click(disclosure);
   await waitFor(() => expect(screen.queryAllByText(/sample-source-/)).toHaveLength(0));
 });
@@ -173,4 +173,36 @@ it('shows legacy point counts and last coordinates while explaining missing cont
   expect(screen.getByText('已加载位置观测 3 个')).toBeInTheDocument();
   expect(screen.getByText('最后观测坐标 (13,000, 100)')).toBeInTheDocument();
   expect(screen.getByText(/连续性信息不足/)).toBeInTheDocument();
+});
+
+it('shows retained REST growth as a partial sum with individual run evidence', async () => {
+  const data = summary();
+  data.position.level = { from: 45, to: 51, delta: 2, start, end, partial: true, runs: [
+    { from: 45, to: 46, delta: 1, start, end: start + 60000, sourceFrom: 'rest-a', sourceTo: 'rest-b' },
+    { from: 50, to: 51, delta: 1, start: end - 60000, end, sourceFrom: 'rest-c', sourceTo: 'rest-d' },
+  ] };
+  mount(data);
+  expect(screen.getByText('已确认等级变化合计')).toBeInTheDocument();
+  expect(screen.getByText('45 → 51')).toBeInTheDocument();
+  expect(screen.getByText('已确认区间起止等级')).toBeInTheDocument();
+  expect(screen.getByText('+2')).toBeInTheDocument();
+  expect(screen.queryByText('+6')).not.toBeInTheDocument();
+  await userEvent.click(screen.getByText('REST 等级证据 · 2 个区间'));
+  expect(screen.getByText(/45 → 46/)).toBeInTheDocument();
+  expect(screen.getByText(/50 → 51/)).toBeInTheDocument();
+  expect(screen.getByText(/rest-a → rest-b/)).toBeInTheDocument();
+});
+
+it('paginates long position evidence lists while preserving access to the final interval', async () => {
+  const data = summary();
+  data.position.edges = Array.from({ length: 205 }, (_, i) => ({ ...edge, start: start + i, from: { ...edge.from, sourceRef: `edge-${i}` } }));
+  mount(data);
+  const toggle = screen.getByText('位置观测证据 · 205 个区间');
+  await userEvent.click(toggle);
+  const details = toggle.closest('details')!;
+  expect(within(details).getAllByRole('listitem')).toHaveLength(100);
+  await userEvent.click(within(details).getByRole('button', { name: '下一页证据' }));
+  await userEvent.click(within(details).getByRole('button', { name: '下一页证据' }));
+  expect(within(details).getAllByRole('listitem')).toHaveLength(5);
+  expect(within(details).getByText(/edge-204/)).toBeInTheDocument();
 });
